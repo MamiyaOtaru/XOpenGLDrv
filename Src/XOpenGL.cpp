@@ -25,6 +25,7 @@
 
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
+#include "ExternalTextureLoader.h"
 
 #ifndef _WIN32
 #include <sys/time.h>
@@ -619,6 +620,8 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 
 	if (UseHWLighting)
 		InViewport->GetOuterUClient()->NoLighting = 1; // Disable (Engine) lighting.
+	else
+        InViewport->GetOuterUClient()->NoLighting = 0; // Enable (Engine) lighting.
 
 	ResetDistanceFog();
 
@@ -1382,6 +1385,9 @@ void UXOpenGLRenderDevice::Flush(UBOOL AllowPrecache)
 
 	for (INT i = 0; i < 8; i++) // Also reset all multi textures.
 		SetNoTexture(i);
+
+	// Flush external textures too
+	ExternalTexture::Flush();
 
 	if (AllowPrecache && UsePrecache && !GIsEditor)
 		PrecacheOnFlip = 1;
@@ -2194,6 +2200,9 @@ void UXOpenGLRenderDevice::ShutdownAfterError()
 	AllContexts.RemoveItem(glContext);
 	glContext = NULL;
 # endif
+
+	// Attempt to free external texture loader resources even on error shutdown.
+	ExternalTexture::Flush();
 
 	if (WasFullscreen)
 		ChangeDisplaySettingsW(NULL, 0);
