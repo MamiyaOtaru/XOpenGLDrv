@@ -12,6 +12,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
+#include "ExternalTextureLoader.h"
 
 //
 // stijn: Drawing a P8 texture as PF_Masked means rendering all pixels with palette index 0 as fully transparent.
@@ -36,6 +37,17 @@ static void FixCacheID(FTextureInfo& Info, DWORD PolyFlags)
 	{
 		Info.CacheID |= MASKED_TEXTURE_TAG;
 	}
+}
+
+// TryLoadExternalTexture:
+// - If an external file replaces the given texture, populate Info so the renderer will treat it
+//   as a normal texture: set Format, USize/VSize, NumMips, Mips[0]->DataPtr (pointer to RGBA/BGRA data),
+//   and set CacheID to a unique value for the external image.
+// - Return true if an override was applied. Return false if no external file was found / loaded.
+static bool TryLoadExternalTexture(FTextureInfo& Info, DWORD& OutPolyFlags)
+{
+	// Forward to the external loader. This mirrors Kentie's filename/flags behaviour.
+	return ExternalTexture::LoadExternalTexture(Info, OutPolyFlags);
 }
 
 UXOpenGLRenderDevice::FCachedTexture*
@@ -254,8 +266,98 @@ void UXOpenGLRenderDevice::SetSampler(GLuint Sampler, FTextureInfo& Info, UBOOL 
 static FName UserInterface = FName(TEXT("UserInterface"), FNAME_Intrinsic);
 #endif
 
+BOOL UXOpenGLRenderDevice::UploadExternalTexture(FTextureInfo& Info, FCachedTexture* Bind, DWORD PolyFlags)
+{
+    glBindTexture(GL_TEXTURE_2D, Bind->Id);
+
+    // Determine internal format exactly like UploadTexture does
+    GLuint InternalFormat = GL_RGBA8;
+    bool UnpackSRGB = UseSRGBTextures && !(PolyFlags & PF_Modulated);
+
+    switch ((BYTE)Info.Format)
+    {
+        case TEXF_BGRA8:
+            InternalFormat = UnpackSRGB ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+            break;
+
+        case TEXF_BC1:
+            InternalFormat = GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+            break;
+
+        case TEXF_BC2:
+            InternalFormat = GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
+            break;
+
+        case TEXF_BC3:
+            InternalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+            break;
+
+        case TEXF_BC4:
+            InternalFormat = GL_COMPRESSED_RED_RGTC1;
+            break;
+
+        case TEXF_BC5:
+            InternalFormat = GL_COMPRESSED_RG_RGTC2;
+            break;
+
+        case TEXF_BC7:
+            InternalFormat = GL_COMPRESSED_RGBA_BPTC_UNORM;
+            break;
+
+        default:
+            // fallback for uncompressed formats
+            InternalFormat = UnpackSRGB ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+            break;
+    }
+
+	// Upload each mip
+	for (INT MipIndex = 0; MipIndex < Info.NumMips; ++MipIndex)
+	{
+		FMipmapBase* Mip = Info.Mips[MipIndex];
+
+		if (FIsCompressedFormat(Info.Format))
+		{
+			GLsizei size = FTextureBytes(Info.Format, Mip->USize, Mip->VSize);
+			glCompressedTexImage2D(GL_TEXTURE_2D, MipIndex,
+								   InternalFormat,
+								   Mip->USize, Mip->VSize,
+								   0, size, Mip->DataPtr);
+		}
+		else
+		{
+			glTexImage2D(GL_TEXTURE_2D, MipIndex,
+						 InternalFormat,
+						 Mip->USize, Mip->VSize,
+						 0, GL_BGRA, GL_UNSIGNED_BYTE, Mip->DataPtr);
+		}
+	}
+
+	// If the external texture only had 1 mip, generate the rest
+	if (Info.NumMips == 1)
+	{
+		glGenerateMipmap(GL_TEXTURE_2D);
+
+		// Let OpenGL determine the correct max mip level
+		GLint maxLevel = 0;
+		glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, &maxLevel);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, maxLevel);
+	}
+	else
+	{
+		// Use the mip count provided by the external file
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, Info.NumMips - 1);
+	}
+
+    return TRUE;
+}
+
 BOOL UXOpenGLRenderDevice::UploadTexture(FTextureInfo& Info, FCachedTexture* Bind, DWORD PolyFlags, BOOL IsFirstUpload, BOOL IsBindlessTexture, BOOL PartialUpload, INT U, INT V, INT UL, INT VL, BYTE* TextureData)
 {
+	if (Bind->bExternalOverride) { 
+		return UploadExternalTexture(Info, Bind, PolyFlags); 
+	}
+
 	bool UnsupportedTexture = false;
 
 	if (Info.NumMips && !Info.Mips[0])
@@ -720,6 +822,20 @@ void UXOpenGLRenderDevice::SetTexture(INT Multi, FTextureInfo& Info, DWORD PolyF
 	if (ActiveProgram <= No_Prog)
         return;
 
+	BOOL IsResidentBindlessTexture = FALSE, IsBoundToTMU = FALSE, IsTextureDataStale = FALSE;
+	FCachedTexture* BindPre =
+    GetCachedTextureInfo(Multi, Info, PolyFlags,
+                         IsResidentBindlessTexture,
+                         IsBoundToTMU,
+                         IsTextureDataStale,
+                         FALSE); // don’t reset stale state yet
+
+	bool bExternal = false;
+	if (!BindPre && Multi == DiffuseTextureIndex)
+	{
+		bExternal = TryLoadExternalTexture(Info, PolyFlags);
+	}
+
 	// Set panning.
 	FTexInfo& Tex = TexInfo[Multi];
 	Tex.UPan      = Info.Pan.X + PanBias*Info.UScale;
@@ -732,8 +848,21 @@ void UXOpenGLRenderDevice::SetTexture(INT Multi, FTextureInfo& Info, DWORD PolyF
 	STAT(clockFast(Stats.BindCycles));
 
 	// Check if the texture is already bound to the correct TMU
-	BOOL IsResidentBindlessTexture = FALSE, IsBoundToTMU = FALSE, IsTextureDataStale = FALSE;
+	IsResidentBindlessTexture = FALSE, IsBoundToTMU = FALSE, IsTextureDataStale = FALSE;
 	FCachedTexture* Bind = GetCachedTextureInfo(Multi, Info, PolyFlags, IsResidentBindlessTexture, IsBoundToTMU, IsTextureDataStale, TRUE);
+		// after GetCachedTextureInfo and possible Bind creation
+	if (!Bind)
+	{
+		// Figure out OpenGL-related scaling for the texture.
+		Bind = &BindMap->Set(Info.CacheID, FCachedTexture());
+		memset(Bind, 0, sizeof(FCachedTexture));
+	}
+
+	if (bExternal)
+	{
+		Bind->bExternalOverride = true;
+		Info.bRealtimeChanged = 0; // don’t treat as dynamic
+	}
 
 	// Bail out early if the texture is fully up-to-date
 	if (Bind && (IsResidentBindlessTexture || IsBoundToTMU) && !IsTextureDataStale)
@@ -798,6 +927,44 @@ void UXOpenGLRenderDevice::SetTexture(INT Multi, FTextureInfo& Info, DWORD PolyF
     }
 
 	Tex.BindlessTexHandle = Bind->BindlessTexHandle;
+
+	// If we just bound a diffuse texture, attempt to bind any external extras Kentie-style.
+	// Only do this for the diffuse TMU.
+	if (Multi == DiffuseTextureIndex)
+	{
+		// Map extra indices to our Multi indices in XOpenGL.h::TextureIndices enum:
+		// Detail -> DetailTextureIndex, Bump -> BumpMapIndex, Height -> HeightMapIndex
+		const int ExtraToMulti[ExternalTexture::DUMMY_NUM_EXTRAS] =
+		{
+			-1,               // Extra_Main (handled separately, not bound as an extra TMU)
+			DetailTextureIndex, // Extra_Detail
+			BumpMapIndex,       // Extra_Bump
+			HeightMapIndex      // Extra_Height
+		};
+
+		// Parent cache id is Info.CacheID
+		QWORD parentID = Info.CacheID;
+
+		for (int extraIdx = 1; extraIdx < ExternalTexture::DUMMY_NUM_EXTRAS; ++extraIdx)
+		{
+			FTextureInfo* extraInfo = ExternalTexture::GetExtra(parentID, extraIdx);
+			if (!extraInfo)
+				continue;
+
+			// Bind the extra texture to its TMU using the same PolyFlags.
+			// Pass PanBias 0.0f for extras (they follow parent UVs).
+			// Note: SetTexture handles caching/binding and will call UploadTexture for the extra if needed.
+			SetTexture(ExtraToMulti[extraIdx], *extraInfo, PolyFlags, 0.0f);
+
+			// Tell the engine about the texture (so UT99 bump path works)  It doesn't
+			/*if (extraIdx == ExternalTexture::Extra_Detail)
+				Info.Texture->DetailTexture = extraInfo->Texture;
+			else if (extraIdx == ExternalTexture::Extra_Bump)
+				Info.Texture->BumpMap = extraInfo->Texture;
+			else if (extraIdx == ExternalTexture::Extra_Height)
+				Info.Texture->MacroTexture = extraInfo->Texture; // UT99 uses MacroTexture for height/POM*/
+		}
+	}
 
     CHECK_GL_ERROR();
 	STAT(unclockFast(Stats.ImageCycles));

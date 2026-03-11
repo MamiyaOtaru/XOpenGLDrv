@@ -812,13 +812,13 @@ void UXOpenGLRenderDevice::ShaderCompilationOptions::SetOptionsForRendererConfig
 #if UNREAL_OLDUNREAL
 	if (RenDev->EnvironmentMaps)
 		SetOption(OPT_EnvironmentMaps);
+	if (RenDev->SupportsDistanceFog)
+		SetOption(OPT_DistanceFog);
+#endif
 	if (RenDev->BumpMaps)
 		SetOption(OPT_BumpMaps);
 	if (RenDev->ParallaxVersion != Parallax_Disabled)
 		SetOption(OPT_HeightMaps);
-	if (RenDev->SupportsDistanceFog)
-		SetOption(OPT_DistanceFog);
-#endif
 	if (RenDev->SimulateMultiPass)
 		SetOption(OPT_SimulateMultiPass);
 	if (RenDev->UseHWLighting)

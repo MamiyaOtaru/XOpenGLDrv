@@ -135,7 +135,7 @@
       <Optimization>MaxSpeed</Optimization>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <AdditionalIncludeDirectories>..\..\External\glm;..\Inc;..\..\Core\Inc;..\..\Engine\Inc;..\..\Render\Inc;..\..\Render\Src;..\glm\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>NDEBUG;_WINDOWS;WIN32;UNICODE;ThisPackage=XOpenGLDrv;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;WIN32;UNICODE;ThisPackage=XOpenGLDrv;USE_TINYDDSLOADER;USE_STB_IMAGE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>Async</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -225,7 +225,7 @@
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>..\..\External\glm;..\Inc;..\..\Core\Inc;..\..\Engine\Inc;..\..\Render\Inc;..\..\Render\Src;..\glm\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_DEBUG;_WINDOWS;WIN32;UNICODE;ThisPackage=XOpenGLDrv;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;WIN32;UNICODE;ThisPackage=XOpenGLDrv;USE_TINYDDSLOADER;USE_STB_IMAGE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ExceptionHandling>Async</ExceptionHandling>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -406,6 +406,7 @@
     <ClCompile Include="DrawTile.cpp" />
     <ClCompile Include="DrawTile_GLSL.cpp" />
     <ClCompile Include="EditorHit.cpp" />
+    <ClCompile Include="ExternalTextureLoader.cpp" />
     <ClCompile Include="glad.cpp" />
     <ClCompile Include="SetTexture.cpp" />
     <ClCompile Include="ShaderProgram.cpp" />
@@ -413,7 +414,10 @@
     <ClCompile Include="XOpenGLDrv.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\Inc\ExternalTextureLoader.h" />
     <ClInclude Include="..\Inc\glad.h" />
+    <ClInclude Include="..\Inc\thirdparty\stb\stb_image.h" />
+    <ClInclude Include="..\Inc\thirdparty\tinyddsloader\tinyddsloader.h" />
     <ClInclude Include="..\Inc\XOpenGL.h" />
     <ClInclude Include="..\Inc\XOpenGLDrv.h" />
     <ClInclude Include="..\Inc\XOpenGLTemplate.h" />

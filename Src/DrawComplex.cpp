@@ -13,6 +13,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
+#include "ExternalTextureLoader.h"
 
 /*-----------------------------------------------------------------------------
 	Helpers
@@ -135,6 +136,76 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		SetTextureHelper(this, HeightMapIndex, *Surface.HeightMap, PF_None, DrawFlags, ShaderDrawFlags::DF_HeightMap, 0.0, nullptr, &DrawCallParams->HeightMapInfo, DrawCallParams->TexHandles);
 #endif
 
+	bool IsSolidBSP = (Frame->Recursion == 0) && !(NextPolyFlags & (PF_Modulated | PF_FakeBackdrop | PF_NoSmooth | PF_Flat | PF_Unlit | PF_Highlighted | PF_FlatShaded | PF_Portal));
+            //&& !(Surf->bInvisible)
+            //&& (Surf->Actor == nullptr); // BSP, not mesh
+
+	QWORD parentID = Surface.Texture->CacheID;
+	//bool hasDetail = (DetailTextures && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Detail) != nullptr);
+	bool hasBump = (BumpMaps && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Bump) != nullptr);
+	bool hasHeight = (ParallaxVersion != Parallax_Disabled && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height) != nullptr);
+
+	// ------------------------------------------------------------
+	// BumpMapInfo (external version)
+	// ------------------------------------------------------------
+	if (hasBump)
+	{
+		FTextureInfo* ExternalBumpInfo =
+			ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Bump);
+
+		if (ExternalBumpInfo)
+		{
+			// Give the external FTextureInfo a valid UTexture* for metadata
+			ExternalBumpInfo->Texture = Surface.Texture->Texture;
+
+			SetTextureHelper(
+				this,
+				BumpMapIndex,                  // TMU index for bumpmap
+				*ExternalBumpInfo,             // pass by reference
+				PF_None,
+				DrawFlags,
+				ShaderDrawFlags::DF_BumpMap,
+				0.0,
+				nullptr,
+				&DrawCallParams->BumpMapInfo,  // what the shader reads
+				DrawCallParams->TexHandles
+			);
+		}
+	}
+
+	// ------------------------------------------------------------
+	// HeightMapInfo (external-only, no engine-native height maps)
+	// ------------------------------------------------------------
+	if (hasHeight)
+	{
+		FTextureInfo* ExternalHeightInfo =
+			ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height);
+
+		if (ExternalHeightInfo)
+		{
+			// Give the external FTextureInfo a valid UTexture* for metadata
+			ExternalHeightInfo->Texture = Surface.Texture->Texture;
+
+			SetTextureHelper(
+				this,
+				HeightMapIndex,                  // TMU index for heightmap
+				*ExternalHeightInfo,             // pass by reference
+				PF_None,
+				DrawFlags,
+				ShaderDrawFlags::DF_HeightMap,
+				0.0,
+				nullptr,
+				&DrawCallParams->HeightMapInfo,  // what the shader reads
+				DrawCallParams->TexHandles
+			);
+
+			DrawCallParams->HeightMapInfo.x = 0.0f;
+			DrawCallParams->HeightMapInfo.y = 0.0f;
+			DrawCallParams->HeightMapInfo.z = 2.0f;  // tunable parallax scale
+			DrawCallParams->HeightMapInfo.w = 0.0f;   // no animation for now
+		}
+	}
+
 	// Other draw data
 	DrawCallParams->XAxis = glm::vec4(Facet.MapCoords.XAxis.X, Facet.MapCoords.XAxis.Y, Facet.MapCoords.XAxis.Z, Facet.MapCoords.XAxis | Facet.MapCoords.Origin);
 	DrawCallParams->YAxis = glm::vec4(Facet.MapCoords.YAxis.X, Facet.MapCoords.YAxis.Y, Facet.MapCoords.YAxis.Z, Facet.MapCoords.YAxis | Facet.MapCoords.Origin);
@@ -192,8 +263,12 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	Shader->ParametersBuffer.Advance(1);
 
 #if ENGINE_VERSION!=227
-	if (DrawFlags & ShaderDrawFlags::DF_BumpMap)
+	if ((DrawFlags & ShaderDrawFlags::DF_BumpMap) &&
+		Surface.Texture && Surface.Texture->Texture &&
+		Surface.Texture->Texture->BumpMap)
+	{
 		Surface.Texture->Texture->BumpMap->Unlock(Shader->BumpMapInfo);
+	}
 #endif
 
     STAT(unclockFast(Stats.ComplexCycles));

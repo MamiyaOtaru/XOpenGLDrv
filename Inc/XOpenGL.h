@@ -644,6 +644,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		GLuint Sampler;				// Sampler object
 		GLuint64 BindlessTexHandle;	// Bindless handle
 		INT RealtimeChangeCount{};
+		bool bExternalOverride = false;
 	};
 
 	// All currently cached textures.
@@ -1946,6 +1947,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	void  SetBlend(DWORD PolyFlags);
 	DWORD SetDepth(DWORD LineFlags);
 	void  SetSampler(GLuint Sampler, FTextureInfo& Info, UBOOL SkipMipmaps, UBOOL IsLightOrFogMap, UBOOL NoSmooth);
+	BOOL  UploadExternalTexture(FTextureInfo& Info, FCachedTexture* Bind, DWORD PolyFlags);
 	BOOL  UploadTexture(FTextureInfo& Info, FCachedTexture* Bind, DWORD PolyFlags, BOOL IsFirstUpload, BOOL IsBindlessTexture, BOOL PartialUpload=FALSE, INT U=0, INT V=0, INT UL=0, INT VL=0, BYTE* TextureData=nullptr);
 	void  GenerateTextureAndSampler(FCachedTexture* Bind);
 	void  BindTextureAndSampler(INT Multi, FCachedTexture* Bind);
