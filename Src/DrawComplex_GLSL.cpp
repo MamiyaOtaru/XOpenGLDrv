@@ -197,7 +197,7 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
         if (GL->ParallaxVersion == Parallax_Basic) // very basic implementation
         {
             Out << R"(
-  float height = GetTexel(TexHandle, TMUHeightMap, ptexCoords).r;
+  float height = 1.0 - GetTexel(TexHandle, TMUHeightMap, ptexCoords).r;
   return ptexCoords - viewDir.xy * (height * 0.1);
 }
 #endif
@@ -222,12 +222,12 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
   // get initial values
   vec2  currentTexCoords = ptexCoords;
   float currentDepthMapValue = 0.0;
-  currentDepthMapValue = GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r;
+  currentDepthMapValue = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r;
 
   while (currentLayerDepth < currentDepthMapValue)
   {
     currentTexCoords -= deltaTexCoords; // shift texture coordinates along direction of P
-    currentDepthMapValue = GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r; // get depthmap value at current texture coordinates
+    currentDepthMapValue = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r; // get depthmap value at current texture coordinates
     currentLayerDepth += layerDepth; // get depth of next layer
   }
 
@@ -235,7 +235,7 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
 
   // get depth after and before collision for linear interpolation
   float afterDepth = currentDepthMapValue - currentLayerDepth;
-  float beforeDepth = GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r - currentLayerDepth + layerDepth;
+  float beforeDepth = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r - currentLayerDepth + layerDepth;
 
   // interpolation of texture coordinates
   float weight = afterDepth / (afterDepth - beforeDepth);
@@ -257,14 +257,14 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
   float currentLayerHeight = 0.0; // depth of current layer
   vec2 dtex = vParallaxScale * viewDir.xy / viewDir.z / numLayers; // shift of texture coordinates for each iteration
   vec2 currentTexCoords = ptexCoords; // current texture coordinates
-  float heightFromTexture = GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r; // depth from heightmap
+  float heightFromTexture = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r; // depth from heightmap
 
   // while point is above surface
   while (heightFromTexture > currentLayerHeight)
   {
     currentLayerHeight += layerHeight; // go to the next layer
     currentTexCoords -= dtex; // shift texture coordinates along V
-    heightFromTexture = GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r; // new depth from heightmap
+    heightFromTexture = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r; // new depth from heightmap
   }
 
   ///////////////////////////////////////////////////////////
@@ -285,7 +285,7 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
     deltaHeight /= 2.0;
  
     // new depth from heightmap
-    heightFromTexture = GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r;
+    heightFromTexture = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r;
 
     // shift along or agains vector V
     if (heightFromTexture > currentLayerHeight) // below the surface
