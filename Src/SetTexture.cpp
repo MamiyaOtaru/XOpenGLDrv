@@ -310,10 +310,17 @@ BOOL UXOpenGLRenderDevice::UploadExternalTexture(FTextureInfo& Info, FCachedText
             break;
     }
 
+	// Sanity: must have at least one mip and valid data
+	if (Info.NumMips <= 0 || !Info.Mips[0] || !Info.Mips[0]->DataPtr)
+		return FALSE;
+
 	// Upload each mip
+	INT validMips = 0;
 	for (INT MipIndex = 0; MipIndex < Info.NumMips; ++MipIndex)
 	{
 		FMipmapBase* Mip = Info.Mips[MipIndex];
+		if (!Mip || !Mip->DataPtr)
+	        break;
 
 		if (FIsCompressedFormat(Info.Format))
 		{
@@ -330,10 +337,11 @@ BOOL UXOpenGLRenderDevice::UploadExternalTexture(FTextureInfo& Info, FCachedText
 						 Mip->USize, Mip->VSize,
 						 0, GL_BGRA, GL_UNSIGNED_BYTE, Mip->DataPtr);
 		}
+		validMips++;
 	}
 
 	// If the external texture only had 1 mip, generate the rest
-	if (Info.NumMips == 1)
+	if (validMips == 1)
 	{
 		glGenerateMipmap(GL_TEXTURE_2D);
 
@@ -850,7 +858,7 @@ void UXOpenGLRenderDevice::SetTexture(INT Multi, FTextureInfo& Info, DWORD PolyF
 	// Check if the texture is already bound to the correct TMU
 	IsResidentBindlessTexture = FALSE, IsBoundToTMU = FALSE, IsTextureDataStale = FALSE;
 	FCachedTexture* Bind = GetCachedTextureInfo(Multi, Info, PolyFlags, IsResidentBindlessTexture, IsBoundToTMU, IsTextureDataStale, TRUE);
-		// after GetCachedTextureInfo and possible Bind creation
+	// after GetCachedTextureInfo and possible Bind creation
 	if (!Bind)
 	{
 		// Figure out OpenGL-related scaling for the texture.

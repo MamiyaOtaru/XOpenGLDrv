@@ -282,7 +282,8 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
   float currentLayerDepth = 0.0; // depth of current layer
 
   // the amount to shift the texture coordinates per layer (from vector P)
-  vec2 P = viewDir.xy / viewDir.z * vParallaxScale;
+  float vz = max(abs(viewDir.z), 0.02);
+  vec2 P = viewDir.xy / vz * vParallaxScale;
   vec2 deltaTexCoords = P / numLayers;
 
   // get initial values
@@ -304,9 +305,16 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
   float beforeDepth = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r - currentLayerDepth + layerDepth;
 
   // interpolation of texture coordinates
-  float weight = afterDepth / (afterDepth - beforeDepth);
+  float denom = afterDepth - beforeDepth;
+  // If denom is too small, skip interpolation entirely
+  if (abs(denom) < 1e-5)
+    return currentTexCoords;
+  float weight = afterDepth / denom;
   vec2 finalTexCoords = prevTexCoords * weight + currentTexCoords * (1.0 - weight);
-  return finalTexCoords;
+  if (any_nonfinite(finalTexCoords))
+        return ptexCoords;
+
+    return finalTexCoords;
 }
 #endif
 )";
@@ -370,6 +378,8 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
 
   // return results
   parallaxHeight = currentLayerHeight;
+  if (any_nonfinite(currentTexCoords))
+        return ptexCoords;
   return currentTexCoords;
 }
 #endif
@@ -453,7 +463,8 @@ void main(void)
   vec2 texCoords = vTexCoords;
 
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
-  vec3 TangentViewDir = normalize(vTangentViewPos - vTangentFragPos);
+  //vec3 TangentViewDir = normalize(vTangentViewPos - vTangentFragPos);
+  vec3 TangentViewDir = normalize(-vTBNMat *  vCoords.xyz);
 #endif
 #if OPT_HWLighting
   int NumLights = int(LightData4[0].y);
@@ -581,7 +592,11 @@ void main(void)
   {
     float MinLight = 0.05f;
 
-    vec3 TextureNormal = normalize(GetTexel(GetTexHandles(vDrawID, 2).zw, Texture5, texCoords).rgb * 2.0 - 1.0); // has to be texCoords instead of vBumpTexCoords, otherwise alignment won't work on bumps.
+    vec3 TextureNormal;
+    if ((DrawFlags & DF_BumpMap) == DF_BumpMap)
+      TextureNormal = normalize(GetTexel(GetTexHandles(vDrawID, 2).zw, Texture5, texCoords).rgb * 2.0 - 1.0); // has to be texCoords instead of vBumpTexCoords, otherwise alignment won't work on bumps.
+    else
+      TextureNormal = vec3(0.0, 0.0, 1.0);
 
     float rough = DrawDrawComplexParams[vDrawID].Roughness;
 
