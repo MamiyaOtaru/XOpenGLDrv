@@ -407,9 +407,6 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	SupportsClipDistance = true;
 	SupportsS3TC = true; //assume nowadays every hardware setup supports this, but its checked later anyway.
 
-	if (ParallaxVersion != Parallax_Disabled) // Not sure if Parallax makes much sense at all without BumpMaps, but for now we need it enabled to have the necessary informations from the vertex shader.
-        BumpMaps = 1;
-
 #if XOPENGL_TEXTUREHANDLE_SUPPORT
 	BindlessList = NULL;
 #endif
@@ -629,6 +626,9 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 
 	if (UseAA)
 		glEnable(GL_MULTISAMPLE);
+
+	// get light level overrides for UT99 (and maybe other games) if needed
+	InitLightLevelOverrides();
 
 	NumDevices++;
 	return 1;
@@ -1500,10 +1500,10 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		SetOrthoProjection(Frame);
 	else if (StoredFovAngle != Viewport->Actor->FovAngle || StoredFX != Frame->FX || StoredFY != Frame->FY || GIsEditor || StoredbNearZ)
 		SetProjection(Frame, 0);
-#if UNREAL_OLDUNREAL
-	else if (BumpMaps) // stijn: TODO: We need this to prevent lights from jumping around. This indicates there's some problem in Render!
-		UpdateCoords(Frame);
-#endif
+
+	else if (BumpMaps) // stijn: TODO: We need this to prevent lights from jumping around. This indicates there's some problem in Render!  
+		UpdateCoords(Frame); // Jason: This is because the facet data is in view space while light data is in world space, so if we don't update the transforms every frame, the lights will be in the wrong place when the camera moves. We could optimize this by only updating the light data when the camera moves, but that would require some refactoring of the code.
+
 	if (StoredGamma != GetViewportGamma(Viewport) || StoredOneXBlending != OneXBlending || StoredActorXBlending != ActorXBlending)
 		SetFrameStateUniforms();
 
@@ -1531,8 +1531,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
         false;
 #endif
 	if (!Level || 
-		(!HWLighting && !BumpMaps) || // These are the only features that use light data
-		(!HWLighting && !GIsEditor && NumLights > 0)) // If we're in-game, we only push light data once
+		(!UseHWLighting && !BumpMaps && !GIsEditor && NumLights > 0)) // If we're in-game (without HWLighting or Bumpmaps or editing), we only push light data once
 		return;
 
 	// Gather actors
@@ -1549,8 +1548,8 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		if (Actor->LightType == LE_None || Actor->LightRadius == 0 || Actor->LightBrightness == 0)
 			continue;
 
-		// Filter out non-static lights if we're not using HW Lighting
-		if (!Actor->bStatic && Actor->bMovable && !HWLighting)
+		// Filter out non-static lights if we're not using HW Lighting or per pixel lighting
+		if (!Actor->bStatic && Actor->bMovable && !HWLighting && !BumpMaps)
 			continue;
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
@@ -1560,6 +1559,8 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			LightList.AddItem(Actor);
 #endif
 	}
+
+	CurrentLightToIndex.Empty(); // done per frame.  the static part could be done per level, but this is easier and not really a problem.  The static lights are in the same order each time
 	NumLights = LightList.Num();
 
 	auto LightData = LightInfoBuffer.GetElementPtr(0);
@@ -1585,6 +1586,9 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		LightData->LightData4[i] = glm::vec4(Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
 		LightData->LightData5[i] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
 #endif
+		
+		CurrentLightToIndex.Set(LightList(i), static_cast<GLuint>(i));
+
 		if (i == MAX_LIGHTS - 1)
 			break;
 	}
@@ -1740,6 +1744,14 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 	++LockCount;
 	
 	MakeCurrent();
+
+	// detect level change, clear out the facet->light hashmaps
+	if (Viewport->Actor->XLevel != LastLevel)
+    {
+		LastLevel = Viewport->Actor->XLevel;
+
+		NewLevel();
+    }
 
 	// Clear the Z buffer if needed.
 	glClearColor(ScreenClear.X, ScreenClear.Y, ScreenClear.Z, ScreenClear.W);

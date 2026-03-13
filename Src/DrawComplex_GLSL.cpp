@@ -34,9 +34,9 @@ const UXOpenGLRenderDevice::ShaderProgram::DrawCallParameterInfo UXOpenGLRenderD
 	{"vec4", "DrawColor", 0},
     {"uvec4", "TexHandles", 4},
 	{"uint", "DrawFlags", 0},
+    {"float", "Roughness", 0},
     {"uint", "Dummy0", 0},
     {"uint", "Dummy1", 0},
-    {"uint", "Dummy2", 0},
 	{ nullptr, nullptr, 0}
 };
 
@@ -47,11 +47,13 @@ void UXOpenGLRenderDevice::DrawComplexProgram::BuildVertexShader(GLuint ShaderTy
 layout(location = 0) in vec3 Coords; // == gl_Vertex
 layout(location = 1) in uint DrawID; // emulated gl_DrawID
 layout(location = 2) in vec4 Normal;
+layout(location = 3) in uint FacetID;
 
 out vec3 vCoords;
 out vec2 vTexCoords;
 out vec2 vLightMapCoords;
 out vec2 vFogMapCoords;
+flat out uint vFacetID;
 
 #if OPT_DetailTextures
 out vec2 vDetailTexCoords;
@@ -69,7 +71,7 @@ out vec2 vEnvironmentTexCoords;
 out vec2 vBumpTexCoords;
 #endif
 
-#if OPT_BumpMaps || OPT_HWLighting
+#if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
 flat out mat3 vTBNMat;
 out vec3 vTangentViewPos;
 out vec3 vTangentFragPos;
@@ -91,7 +93,7 @@ void main(void)
   // UDot/VDot calculation.
   vec3 MapCoordsXAxis = GetXAxis(DrawID).xyz;
   vec3 MapCoordsYAxis = GetYAxis(DrawID).xyz;
-#if OPT_Editor || OPT_BumpMaps || OPT_HWLighting
+#if OPT_Editor || OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
   vec3 MapCoordsZAxis = GetZAxis(DrawID).xyz;
 #endif
 
@@ -159,8 +161,9 @@ void main(void)
   vEyeSpacePos = modelviewMat * vec4(Coords.xyz, 1.0);
 #endif
 
-#if OPT_BumpMaps || OPT_HWLighting
-  vec3 EyeSpacePos = normalize(FrameCoords[0].xyz); // despite pretty perfect results (so far) this still seems somewhat wrong to me.
+#if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
+
+  vec3 CameraPosWS_Normalized = normalize(FrameCoords[0].xyz); // despite pretty perfect results (so far) this still seems somewhat wrong to me.
   vec3 T = normalize(vec3(MapCoordsXAxis.x, MapCoordsXAxis.y, MapCoordsXAxis.z));
   vec3 B = normalize(vec3(MapCoordsYAxis.x, MapCoordsYAxis.y, MapCoordsYAxis.z));
   vec3 N = normalize(vec3(MapCoordsZAxis.x, MapCoordsZAxis.y, MapCoordsZAxis.z)); //SurfNormals.
@@ -170,12 +173,57 @@ void main(void)
   //   T = T * -1.0;
   vTBNMat = transpose(mat3(T, B, N));
 
-  vTangentViewPos = vTBNMat * EyeSpacePos.xyz;
+  // what... seems to work accidentally as a normalized position (what even is that) is only 1 unit away from 0,0,0, the actual viewspace position of the camera
+  // would have been better off not bothering and just calculating vTangentViewPos as vTBNMat * vec3(0.0,0.0,0.0);
+  vTangentViewPos = vTBNMat * CameraPosWS_Normalized.xyz; 
   vTangentFragPos = vTBNMat * Coords.xyz;
+/*
+  // Build world-space TBN
+  vec3 Nw = normalize(MapCoordsZAxis.xyz);
+  vec3 Tw = normalize(MapCoordsXAxis.xyz);
+
+  // Re-orthogonalize tangent to normal
+  Tw = normalize(Tw - Nw * dot(Nw, Tw));
+
+  // Bitangent
+  vec3 Bw = normalize(cross(Nw, Tw));
+
+  // Handedness correction
+  if (dot(cross(Tw, Bw), Nw) < 0.0)
+  {
+    Tw = -Tw;
+    Bw = cross(Nw, Tw);
+  }
+
+  // v axis orientation correction
+  vec3 MapV = normalize(GetYAxis(DrawID).xyz);
+  if (dot(Bw, MapV) < 0.0)
+  {
+    Bw = -Bw;
+  }
+
+  // Re-orthogonalize after V-axis flip
+  Bw = normalize(Bw - Nw * dot(Nw, Bw));
+  Tw = normalize(cross(Bw, Nw));  // rebuild T from B×N to keep basis tight
+
+  // Final world-space TBN -> tangent-space transform
+  vTBNMat = transpose(mat3(Tw, Bw, Nw));
+
+  // Compute view-space positions
+  // Coords is already view-space
+  vec3 FragPosVS = Coords.xyz;
+
+  // Camera position in view space is always (0,0,0)
+  vec3 ViewPosVS = vec3(0.0);
+
+  // Transform both into tangent space
+  vTangentFragPos = vTBNMat * FragPosVS;
+  vTangentViewPos = vTBNMat * ViewPosVS;*/
 #endif
 
   gl_Position = modelviewprojMat * vec4(Coords.xyz, 1.0);
   vDrawID = DrawID;
+  vFacetID = FacetID;
 
 #if OPT_ClipDistance
   uint ClipIndex = uint(ClipParams.x);
@@ -189,6 +237,24 @@ static void EmitParallaxFunction(UXOpenGLRenderDevice* GL, FShaderWriterX& Out)
 {
     Out << R"(
 #if OPT_HeightMaps
+bool is_nan(float v) {
+    return v != v;
+}
+bool is_inf(float v) {
+    return abs(v) > 1e20;   // any huge threshold works
+}
+bool is_finite(float v) {
+    return !is_nan(v) && !is_inf(v);
+}
+bool any_nan(vec2 v) { return is_nan(v.x) || is_nan(v.y); }
+bool any_nan(vec3 v) { return is_nan(v.x) || is_nan(v.y) || is_nan(v.z); }
+
+bool any_inf(vec2 v) { return is_inf(v.x) || is_inf(v.y); }
+bool any_inf(vec3 v) { return is_inf(v.x) || is_inf(v.y) || is_inf(v.z); }
+
+bool any_nonfinite(vec2 v) { return any_nan(v) || any_inf(v); }
+bool any_nonfinite(vec3 v) { return any_nan(v) || any_inf(v); }
+
 vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float parallaxHeight)
 {
     float vParallaxScale = GetHeightMapInfo(vDrawID).z * 0.025;
@@ -255,8 +321,10 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
             Out << R"(
   float layerHeight = 1.0 / numLayers; // height of each layer
   float currentLayerHeight = 0.0; // depth of current layer
-  vec2 dtex = vParallaxScale * viewDir.xy / viewDir.z / numLayers; // shift of texture coordinates for each iteration
+  float vz = max(abs(viewDir.z), 0.02);
+  vec2 dtex = vParallaxScale * viewDir.xy / vz / numLayers; // shift of texture coordinates for each iteration
   vec2 currentTexCoords = ptexCoords; // current texture coordinates
+
   float heightFromTexture = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r; // depth from heightmap
 
   // while point is above surface
@@ -325,6 +393,7 @@ in vec3 vCoords;
 in vec2 vTexCoords;
 in vec2 vLightMapCoords;
 in vec2 vFogMapCoords;
+flat in uint vFacetID;
 
 #if OPT_DetailTextures
 in vec2 vDetailTexCoords;
@@ -339,11 +408,11 @@ in vec2 vEnvironmentTexCoords;
 #endif
 
 #if OPT_BumpMaps
-flat in mat3 vTBNMat;
 in vec2 vBumpTexCoords;
 #endif
 
-#if OPT_BumpMaps || OPT_HWLighting
+#if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
+flat in mat3 vTBNMat;
 in vec3 vTangentViewPos;
 in vec3 vTangentFragPos;
 #endif
@@ -383,8 +452,10 @@ void main(void)
   vec4 TotalColor = vec4(1.0);
   vec2 texCoords = vTexCoords;
 
-#if OPT_BumpMaps || OPT_HWLighting
+#if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
   vec3 TangentViewDir = normalize(vTangentViewPos - vTangentFragPos);
+#endif
+#if OPT_HWLighting
   int NumLights = int(LightData4[0].y);
 #endif
 
@@ -426,7 +497,6 @@ void main(void)
       vec4 CurrentLightColor = vec4(LightData1[i].x, LightData1[i].y, LightData1[i].z, 1.0);
       float b = WorldLightRadius / (RWorldLightRadius * MinLight);
       float attenuation = WorldLightRadius / (dist + b * dist * dist);
-      //float attenuation = 0.82*(1.0-smoothstep(LightRadius,24.0*LightRadius+0.50,dist));
       LightColor += CurrentLightColor * attenuation;
     }
   }
@@ -504,60 +574,96 @@ void main(void)
   }
 #endif
 
-	// BumpMap (Normal Map)
-#if OPT_BumpMaps
-  if ((DrawFlags & DF_BumpMap) == DF_BumpMap)
+  // BumpMap (Normal Map)
+  vec3 totalSpec  = vec3(0.0);
+  uint numSurfaceLights = 0;
+  #if OPT_BumpMaps
   {
     float MinLight = 0.05f;
-    
-    //normal from normal map
-    vec3 TextureNormal = normalize(GetTexel(GetTexHandleHelper(vDrawID, BumpMapIndex), TMUBumpMap, texCoords).rgb * 2.0 - 1.0); // has to be texCoords instead of vBumpTexCoords, otherwise alignment won't work on bumps.
-    vec3 BumpColor;
-    vec3 TotalBumpColor = vec3(0.0, 0.0, 0.0);
 
-    for (int i = 0; i < NumLights; ++i)
+    vec3 TextureNormal = normalize(GetTexel(GetTexHandles(vDrawID, 2).zw, Texture5, texCoords).rgb * 2.0 - 1.0); // has to be texCoords instead of vBumpTexCoords, otherwise alignment won't work on bumps.
+
+    float rough = DrawDrawComplexParams[vDrawID].Roughness;
+
+    //vec3 TotalBumpColor = vec3(0.0);
+    vec3 totalLight = vec3(0.0);
+    //int contributingLights = 0;
+
+    uvec2 meta = FacetMetaArr[vFacetID];
+    uint start = meta.x;
+    numSurfaceLights = clamp(meta.y, uint(0), uint(MAX_SURFACE_LIGHTS));
+    for (uint li = 0u; li < numSurfaceLights; ++li)
     {
-      vec3 CurrentLightColor = vec3(LightData1[i].x, LightData1[i].y, LightData1[i].z);
-      
-      float NormalLightRadius = LightData5[i].x;
-      bool bZoneNormalLight = bool(LightData5[i].y);
-      float LightBrightness = LightData5[i].z / 255.0; // use LightBrightness to adjust specular reflection.
+      uint i = FacetIndicesArr[start + li];
 
-      if (NormalLightRadius == 0.0)
-        NormalLightRadius = LightData2[i].w * 64.0;
+      float WorldLightRadius  = LightData4[i].x;
 
-      bool bSunlight = bool(uint(LightData2[i].x == LE_Sunlight));
+      if (WorldLightRadius == 0.0)
+        continue; // skip lights with zero radius, which are used for non-lighting purposes (e.g. zone restriction) 
 
-      vec3 InLightPos = ((LightPos[i].xyz - FrameCoords[0].xyz) * InFrameCoords); // Frame->Coords.
+      vec3 InLightPos = ((LightPos[i].xyz - FrameCoords[0].xyz) * InFrameCoords);
       float dist = distance(vCoords, InLightPos);
 
-      float b = NormalLightRadius / (NormalLightRadius * NormalLightRadius * MinLight);
-      float attenuation = NormalLightRadius / (dist + b * dist * dist);
-
-      if ((DrawFlags & DF_Unlit) == DF_Unlit)
-        InLightPos = vec3(1.0, 1.0, 1.0); //no idea whats best here. Arbitrary value based on some tests.
-
-      if ((NormalLightRadius == 0.0 || (dist > NormalLightRadius) || (bZoneNormalLight && (LightData4[i].z != LightData4[i].w))) && !bSunlight) // Do not consider if not in range or in a different zone.
+      // Distance early out test
+      if (dist > WorldLightRadius)
         continue;
 
-      vec3 TangentLightPos = vTBNMat * InLightPos;
-      vec3 TangentlightDir = normalize(TangentLightPos - vTangentFragPos);
+      //float NormalLightRadius  = LightData5[i].x;
+      // attenuation that fades out by radius.  worldLightRadius looks better here
+      float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
+      float attenuation = (1.0 - x) / (1.0 + 4.0 * x*x);
 
-      // ambient
-      vec3 ambient = 0.1 * TotalColor.xyz;
+      // HWLighting style attenuation
+      //float RWorldLightRadius = WorldLightRadius * WorldLightRadius;
+      //float b = WorldLightRadius / (RWorldLightRadius * MinLight);
+      //float attenuation = WorldLightRadius / (dist + b * dist * dist);
 
-      // diffuse
-      float diff = max(dot(TangentlightDir, TextureNormal), 0.0);
-      vec3 diffuse = diff * TotalColor.xyz;
+      // Light color + brightness
+      vec3 rawColor = clamp(vec3(LightData1[i].x, LightData1[i].y, LightData1[i].z), 0.0, 1.0);
+      float lum = dot(rawColor, vec3(0.299, 0.587, 0.114));
+      //vec3 desatColor = mix(rawColor, vec3(lum), 0.15); // not desaturating looks better in most cases, and it also makes the specular term look better without tweaking the exponent and intensity.
 
-      // specular
-      vec3 halfwayDir = normalize(TangentlightDir + TangentViewDir);
-      float spec = pow(max(dot(TextureNormal, halfwayDir), 0.0), 8.0);
-      vec3 specular = vec3(max(GetBumpMapInfo(vDrawID).y, 0.1)) * spec * CurrentLightColor * LightBrightness;
+      float brightness = LightData5[i].z / 255.0;
+      float brightnessFactor = max(lum, brightness);
+        
+      // Tangent-space direction
+      vec3 TangentLightDir = normalize(vTBNMat * (InLightPos - vCoords));
 
-      TotalBumpColor += (ambient + diffuse + specular) * attenuation;
+      // Lambert for ranking
+      //float lambert = max(dot(TangentLightDir, TextureNormal), 0.0);
+
+      // Ranking strength
+      //float strength = attenuation * brightnessFactor * lambert;
+
+      vec3 N = TextureNormal;
+      vec3 L = normalize(TangentLightDir);
+      vec3 V = TangentViewDir;
+
+      float diff = max(dot(N, L), 0.0);
+
+      totalLight += rawColor * diff * attenuation;
+
+      // --- SPECULAR
+      float shininess    = mix(4.0, 64.0, 1.0 - rough);
+      float specStrength = mix(0.1, 1.0, 1.0 - rough);
+
+      vec3 H = normalize(L + V);
+
+      float spec = pow(max(dot(N, H), 0.0), shininess)
+                     * specStrength
+                     * brightnessFactor
+                     * attenuation;
+
+      vec3 specular = spec * rawColor;   // colored specular, matches UT99 lights
+      totalSpec += specular;
+
+      //contributingLights++;
     }
-    TotalColor += vec4(clamp(TotalBumpColor, 0.0, 1.0), 1.0);
+    // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
+    // not *fragments* where there might legitimately be no contributing lights due to attenuation
+    if (numSurfaceLights > 0) {
+      LightColor.rgb *= clamp(totalLight, 0.0, 1.0);
+    }
   }
 #endif
 
@@ -587,7 +693,7 @@ void main(void)
 #endif
 
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
-    TotalColor = TotalColor * LightColor;
+    TotalColor = clamp(TotalColor * LightColor + vec4(totalSpec.rgb, 1.0), 0.0, 1.0);
 
   TotalColor += FogColor;
 

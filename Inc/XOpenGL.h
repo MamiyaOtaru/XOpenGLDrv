@@ -100,11 +100,7 @@
 #define DRAWGOURAUDPOLY_SIZE 1024
 #define NUMBUFFERS 8
 
-#if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
-# define MAX_LIGHTS 256
-#else
-# define MAX_LIGHTS 512
-#endif
+# define MAX_LIGHTS 2048 // maxes out at 512 if UBO
 
 // necessary defines for GLES (f.e. when building with glad). Only needed to build. Do NOT use these functions for ES. Check if maybe existing some day.
 
@@ -993,6 +989,17 @@ class UXOpenGLRenderDevice : public URenderDevice
 		GLuint SubBufferOffset{};			// Global index of the first buffer element of the sub-buffer we're currently writing to (relative to the start of the _entire_ buffer)
 		GLuint NextElemIndex{};				// Index of the next buffer element we're going to write within the currently active sub-buffer (relative to the start of the sub-buffer)
 
+		// Add SubBufferSize accessor to avoid touching the private member from outside.
+		GLuint GetSubBufferSize() const
+		{
+			return SubBufferSize;
+		}
+
+		GLuint GetSubBufferCount() const
+		{
+			return SubBufferCount;
+		}
+
 	private:
 		void MapBuffer(GLenum Target, bool Persistent, GLuint BufferSize, GLenum _ExpectedUsage)
 		{
@@ -1393,8 +1400,19 @@ class UXOpenGLRenderDevice : public URenderDevice
 			{
 				// Back up the parameters of the last draw call so we can write them into the first
 				// slot of the parameters buffer after rotating
-				auto In = ParametersBuffer.GetElementPtr(static_cast<GLuint>((ParametersBuffer.Size() > 0) ? (ParametersBuffer.Size() - 1) : 0));
-				memcpy(&DrawCallParams, In, sizeof(DrawCallParamsType));
+				//auto In = ParametersBuffer.GetElementPtr(static_cast<GLuint>((ParametersBuffer.Size() > 0) ? (ParametersBuffer.Size() - 1) : 0));
+				//memcpy(&DrawCallParams, In, sizeof(DrawCallParamsType));
+				if (ParametersBuffer.NextElemIndex > 0)
+				{
+					auto In = ParametersBuffer.GetElementPtr(ParametersBuffer.NextElemIndex - 1);
+					memcpy(&DrawCallParams, In, sizeof(DrawCallParamsType));
+				}
+				else
+				{
+					// No parameters written this frame; either skip backup
+					// or fall back to a safe default for DrawCallParams
+					memset(&DrawCallParams, 0, sizeof(DrawCallParamsType));
+				}
 			}
 
 			if (HavePendingData)
@@ -1405,6 +1423,18 @@ class UXOpenGLRenderDevice : public URenderDevice
 				// PopClipPlane can temporarily bind another UBO.
 				ParametersBuffer.Bind();
 				ParametersBuffer.BufferData(false);
+
+				// Upload index/meta rings if present
+				if (FacetIndexRing.GetSubBufferSize() > 0)
+				{
+					FacetIndexRing.Bind();
+					FacetIndexRing.BufferData(false);
+				}
+				if (FacetMetaRing.GetSubBufferSize() > 0)
+				{
+					FacetMetaRing.Bind();
+					FacetMetaRing.BufferData(false);
+				}
 
 				// Issue the draw call
 				DrawBuffer.Draw(DrawMode, RenDev);
@@ -1424,6 +1454,17 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 				VertBuffer.Lock();
 				VertBuffer.Rotate(true);
+
+				if (FacetMetaRing.GetSubBufferSize() > 0)
+				{
+					FacetMetaRing.Lock();
+					FacetMetaRing.Rotate(true);
+				}
+				if (FacetIndexRing.GetSubBufferSize() > 0)
+				{
+					FacetIndexRing.Lock();
+					FacetIndexRing.Rotate(true);
+				}
 			}
 
 			// Reset the multidraw buffer. Note that the Rotate() calls above might simply switch to an
@@ -1472,6 +1513,21 @@ class UXOpenGLRenderDevice : public URenderDevice
 					ParametersBuffer.MapUBOBuffer(RenDev->UsingPersistentBuffers, ParametersBufferSize, DRAWCALL_BUFFER_USAGE_PATTERN);
 				}
 			}
+
+			// Map facet index & meta rings if requested by derived shader (sizes set by shader ctor)
+			if (FacetIndexRingSize > 0 && !FacetIndexRing.Buffer)
+			{
+				// index ring (uint)
+				FacetIndexRing.GenerateSSBOBuffer(RenDev, GlobalShaderBindingIndices::FacetIndexDataIndex);
+				FacetIndexRing.MapSSBOBuffer(RenDev->UsingPersistentBuffers, FacetIndexRingSize, DRAWCALL_BUFFER_USAGE_PATTERN);
+			}
+			if (FacetMetaRingSize > 0 && !FacetMetaRing.Buffer)
+			{
+				// meta ring (uvec2)
+				FacetMetaRing.GenerateSSBOBuffer(RenDev, GlobalShaderBindingIndices::FacetMetaIndex);
+				FacetMetaRing.MapSSBOBuffer(RenDev->UsingPersistentBuffers, FacetMetaRingSize, DRAWCALL_BUFFER_USAGE_PATTERN);
+			}
+
 		}
 
 		virtual void UnmapBuffers()
@@ -1484,6 +1540,12 @@ class UXOpenGLRenderDevice : public URenderDevice
 		DrawCallParamsType                          DrawCallParams;
 		BufferObject<DrawCallParamsType>            ParametersBuffer;
 		BufferObject<VertexType>                    VertBuffer;
+
+		// Ring buffers for per-facet index lists (uses same NUMBUFFERS sub-buffer rotation mechanism)
+		BufferObject<glm::uint>                 FacetIndexRing;    // holds uint indices into LightInfoBuffer
+		BufferObject<glm::uvec2>                FacetMetaRing;     // holds (start,count) per drawID
+		GLuint                                  FacetIndexRingSize = 65536; // elements per sub-buffer (tunable)
+		GLuint                                  FacetMetaRingSize  = DRAWCOMPLEX_SIZE; // entries per sub-buffer (tunable)
 	};
 
 	ShaderProgram* Shaders[Max_Prog]{};
@@ -1507,7 +1569,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 		GouraudParametersIndex			= 7,
 		SimpleLineParametersIndex		= 8,
 		SimpleTriangleParametersIndex	= 9,
-		DistanceFogInfoIndex			= 10
+		DistanceFogInfoIndex			= 10,
+		FacetMetaIndex                  = 11, // uvec2(start,count) per drawID
+		FacetIndexDataIndex             = 12  // uint indices array
 	};
 
 	enum TextureIndices
@@ -1546,11 +1610,11 @@ class UXOpenGLRenderDevice : public URenderDevice
 	INT NumLights{};
 	struct LightInfo
 	{
-		glm::vec4 LightData1[MAX_LIGHTS];
-		glm::vec4 LightData2[MAX_LIGHTS];
-		glm::vec4 LightData3[MAX_LIGHTS];
-		glm::vec4 LightData4[MAX_LIGHTS];
-		glm::vec4 LightData5[MAX_LIGHTS];
+        glm::vec4 LightData1[MAX_LIGHTS]; // RGBColor.X, RGBColor.Y, RGBColor.Z, Actor->LightCone
+		glm::vec4 LightData2[MAX_LIGHTS]; // Actor->LightEffect, Actor->LightPeriod, Actor->LightPhase, Actor->LightRadius
+		glm::vec4 LightData3[MAX_LIGHTS]; // Actor->LightType, Actor->VolumeBrightness, Actor->VolumeFog, Actor->VolumeRadius
+		glm::vec4 LightData4[MAX_LIGHTS]; // Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f
+		glm::vec4 LightData5[MAX_LIGHTS]; // Actor->LightRadius * 10, 1.0, 0.0, 0.0
 		glm::vec4 LightPos[MAX_LIGHTS];
 	};
 	BufferObject<LightInfo> LightInfoBuffer;
@@ -1580,6 +1644,33 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::int32 FogMode;
 	};
 	BufferObject<DistanceFogInfo> DistanceFogBuffer;
+
+	// detect level changes so we can flush the light caches
+    ULevel* LastLevel = nullptr;
+
+	// per pixel resources
+	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
+	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
+
+	#define MAX_SURFACE_LIGHTS 95 // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/
+	INT DefaultLightCap = 25;
+    INT LevelLightCap = DefaultLightCap;
+
+	// per-frame mapping from AActor* -> index inside LightInfoBuffer (populated each SetSceneNode)
+	TMap<AActor*, GLuint> CurrentLightToIndex;
+
+    // per level mapping from texture to roughness value, used to avoid expensive String allocations on every frame for every surface
+	TMap<UTexture*, float> RoughnessCache;
+
+	INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet& Facet);
+	void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(FSceneNode* Frame, INT iSurf, TArray<AActor*>& outLights, int MaxStaticLights);
+	void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(FSceneNode* Frame, INT iSurf, TArray<AActor*>& outLights);
+	void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(FSceneNode* Frame, FSurfaceFacet& Facet, TArray<AActor*>& OutLights, INT MaxLights);
+	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
+	float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface);
+	void UXOpenGLRenderDevice::InitLightLevelOverrides();
+	void UXOpenGLRenderDevice::NewLevel();
+	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
 
 	//
 	// Shader Data Structures
@@ -1676,20 +1767,24 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::vec4 DrawColor;
 		glm::uint64 TexHandles[8]; // mirrored as 4 uvec2s
 		glm::uint32 DrawFlags;
+		glm::float32 Roughness;
 		glm::uint32 Dummy0;
 		glm::uint32 Dummy1;
-		glm::uint32 Dummy2;
 	};
 	static const ShaderProgram::DrawCallParameterInfo DrawComplexParametersInfo[];
 	static_assert(sizeof(DrawComplexParameters) == 304, "Invalid complex drawcall parameters size");
 
 	struct DrawComplexVertex
 	{
-		glm::vec3 Coords;
-		glm::uint DrawID;
-		glm::vec4 Normal;
+		glm::vec3 Coords;   // 12 bytes
+		glm::uint DrawID;   // 4  -> completes first 16-byte block
+		glm::vec4 Normal;   // 16 -> offset 16
+		glm::uint FacetID;  // 4  -> offset 32
+		glm::uint Padding0; // 4
+		glm::uint Padding1; // 4
+		glm::uint Padding2; // 4  -> total size 48
 	};
-	static_assert(sizeof(DrawComplexVertex) == 32, "Invalid complex buffered vertex size");
+	static_assert(sizeof(DrawComplexVertex) == 48, "Invalid complex buffered vertex size");
 
 	// ============================== NOPROGRAM ==============================
 	struct NoParameters

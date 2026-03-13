@@ -66,7 +66,71 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	if (GIsEditor && NextPolyFlags & PF_Selected)
 		DrawFlags |= ShaderDrawFlags::DF_Selected;
 
-	const bool CanBuffer = !Shader->DrawBuffer.IsFull() && Shader->ParametersBuffer.CanBuffer(1);
+	bool IsSolidBSP = (Frame->Recursion == 0) && !(NextPolyFlags & (PF_Modulated | PF_FakeBackdrop | PF_NoSmooth | PF_Flat | PF_Unlit | PF_Highlighted | PF_FlatShaded | PF_Portal));
+        //&& !(Surf->bInvisible)
+        //&& (Surf->Actor == nullptr); // BSP, not mesh
+
+	TArray<glm::uint> facetIndices;
+	if (BumpMaps && IsSolidBSP) { // do per pixel lighting
+
+		TArray<AActor*> merged;
+		INT keyInt = GetFacetSurfId(Frame, Facet);
+		if (keyInt == INDEX_NONE)
+		{
+			ComputeStaticAndDynamicLightsForFacet(Frame, Facet, merged, LevelLightCap - 10);
+			//INT Count = merged.Num();
+			//debugf(TEXT("Mover facet %p: SurfaceLightList count=%d"), keyInt, Count);
+		}
+		else
+		{
+			TArray<AActor*>* SurfaceLightList = StaticLightsForFacet.Find(keyInt);
+			if (!SurfaceLightList)
+			{
+				TArray<AActor*> list;
+				ComputeStaticLightsForFacet(Frame, keyInt, list, LevelLightCap - 10);
+				StaticLightsForFacet.Set(keyInt, list);
+				SurfaceLightList = StaticLightsForFacet.Find(keyInt);
+			}
+
+			// Dynamic lights (cheap)
+			TArray<AActor*> dynamicList;
+			ComputeDynamicLightsForFacet(Frame, keyInt, dynamicList);
+
+			// Combine
+			merged = *SurfaceLightList;   // copy the static list
+			for (INT i = 0; i < dynamicList.Num(); i++)
+				merged.AddItem(dynamicList(i));
+		} // end else is static BSP facet with valid key
+
+		// Build index array for this facet (map actors -> indices in LightInfoBuffer)
+		facetIndices.Reserve(merged.Num());
+
+		int NumSurfaceLights = merged.Num();
+		if (NumSurfaceLights > LevelLightCap)
+			NumSurfaceLights = LevelLightCap;
+
+		for (INT i = 0; i < NumSurfaceLights; ++i)
+		{
+			AActor* Actor = merged(i);
+			if (!Actor) continue;
+			GLuint* Found = CurrentLightToIndex.Find(Actor);
+			if (Found)
+			{
+				facetIndices.AddItem(static_cast<glm::uint>(*Found));
+			}
+			else
+			{
+				// Actor not present in current LightInfo (dynamic reorder or omitted) -> skip
+			}
+			if (facetIndices.Num() >= LevelLightCap)
+				break;
+		}
+    } // end if bumpmapping
+
+	const bool CanBuffer = !Shader->DrawBuffer.IsFull() 
+		&& Shader->ParametersBuffer.CanBuffer(1)
+		&& Shader->FacetIndexRing.CanBuffer(facetIndices.Num())
+		&& Shader->FacetMetaRing.CanBuffer(1);
 
 	// Check if this draw call will change any global state. If so, we want to flush any pending draw calls before we make the changes
 	if (WillBlendStateChange(CurrentBlendPolyFlags, NextPolyFlags) || // Check if the blending mode will change
@@ -89,6 +153,44 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		SetBlend(NextPolyFlags);
 	}
 
+	GLuint metaIndex = 0;
+	if (BumpMaps)
+	{
+		// Append indices and meta into ring buffers (compute absolute indices)
+		GLuint startIndex = 0;
+		GLuint count = static_cast<GLuint>(facetIndices.Num());
+
+		if (count > 0)
+		{
+			// absolute start index in the big SSBO = SubBufferOffset + NextElemIndex
+			startIndex = Shader->FacetIndexRing.SubBufferOffset + Shader->FacetIndexRing.NextElemIndex;
+
+			// Copy indices into mapped buffer memory
+			glm::uint* dst = Shader->FacetIndexRing.GetCurrentElementPtr();
+			for (UINT k = 0; k < (UINT)count; ++k)
+				dst[k] = facetIndices(k);
+
+			Shader->FacetIndexRing.Advance(count);
+
+			// compute absolute meta index where we'll write the (start,count) pair
+			metaIndex = Shader->FacetMetaRing.SubBufferOffset + Shader->FacetMetaRing.NextElemIndex;
+
+			// Write meta (absolute start,count) into meta ring
+			glm::uvec2* metaPtr = Shader->FacetMetaRing.GetCurrentElementPtr();
+			metaPtr->x = startIndex;
+			metaPtr->y = count;
+			Shader->FacetMetaRing.Advance(1);
+		}
+		else
+		{
+			// no lights -> write zero meta and metaIndex pointing to current meta slot
+			metaIndex = Shader->FacetMetaRing.SubBufferOffset + Shader->FacetMetaRing.NextElemIndex;
+			glm::uvec2* metaPtr = Shader->FacetMetaRing.GetCurrentElementPtr();
+			metaPtr->x = 0u;
+			metaPtr->y = 0u;
+			Shader->FacetMetaRing.Advance(1);
+		}
+	}
 	DrawComplexParameters* DrawCallParams = Shader->ParametersBuffer.GetCurrentElementPtr();
 
 	// Editor Support.
@@ -135,10 +237,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	if (Surface.HeightMap && ParallaxVersion != Parallax_Disabled)
 		SetTextureHelper(this, HeightMapIndex, *Surface.HeightMap, PF_None, DrawFlags, ShaderDrawFlags::DF_HeightMap, 0.0, nullptr, &DrawCallParams->HeightMapInfo, DrawCallParams->TexHandles);
 #endif
-
-	bool IsSolidBSP = (Frame->Recursion == 0) && !(NextPolyFlags & (PF_Modulated | PF_FakeBackdrop | PF_NoSmooth | PF_Flat | PF_Unlit | PF_Highlighted | PF_FlatShaded | PF_Portal));
-            //&& !(Surf->bInvisible)
-            //&& (Surf->Actor == nullptr); // BSP, not mesh
 
 	QWORD parentID = Surface.Texture->CacheID;
 	//bool hasDetail = (DetailTextures && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Detail) != nullptr);
@@ -211,9 +309,12 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	DrawCallParams->YAxis = glm::vec4(Facet.MapCoords.YAxis.X, Facet.MapCoords.YAxis.Y, Facet.MapCoords.YAxis.Z, Facet.MapCoords.YAxis | Facet.MapCoords.Origin);
 	DrawCallParams->ZAxis = glm::vec4(Facet.MapCoords.ZAxis.X, Facet.MapCoords.ZAxis.Y, Facet.MapCoords.ZAxis.Z, 0.0);
 	DrawCallParams->DrawFlags = DrawFlags;
+	if (BumpMaps) 
+		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
 
 	Shader->DrawBuffer.StartDrawCall();
 	auto DrawID = Shader->DrawBuffer.GetDrawID();
+	auto facetIDForVerts = metaIndex; // absolute index into FacetMeta SSBO
 
 	INT FacetVertexCount = 0;
 	for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
@@ -246,13 +347,16 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		for (INT i = 0; i < NumPts - 2; i++)
 		{
 			// stijn: not using the normals currently, but we're keeping them in
-			// because they make our vertex data aligned to a 32 byte boundary
-			(Out  )->Coords = FPlaneToVec4(In[0    ]->Point);
+			// because they make our vertex data aligned to a 48 byte boundary
+			(Out)->Coords = FPlaneToVec4(In[0]->Point);
 			(Out++)->DrawID = DrawID;
-			(Out  )->Coords = FPlaneToVec4(In[i + 1]->Point);
+			(Out  )->FacetID = facetIDForVerts;
+			(Out)->Coords = FPlaneToVec4(In[i + 1]->Point);
 			(Out++)->DrawID = DrawID;
-			(Out  )->Coords = FPlaneToVec4(In[i + 2]->Point);
+			(Out  )->FacetID = facetIDForVerts;
+			(Out)->Coords = FPlaneToVec4(In[i + 2]->Point);
 			(Out++)->DrawID = DrawID;
+			(Out  )->FacetID = facetIDForVerts;
 		}
 
 		FacetVertexCount += (NumPts - 2) * 3;
@@ -298,6 +402,9 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 	VertexShaderFunc				= &BuildVertexShader;
 	GeoShaderFunc					= nullptr;
 	FragmentShaderFunc				= &BuildFragmentShader;
+	// Configure facet index/meta ring sizes (elements per sub-buffer)
+	FacetIndexRingSize = 65536; // uint indices per sub-buffer (tune up/down)
+	FacetMetaRingSize  = DRAWCOMPLEX_SIZE; // number of metadata entries per sub-buffer (one per drawID)
 	RelevantSpecializationOptions =
 		ShaderCompilationOptions::OPT_DetailTextures |
 		ShaderCompilationOptions::OPT_MacroTextures |
@@ -313,11 +420,12 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 
 void UXOpenGLRenderDevice::DrawComplexProgram::CreateInputLayout()
 {
-	for (INT i = 0; i < 3; ++i)
+	for (INT i = 0; i < 4; ++i)
 		glEnableVertexAttribArray(i);
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)(0));
 	glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT,   sizeof(DrawComplexVertex), (GLvoid*)(offsetof(DrawComplexVertex, DrawID)));
 	glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)(offsetof(DrawComplexVertex, Normal)));
+	glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT,   sizeof(DrawComplexVertex), (GLvoid*)(offsetof(DrawComplexVertex, FacetID)));
 	VertBuffer.SetInputLayoutCreated();
 }
 

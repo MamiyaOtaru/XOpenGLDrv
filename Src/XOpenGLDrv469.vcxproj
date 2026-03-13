@@ -408,6 +408,7 @@
     <ClCompile Include="EditorHit.cpp" />
     <ClCompile Include="ExternalTextureLoader.cpp" />
     <ClCompile Include="glad.cpp" />
+    <ClCompile Include="PerPixel.cpp" />
     <ClCompile Include="SetTexture.cpp" />
     <ClCompile Include="ShaderProgram.cpp" />
     <ClCompile Include="XOpenGL.cpp" />

@@ -34,6 +34,9 @@ void UXOpenGLRenderDevice::ShaderProgram::EmitGlobals(ShaderCompilationOptions O
 	  Out << "#extension GL_OES_shader_io_blocks : require" END_LINE;
 	}
 
+	if (ShaderType == GL_FRAGMENT_SHADER)
+		Out << "#extension GL_ARB_texture_query_lod : enable" END_LINE;
+
 	if (Options.HasOption(ShaderCompilationOptions::OPT_BindlessTextures))
 		Out << "#extension GL_ARB_bindless_texture : require" END_LINE;
 
@@ -75,7 +78,8 @@ precision lowp int;
 	Out << "#define LE_Sunlight " << (LE_MAX + 1) << "u" << END_LINE;
 #endif
 	Out << "#define ENGINE_VERSION " << ENGINE_VERSION << END_LINE;	
-	Out << "#define MAX_LIGHTS " << MAX_LIGHTS << END_LINE;	
+	Out << "#define MAX_LIGHTS " << MAX_LIGHTS << END_LINE;
+	Out << "#define MAX_SURFACE_LIGHTS " << MAX_SURFACE_LIGHTS << END_LINE;
 
 	// Editor rendering modes
 	Out << "#define REN_None " << REN_None << "u" << END_LINE;
@@ -156,8 +160,25 @@ layout(std140) uniform FrameState
 	for (INT i = 0; i < NumTextureSamplers; ++i)
 		Out << "uniform sampler2D Texture" << i << ";" << END_LINE;
 
-	Out << R"(
-// Light information.
+	if (RenDev->SupportsSSBO)
+	{
+		Out << R"(
+// Light information -- use SSBO so MAX_LIGHTS can exceed UBO limits.
+layout(std430, binding = )" << GlobalShaderBindingIndices::LightInfoIndex << R"() buffer LightInfo
+{  
+  vec4 LightData1[MAX_LIGHTS]; // LightColor.R, LightColor.G, LightColor.B, LightCone
+  vec4 LightData2[MAX_LIGHTS]; // LightEffect, LightPeriod, LightPhase, LightRadius
+  vec4 LightData3[MAX_LIGHTS]; // LightType, VolumeBrightness, VolumeFog, VolumeRadius
+  vec4 LightData4[MAX_LIGHTS]; // WorldLightRadius, NumLights, ZoneNumber, CameraRegion->ZoneNumber
+  vec4 LightData5[MAX_LIGHTS]; // NormalLightRadius, bZoneNormalLight, LightBrightness, unused
+  vec4 LightPos[MAX_LIGHTS];
+};
+)";
+	}
+	else
+	{
+		Out << R"(
+// Light information fallback for potatos.
 layout(std140) uniform LightInfo
 {  
   vec4 LightData1[MAX_LIGHTS]; // LightColor.R, LightColor.G, LightColor.B, LightCone
@@ -167,7 +188,15 @@ layout(std140) uniform LightInfo
   vec4 LightData5[MAX_LIGHTS]; // NormalLightRadius, bZoneNormalLight, LightBrightness, unused
   vec4 LightPos[MAX_LIGHTS];
 };
+)";
+	}
 
+	Out << R"(
+layout(std430, binding = )" << GlobalShaderBindingIndices::FacetMetaIndex << R"() readonly buffer FacetMeta { uvec2 FacetMetaArr[]; };)";
+	Out << R"(
+layout(std430, binding = )" << GlobalShaderBindingIndices::FacetIndexDataIndex << R"() readonly buffer FacetIndices { uint FacetIndicesArr[]; };)";
+
+	Out << R"(
 layout(std140) uniform ClipPlaneParams
 {
   vec4  ClipParams; // Clipping params, ClipIndex,0,0,0
@@ -595,9 +624,20 @@ void UXOpenGLRenderDevice::InitShaders()
 	
 	if (!LightInfoBuffer.Buffer)
 	{
-		LightInfoBuffer.GenerateUBOBuffer(this, GlobalShaderBindingIndices::LightInfoIndex);
-		LightInfoBuffer.MapUBOBuffer(false, 1);
-		LightInfoBuffer.Advance(1);
+		if (SupportsSSBO)
+		{
+			// Create SSBO backed LightInfo (one element of LightInfo struct which itself contains MAX_LIGHTS arrays)
+			LightInfoBuffer.GenerateSSBOBuffer(this, GlobalShaderBindingIndices::LightInfoIndex);
+			LightInfoBuffer.MapSSBOBuffer(false, 1); // one LightInfo element
+			LightInfoBuffer.Advance(1);
+		}
+		else
+		{
+            // Fallback to UBO for older drivers/platforms (would need to lower max_lights to fit into the UBO size limit, leaving this path in for now to make it easier to do so)
+			LightInfoBuffer.GenerateUBOBuffer(this, GlobalShaderBindingIndices::LightInfoIndex);
+			LightInfoBuffer.MapUBOBuffer(false, 1);
+			LightInfoBuffer.Advance(1);
+		}
 	}
 	else
 	{
@@ -684,7 +724,11 @@ void UXOpenGLRenderDevice::RecompileShaders()
 void UXOpenGLRenderDevice::ShaderProgram::BindShaderState(CompiledShader* Specialization)
 {
 	BindUniform(Specialization, FrameStateIndex, "FrameState");
-	BindUniform(Specialization, LightInfoIndex, "LightInfo");
+	// LightInfo used as SSBO on capable drivers. Only bind as uniform block if SSBOs are not supported.
+	if (!RenDev->SupportsSSBO)
+	{
+		BindUniform(Specialization, LightInfoIndex, "LightInfo");
+	}
 	BindUniform(Specialization, ClipPlaneIndex, "ClipPlaneParams");
 	if (GIsEditor)
 		BindUniform(Specialization, EditorStateIndex, "EditorState");
