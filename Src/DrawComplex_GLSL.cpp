@@ -257,6 +257,8 @@ bool any_nonfinite(vec3 v) { return any_nan(v) || any_inf(v); }
 
 vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float parallaxHeight)
 {
+    if (any_nonfinite(viewDir))
+        return ptexCoords;
     float vParallaxScale = GetHeightMapInfo(vDrawID).z * 0.025;
     float vTimeSeconds = GetHeightMapInfo(vDrawID).w; // Surface.Level->TimeSeconds
         )";
