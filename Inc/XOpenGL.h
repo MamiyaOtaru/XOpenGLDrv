@@ -1680,7 +1680,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet& Facet);
 	void UXOpenGLRenderDevice::GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, TArray<FVector>& OutVerts);
-	void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(FSceneNode* Frame, INT iSurf, TArray<AActor*>& outLights, int MaxStaticLights);
+	void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(ULevel* Frame, INT iSurf, TArray<AActor*>& outLights, int MaxStaticLights);
 	void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(FSceneNode* Frame, INT iSurf, TArray<AActor*>& outLights);
 	void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(FSceneNode* Frame, FSurfaceFacet& Facet, TArray<AActor*>& OutLights, INT MaxLights);
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
@@ -1837,14 +1837,14 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::vec4 YAxis;
 		glm::vec4 ZAxis;
 		glm::vec4 DrawColor;
-		glm::uint64 TexHandles[8]; // mirrored as 4 uvec2s
+		glm::uint64 TexHandles[10]; // mirrored as 5 uvec2s
 		glm::uint32 DrawFlags;
 		glm::float32 Roughness;
-		glm::uint32 Dummy0;
-		glm::uint32 Dummy1;
+		glm::uint32 SceneWidth;
+		glm::uint32 SceneHeight;
 	};
 	static const ShaderProgram::DrawCallParameterInfo DrawComplexParametersInfo[];
-	static_assert(sizeof(DrawComplexParameters) == 304, "Invalid complex drawcall parameters size");
+	static_assert(sizeof(DrawComplexParameters) == 320, "Invalid complex drawcall parameters size");
 
 	struct DrawComplexVertex
 	{

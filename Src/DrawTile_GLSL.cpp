@@ -310,8 +310,8 @@ void main(void)
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
     TotalColor = GammaCorrect(Gamma, TotalColor);
 
-if ((DrawFlags & DF_ReadDepth) == DF_ReadDepth)
-{
+  if ((DrawFlags & DF_ReadDepth) == DF_ReadDepth)
+  {
     // depth sampling
     vec2 screenUV = gl_FragCoord.xy /
                     vec2(DrawDrawTileParams[DrawID].SceneWidth,
@@ -346,7 +346,7 @@ if ((DrawFlags & DF_ReadDepth) == DF_ReadDepth)
     // additive fade
     TotalColor.rgb *= proximityFade;
     TotalColor.a = 1.0;
-}
+  }
 
 
 

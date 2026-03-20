@@ -243,17 +243,15 @@ static FVector ClosestPointOnTriangle(const FVector& P, const FVector& A, const 
 }
 
 void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
-	FSceneNode* Frame,
+	ULevel* Level,
     INT iSurf,
     TArray<AActor*>& OutTopLights,
     int MaxStaticLights)
 {
 	OutTopLights.Empty();
 
-    if (!Frame || !Frame->Level || !Frame->Level->Model || iSurf < 0 || iSurf >= Frame->Level->Model->Surfs.Num())
+    if (!Level || !Level->Model || iSurf < 0 || iSurf >= Level->Model->Surfs.Num())
         return;
-
-	ULevel* Level = Frame->Level;
 
 	// --- Retrieve cached world-space polygon vertices if present ---
 	TArray<glm::uint>* TriIdx = SurfaceTriIndices.Find(iSurf);
@@ -818,6 +816,28 @@ void UXOpenGLRenderDevice::NewLevelPP()
 	{
 		BuildSmoothVertexNormalsForLevel(LastLevel);
 	}
+    // build lightlist map
+    if (LastLevel && LastLevel->Model)
+    {
+        // Precompute static lights for every surface in the level
+        UModel* Model = LastLevel->Model;
+        INT NumSurfs = Model->Surfs.Num();
+
+        for (INT SurfIndex = 0; SurfIndex < NumSurfs; SurfIndex++)
+        {
+            // Movers have no static lights
+            const FBspSurf& Surf = Model->Surfs(SurfIndex);
+			AActor* Owner = Surf.Actor;
+			bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
+            if (isMover)
+                continue;
+
+            TArray<AActor*> StaticList;
+            ComputeStaticLightsForFacet(LastLevel, SurfIndex, StaticList, LevelLightCap - 10);
+
+            StaticLightsForFacet.Set(SurfIndex, StaticList);
+        }
+    }
 }
 
 INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle)
@@ -838,6 +858,9 @@ INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle)
 
 
 static const char* DepthFadeKeys[] = {
+    "ancflame1", // ??
+    "ancflame2", // yellow flame in DM-ArcaneTemple
+    "ancsconc", // DOM-Cryptic
     "asaring",
     "asasring",
     "asmdalt_a00",
@@ -856,6 +879,8 @@ static const char* DepthFadeKeys[] = {
     "asmdex_a09",
     "asmdex_a10",
     "asmdex_a11",
+    "cststeam", // green steam in DM-Conveyor
+    "donfire", // DM-Barricade
     "exp1_a00",
     "exp1_a01",
     "exp1_a02",
@@ -1004,6 +1029,7 @@ static const char* DepthFadeKeys[] = {
     "impact_a04",
     "jenergy2",
     "jenergy3",
+    "lightning6", // blue flame in DM-ArcaneTemple
     "ne_a00",
     "ne_a01",
     "ne_a02",
@@ -1041,6 +1067,10 @@ static const char* DepthFadeKeys[] = {
     "sbolt2",
     "sbolt3",
     "sbolt4",
+    "smallfireh3", // DM-Peak, DOM-Sesmar
+    "smoke1", // ??
+    "torches2", // DOM-Olden
+    "torches3", // DM-Agony
     "we_a00",
     "we_a01",
     "we_a02",

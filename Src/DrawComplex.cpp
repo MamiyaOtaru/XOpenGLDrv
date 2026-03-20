@@ -112,7 +112,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			if (!SurfaceLightList)
 			{
 				TArray<AActor*> list;
-				ComputeStaticLightsForFacet(Frame, facetSurfId, list, LevelLightCap - 10);
+				ComputeStaticLightsForFacet(Frame->Level, facetSurfId, list, LevelLightCap - 10);
 				StaticLightsForFacet.Set(facetSurfId, list);
 				SurfaceLightList = StaticLightsForFacet.Find(facetSurfId);
 			}
@@ -337,6 +337,16 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
 	if (PhongShading && !isMover && BumpMaps) // phong only works in per pixel lighting mode
 		DrawFlags |= ShaderDrawFlags::DF_PhongShading;
+	bool isSprite = IsDepthFadeFX(Surface.Texture->Texture);
+	bool safeToReadDepth = !(Surface.PolyFlags & PF_Occlude);
+	if (isSprite && safeToReadDepth)
+	{
+		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
+		DrawCallParams->SceneWidth = SceneWidth;
+		DrawCallParams->SceneHeight = SceneHeight;
+		INT depthIndex = PrepareDepthTexture();
+		DrawCallParams->TexHandles[depthIndex] = SceneDepthBindlessHandle;
+	}
 	DrawCallParams->DrawFlags = DrawFlags;
 
 	Shader->DrawBuffer.StartDrawCall();
@@ -668,7 +678,7 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 	VertexBufferSize				= DRAWCOMPLEX_SIZE * 12;
 	ParametersBufferSize			= DRAWCOMPLEX_SIZE;
 	ParametersBufferBindingIndex	= GlobalShaderBindingIndices::ComplexParametersIndex;
-	NumTextureSamplers				= 8;
+	NumTextureSamplers				= 10;
 	DrawMode						= GL_TRIANGLES;
 	UseSSBOParametersBuffer			= RenDev->UsingShaderDrawParameters;
 	ParametersInfo					= DrawComplexParametersInfo;

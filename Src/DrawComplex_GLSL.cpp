@@ -32,11 +32,11 @@ const UXOpenGLRenderDevice::ShaderProgram::DrawCallParameterInfo UXOpenGLRenderD
 	{"vec4", "YAxis", 0},
 	{"vec4", "ZAxis", 0},
 	{"vec4", "DrawColor", 0},
-    {"uvec4", "TexHandles", 4},
+    {"uvec4", "TexHandles", 5},
 	{"uint", "DrawFlags", 0},
     {"float", "Roughness", 0},
-    {"uint", "Dummy0", 0},
-    {"uint", "Dummy1", 0},
+    {"uint", "SceneWidth", 0},
+    {"uint", "SceneHeight", 0},
 	{ nullptr, nullptr, 0}
 };
 
@@ -830,9 +830,45 @@ void main(void)
   if (bool(HitTesting))
     TotalColor = vDrawColor; // Use ONLY DrawColor.
   else if ((DrawFlags & DF_Modulated) != DF_Modulated)
-    TotalColor = GammaCorrect(Gamma, TotalColor);    
-
+    TotalColor = GammaCorrect(Gamma, TotalColor);
 #endif // OPT_Editor
+
+  if ((DrawFlags & DF_ReadDepth) == DF_ReadDepth)
+  {
+    // depth sampling
+    vec2 screenUV = gl_FragCoord.xy /
+                    vec2(DrawDrawComplexParams[vDrawID].SceneWidth,
+                         DrawDrawComplexParams[vDrawID].SceneHeight);
+
+    float sceneZ = GetTexel(GetTexHandleHelper(vDrawID, DepthMapIndex), TMUDepthMap, screenUV).r;
+    float spriteZ = gl_FragCoord.z;
+
+    // linearization
+    float n = 1.0;
+    float f = 65336.0;
+    float sceneL  = (2.0 * n) / (f + n - sceneZ  * (f - n));
+    float spriteL = (2.0 * n) / (f + n - spriteZ * (f - n));
+
+    float diff = sceneL - spriteL;
+
+    // radial distance
+    vec2 uv = vTexCoords.xy;
+    vec2 centered = uv * 2.0 - 1.0;
+    float r = length(centered);
+    float radialFade = clamp(r / 1.4142, 0.0, 1.0);
+
+    // fade zone widens toward edges
+    float minWidth = 0.002;   // narrow at center
+    float maxWidth = 0.004;   // wide at edges
+    float fadeWidth = .002;//mix(minWidth, maxWidth, radialFade);
+
+    // proximity fade with variable width
+    float proximityFade = smoothstep(0.0, fadeWidth, diff);
+
+    // alpha fade
+    TotalColor.rgb *= proximityFade;
+  }    
+
 
 #if OPT_SimulateMultiPass
   FragColor = TotalColor;
