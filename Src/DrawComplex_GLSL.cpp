@@ -47,13 +47,16 @@ void UXOpenGLRenderDevice::DrawComplexProgram::BuildVertexShader(GLuint ShaderTy
 layout(location = 0) in vec3 Coords; // == gl_Vertex
 layout(location = 1) in uint DrawID; // emulated gl_DrawID
 layout(location = 2) in vec4 Normal;
-layout(location = 3) in uint FacetID;
+layout(location = 3) in vec4 Tangent;
+layout(location = 4) in vec4 Bitangent;
+layout(location = 5) in uint FacetID;
 
 out vec3 vCoords;
 out vec2 vTexCoords;
 out vec2 vLightMapCoords;
 out vec2 vFogMapCoords;
 flat out uint vFacetID;
+out vec3 vNormal; // interpolated per-vertex normal (view-space)
 
 #if OPT_DetailTextures
 out vec2 vDetailTexCoords;
@@ -72,9 +75,10 @@ out vec2 vBumpTexCoords;
 #endif
 
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
-flat out mat3 vTBNMat;
-out vec3 vTangentViewPos;
-out vec3 vTangentFragPos;
+out mat3 vTBNMat_geo;
+out vec3 vN;
+out vec3 vT;
+out vec3 vB;
 #endif
 
 #if OPT_BumpMaps || OPT_DistanceFog || OPT_HWLighting
@@ -161,64 +165,46 @@ void main(void)
   vEyeSpacePos = modelviewMat * vec4(Coords.xyz, 1.0);
 #endif
 
+  // --- Read and normalize attribute normal first (input is expected in view-space) ---
+  vec3 attrNormal = normalize(Normal.xyz);
+  if (length(attrNormal) < 1e-6)
+  {
+#if OPT_Editor || OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
+    attrNormal = normalize(MapCoordsZAxis);
+#else
+    attrNormal = vec3(0.0, 0.0, 1.0);
+#endif
+  }
+  vNormal = attrNormal; // pass to fragment shader (interpolated)
+
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
+  // Inputs:
+  //   attrNormal         : smoothed per-vertex normal (view-space)
+  //   Tangent.xyz        : tangent direction (view-space)
+  //   Tangent.w          : handedness sign (+1/-1)
+  //   modelviewMat       : world->view matrix
+  //   vCoords            : view-space position
 
-  vec3 CameraPosWS_Normalized = normalize(FrameCoords[0].xyz); // despite pretty perfect results (so far) this still seems somewhat wrong to me.
-  vec3 T = normalize(vec3(MapCoordsXAxis.x, MapCoordsXAxis.y, MapCoordsXAxis.z));
-  vec3 B = normalize(vec3(MapCoordsYAxis.x, MapCoordsYAxis.y, MapCoordsYAxis.z));
-  vec3 N = normalize(vec3(MapCoordsZAxis.x, MapCoordsZAxis.y, MapCoordsZAxis.z)); //SurfNormals.
+  vec3 T_geo = normalize(vec3(MapCoordsXAxis.x, MapCoordsXAxis.y, MapCoordsXAxis.z));
+  vec3 B_geo = normalize(vec3(MapCoordsYAxis.x, MapCoordsYAxis.y, MapCoordsYAxis.z));
+  vec3 N_geo = normalize(vec3(MapCoordsZAxis.x, MapCoordsZAxis.y, MapCoordsZAxis.z));
 
-  // TBN must have right handed coord system.
-  //if (dot(cross(N, T), B) < 0.0)
-  //   T = T * -1.0;
-  vTBNMat = transpose(mat3(T, B, N));
+  vTBNMat_geo = transpose(mat3(T_geo, B_geo, N_geo));
 
-  // what... seems to work accidentally as a normalized position (what even is that) is only 1 unit away from 0,0,0, the actual viewspace position of the camera
-  // would have been better off not bothering and just calculating vTangentViewPos as vTBNMat * vec3(0.0,0.0,0.0);
-  vTangentViewPos = vTBNMat * CameraPosWS_Normalized.xyz; 
-  vTangentFragPos = vTBNMat * Coords.xyz;
-/*
-  // Build world-space TBN
-  vec3 Nw = normalize(MapCoordsZAxis.xyz);
-  vec3 Tw = normalize(MapCoordsXAxis.xyz);
-
-  // Re-orthogonalize tangent to normal
-  Tw = normalize(Tw - Nw * dot(Nw, Tw));
-
-  // Bitangent
-  vec3 Bw = normalize(cross(Nw, Tw));
-
-  // Handedness correction
-  if (dot(cross(Tw, Bw), Nw) < 0.0)
-  {
-    Tw = -Tw;
-    Bw = cross(Nw, Tw);
+  vec3 T_smooth = T_geo;
+  vec3 B_smooth = B_geo;
+  vec3 N_smooth = N_geo;
+#if OPT_PhongShading
+  if ((DrawFlags & DF_PhongShading) == DF_PhongShading) {
+      T_smooth = Tangent.xyz;
+      B_smooth = Bitangent.xyz;
+      N_smooth = Normal.xyz;
   }
+#endif
 
-  // v axis orientation correction
-  vec3 MapV = normalize(GetYAxis(DrawID).xyz);
-  if (dot(Bw, MapV) < 0.0)
-  {
-    Bw = -Bw;
-  }
-
-  // Re-orthogonalize after V-axis flip
-  Bw = normalize(Bw - Nw * dot(Nw, Bw));
-  Tw = normalize(cross(Bw, Nw));  // rebuild T from B×N to keep basis tight
-
-  // Final world-space TBN -> tangent-space transform
-  vTBNMat = transpose(mat3(Tw, Bw, Nw));
-
-  // Compute view-space positions
-  // Coords is already view-space
-  vec3 FragPosVS = Coords.xyz;
-
-  // Camera position in view space is always (0,0,0)
-  vec3 ViewPosVS = vec3(0.0);
-
-  // Transform both into tangent space
-  vTangentFragPos = vTBNMat * FragPosVS;
-  vTangentViewPos = vTBNMat * ViewPosVS;*/
+  vN = N_smooth;
+  vT = T_smooth;
+  vB = B_smooth;
 #endif
 
   gl_Position = modelviewprojMat * vec4(Coords.xyz, 1.0);
@@ -324,65 +310,78 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
         else if (GL->ParallaxVersion == Parallax_Relief) // Relief Parallax Mapping
         {
             // determine required number of layers
-            constexpr FLOAT minLayers = 10.f;
-            constexpr FLOAT maxLayers = 15.f;
-            constexpr INT numSearches = 5;
-            Out << "  float numLayers = mix(" << maxLayers << ", " << minLayers << ", abs(dot(vec3(0, 0, 1), viewDir)));" END_LINE;
-            Out << R"(
-  float layerHeight = 1.0 / numLayers; // height of each layer
-  float currentLayerHeight = 0.0; // depth of current layer
+            constexpr FLOAT minLayers   = 4.f;
+            constexpr FLOAT maxLayers   = 20.f;
+            constexpr INT   numSearches = 5;
+    Out << R"(
+  int mipLevel = int(floor(textureQueryLOD(Texture7, ptexCoords).y));
+  //if (mipLevel > 3) return ptexCoords;
+
+  // BasicRace-style angle factor
+  float ndotv = abs(dot(vec3(0,0,1), viewDir));  // 1 = head-on, 0 = grazing
+  // Fade region
+  float fadeStart = 0.45;   // 0.25 ~75°
+  float fadeEnd   = 0.05;   // 0.05 ~87°
+  // Normalize ndotv into [0,1] fade space
+  float t = clamp((ndotv - fadeEnd) / (fadeStart - fadeEnd), 0.0, 1.0);
+  // Ease-in at the start, linear at the end
+  float eased = t * t * (3.0 - 2.0 * t);  // smoothstep
+  float linear = t;
+  // Blend between smoothstep (early) and linear (late)
+  float angleFactor = mix(eased, linear, t);
+
+  float minLayers = )" << minLayers << R"(;
+  float maxLayers = )" << maxLayers << R"(;
+  float maxLayersMipped = max(minLayers, maxLayers / pow(2, max(0,mipLevel)));
+  float numLayers = mix(maxLayersMipped, minLayers, angleFactor );  
+  float layerHeight = 1.0 / numLayers;
+  float currentLayerHeight = 0.0;
+
+  // BasicRace-style P vector (angleFactor applied here)
   float vz = max(abs(viewDir.z), 0.02);
-  vec2 dtex = vParallaxScale * viewDir.xy / vz / numLayers; // shift of texture coordinates for each iteration
-  vec2 currentTexCoords = ptexCoords; // current texture coordinates
+  vec2 P = (vParallaxScale * viewDir.xy * angleFactor) / vz;
+  vec2 delta = P / numLayers;
 
-  float heightFromTexture = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r; // depth from heightmap
+  vec2 currentTexCoords = ptexCoords;
+  float height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
 
-  // while point is above surface
-  while (heightFromTexture > currentLayerHeight)
+  // Coarse Relief search
+  while (height > currentLayerHeight)
   {
-    currentLayerHeight += layerHeight; // go to the next layer
-    currentTexCoords -= dtex; // shift texture coordinates along V
-    heightFromTexture = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r; // new depth from heightmap
+    currentLayerHeight += layerHeight;
+    currentTexCoords -= delta;
+    height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
   }
 
-  ///////////////////////////////////////////////////////////
-  // Start of Relief Parallax Mapping
-  // decrease shift and height of layer by half
-  vec2 deltaTexCoord = dtex / 2.0;
-  float deltaHeight = layerHeight / 2.0;
+  // Binary search refinement
+  vec2 prevTexCoords = currentTexCoords + delta;
+  float prevLayerHeight = currentLayerHeight - layerHeight;
 
-  // return to the mid point of previous layer
-  currentTexCoords += deltaTexCoord;
-  currentLayerHeight -= deltaHeight;
+  vec2 a = prevTexCoords;
+  vec2 b = currentTexCoords;
+  float aH = prevLayerHeight;
+  float bH = currentLayerHeight;
 
-  // binary search to increase precision of Steep Paralax Mapping
   for (int i = 0; i < )" << numSearches << R"(; i++)
   {
-    // decrease shift and height of layer by half
-    deltaTexCoord /= 2.0;
-    deltaHeight /= 2.0;
- 
-    // new depth from heightmap
-    heightFromTexture = 1.0 - GetTexel(TexHandle, TMUHeightMap, currentTexCoords).r;
+    vec2 mid = (a + b) * 0.5;
+    float midH = (aH + bH) * 0.5;
+    float midTexH = 1.0 - GetTexel(TexHandle, Texture7, mid).r;
 
-    // shift along or agains vector V
-    if (heightFromTexture > currentLayerHeight) // below the surface
+    if (midTexH > midH)
     {
-      currentTexCoords -= deltaTexCoord;
-      currentLayerHeight += deltaHeight;
+      a = mid;
+      aH = midH;
     }
-    else // above the surface
+    else
     {
-      currentTexCoords += deltaTexCoord;
-      currentLayerHeight -= deltaHeight;
+      b = mid;
+      bH = midH;
     }
   }
 
-  // return results
-  parallaxHeight = currentLayerHeight;
-  if (any_nonfinite(currentTexCoords))
-        return ptexCoords;
-  return currentTexCoords;
+  parallaxHeight = bH;
+  return b;
 }
 #endif
 )";
@@ -406,6 +405,7 @@ in vec2 vTexCoords;
 in vec2 vLightMapCoords;
 in vec2 vFogMapCoords;
 flat in uint vFacetID;
+in vec3 vNormal; // interpolated per-vertex normal (view-space)
 
 #if OPT_DetailTextures
 in vec2 vDetailTexCoords;
@@ -424,9 +424,10 @@ in vec2 vBumpTexCoords;
 #endif
 
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
-flat in mat3 vTBNMat;
-in vec3 vTangentViewPos;
-in vec3 vTangentFragPos;
+in mat3 vTBNMat_geo;
+in vec3 vN;
+in vec3 vT;
+in vec3 vB;
 #endif
 
 #if OPT_BumpMaps || OPT_DistanceFog
@@ -457,6 +458,12 @@ uvec2 GetTexHandleHelper(uint DrawID, uint Index)
 
 void main(void)
 {
+  // normals debug
+  /*if (true) {
+    FragColor = vec4(vNormal * 0.5 + 0.5, 1.0);
+    return;
+  }*/
+
   uint DrawFlags = GetDrawFlags(vDrawID);
   mat3 InFrameCoords = mat3(FrameCoords[1].xyz, FrameCoords[2].xyz, FrameCoords[3].xyz); // TransformPointBy...
   mat3 InFrameUncoords = mat3(FrameUncoords[1].xyz, FrameUncoords[2].xyz, FrameUncoords[3].xyz);
@@ -465,28 +472,73 @@ void main(void)
   vec2 texCoords = vTexCoords;
 
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
-  //vec3 TangentViewDir = normalize(vTangentViewPos - vTangentFragPos);
-  vec3 TangentViewDir = normalize(-vTBNMat *  vCoords.xyz);
+#if OPT_PhongShading
+  mat3 TBNMat;
+  if ((DrawFlags & DF_PhongShading) == DF_PhongShading) {
+    vec3 N = normalize(vN);
+    vec3 T = normalize(vT);
+    vec3 B = normalize(vB);
+
+    // Optional safety: re-orthogonalize T and B
+    T = normalize(T - N * dot(N, T));
+    B = normalize(B - N * dot(N, B) - T * dot(T, B));
+    // Build TBN (view space -> tangent space)
+    TBNMat = transpose(mat3(T, B, N));
+  }
+  else {
+    TBNMat = vTBNMat_geo;
+  }
+#else
+  mat3 TBNMat = vTBNMat_geo;
+#endif
+
 #endif
 #if OPT_HWLighting
   int NumLights = int(LightData4[0].y);
 #endif
 
 #if OPT_HeightMaps
-  if ((DrawFlags & DF_HeightMap) == DF_HeightMap)
-  {
+  float baseAlpha;
+  float applyConservative;
+  if ((DrawFlags & DF_HeightMap) == DF_HeightMap) {
     float parallaxHeight = 1.0;
     // get new texture coordinates from Parallax Mapping
+    vec3 TangentViewDir = normalize(vTBNMat_geo * -vCoords.xyz);
     texCoords = ParallaxMapping(vTexCoords, TangentViewDir, GetTexHandleHelper(vDrawID, HeightMapIndex), parallaxHeight);
-    //if(texCoords.x > 1.0 || texCoords.y > 1.0 || texCoords.x < 0.0 || texCoords.y < 0.0)
-    //discard; // texCoords = vTexCoords;
+  
+    vec2 f = fract(vTexCoords);
+    float borderX = min(f.x, 1.0 - f.x);
+    float borderY = min(f.y, 1.0 - f.y);
+    float borderZone = 0.10;
+    float nearVerticalBorder   = step(borderX, borderZone);   // left/right
+    float nearHorizontalBorder = step(borderY, borderZone);   // top/bottom
+
+    // Parallaxed sample
+    vec4 Color = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, texCoords.xy);
+    // Build safe UV that protects only the needed axis
+    vec2 safeUV = texCoords.xy;
+    safeUV.x = mix(safeUV.x, vTexCoords.x, nearVerticalBorder);
+    safeUV.y = mix(safeUV.y, vTexCoords.y, nearHorizontalBorder);
+    // Conservative alpha only on protected axes 
+    vec4 safeSample = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, safeUV);
+    baseAlpha = safeSample.a;
+    applyConservative = max(nearVerticalBorder, nearHorizontalBorder);
+  }
+#endif
+    
+  // (possibly) Parallaxed sample
+  vec4 Color = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, texCoords.xy);
+#if OPT_HeightMaps
+  if ((DrawFlags & DF_HeightMap) == DF_HeightMap) {
+    // Conservative alpha only near borders
+    Color.a = mix(Color.a, baseAlpha, applyConservative);
   }
 #endif
 
-  vec4 Color = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, texCoords.xy);
-  Color *= GetDiffuseInfo(vDrawID).x; // Diffuse factor.
-  Color.a *= GetDiffuseInfo(vDrawID).z; // Alpha.
-	
+  // Apply diffuse factors
+  Color *= GetDiffuseInfo(vDrawID).x;
+  Color.a *= GetDiffuseInfo(vDrawID).z;
+
   TotalColor = ApplyPolyFlags(Color, DrawFlags);
   vec4 LightColor = vec4(1.0);
 
@@ -590,7 +642,7 @@ void main(void)
   // BumpMap (Normal Map)
   vec3 totalSpec  = vec3(0.0);
   uint numSurfaceLights = 0;
-  #if OPT_BumpMaps
+#if OPT_BumpMaps
   {
     float MinLight = 0.05f;
 
@@ -598,7 +650,7 @@ void main(void)
     if ((DrawFlags & DF_BumpMap) == DF_BumpMap)
       TextureNormal = normalize(GetTexel(GetTexHandles(vDrawID, 2).zw, Texture5, texCoords).rgb * 2.0 - 1.0); // has to be texCoords instead of vBumpTexCoords, otherwise alignment won't work on bumps.
     else
-      TextureNormal = vec3(0.0, 0.0, 1.0);
+      TextureNormal = TBNMat * vNormal;
 
     float rough = DrawDrawComplexParams[vDrawID].Roughness;
 
@@ -643,18 +695,18 @@ void main(void)
       float brightness = LightData5[i].z / 255.0;
       float brightnessFactor = max(lum, brightness);
         
-      // Tangent-space direction
-      vec3 TangentLightDir = normalize(vTBNMat * (InLightPos - vCoords));
+      // Choose normal / coordinate space based on whether we have a normal map
+      vec3 N;
+      vec3 L;
+      vec3 V;
 
-      // Lambert for ranking
-      //float lambert = max(dot(TangentLightDir, TextureNormal), 0.0);
-
-      // Ranking strength
-      //float strength = attenuation * brightnessFactor * lambert;
-
-      vec3 N = TextureNormal;
-      vec3 L = normalize(TangentLightDir);
-      vec3 V = TangentViewDir;
+      // Tangent-space lighting using normal map
+      vec3 TexN = TextureNormal; // already normalized
+      N = TexN;
+      vec3 TangentLightDir = normalize(TBNMat * (InLightPos - vCoords));
+      L = normalize(TangentLightDir);
+      vec3 TangentViewDir = normalize(TBNMat * -vCoords.xyz);
+      V = TangentViewDir;
 
       float diff = max(dot(N, L), 0.0);
 
@@ -679,7 +731,16 @@ void main(void)
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {
+      float lmIntensity = dot(LightColor.rgb, vec3(0.299, 0.587, 0.114));
+      totalSpec *= lmIntensity; // attenuate specular by the lightmap
       LightColor.rgb *= clamp(totalLight, 0.0, 1.0);
+      
+      // lighting debug
+      /*if (true) {
+        FragColor = vec4(clamp(totalLight, 0.0, 1.0), 1.0);
+        //FragColor = vec4(LightColor.rgb, 1.0);
+        return;
+      }*/
     }
   }
 #endif

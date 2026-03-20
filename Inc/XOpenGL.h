@@ -12,6 +12,10 @@
 // #define DEBUGGL 1
 
 #pragma once
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 
 #ifdef _MSC_VER
 #pragma warning(disable: 4351)
@@ -479,6 +483,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 	BITFIELD UseMeshBuffering; //Buffer (Static)Meshes for drawing.
 	BITFIELD UseSRGBTextures;
 	BITFIELD EnvironmentMaps;
+
+	// Dumb bling
+	BITFIELD PhongShading;
 
 	FLOAT GammaMultiplier;
 	FLOAT GammaMultiplierUED;
@@ -1151,29 +1158,33 @@ class UXOpenGLRenderDevice : public URenderDevice
 	public:
 		enum
 		{
-			DF_None				= 0x0000,
+			DF_None          = 0,
 
 			// Various types of textures we can use in a shader
-			DF_DiffuseTexture	= 0x0001,
-			DF_LightMap			= 0x0002,
-			DF_FogMap			= 0x0004,
-			DF_DetailTexture	= 0x0008,
-			DF_MacroTexture		= 0x0010,
-			DF_BumpMap			= 0x0020,
-			DF_EnvironmentMap	= 0x0040,
-			DF_HeightMap		= 0x0080,
+			DF_DiffuseTexture = 1 << 0,
+			DF_LightMap       = 1 << 1,
+			DF_FogMap         = 1 << 2,
+			DF_DetailTexture  = 1 << 3,
+			DF_MacroTexture   = 1 << 4,
+			DF_BumpMap        = 1 << 5,
+			DF_EnvironmentMap = 1 << 6,
+			DF_HeightMap      = 1 << 7,
 
 			// PolyFlags the shader needs to know about
-			DF_Masked			= 0x0100,
-			DF_Unlit			= 0x0200,
-			DF_Modulated		= 0x0400,
-			DF_Translucent		= 0x0800,
-			DF_Environment		= 0x1000,
-			DF_RenderFog		= 0x2000,
-			DF_AlphaBlended		= 0x4000,
+			DF_Masked         = 1 << 8,
+			DF_Unlit          = 1 << 9,
+			DF_Modulated      = 1 << 10,
+			DF_Translucent    = 1 << 11,
+			DF_Environment    = 1 << 12,
+			DF_RenderFog      = 1 << 13,
+			DF_AlphaBlended   = 1 << 14,
 
 			// Per-draw call editor state the shader needs to know about
-			DF_Selected			= 0x8000
+			DF_Selected       = 1 << 15,
+
+			// Dumb visual stuff
+			DF_PhongShading	  = 1 << 16,
+			DF_ReadDepth	  = 1 << 17
 		};
 	};
     
@@ -1206,7 +1217,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 			OPT_ClipDistance         = 0x004000,
 
 			// Enabled editor-specific code
-			OPT_Editor				 = 0x008000
+			OPT_Editor				 = 0x008000,
+
+			// Additions
+			OPT_PhongShading		 = 0x016000
         };
 
 		ShaderCompilationOptions(DWORD ShaderOptions)
@@ -1584,7 +1598,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 		BumpMapIndex			= 5,
 		EnvironmentMapIndex		= 6,
 		HeightMapIndex			= 7,
-		UploadIndex				= 8
+		RoughnessMapIndex		= 8,
+		DepthMapIndex			= 9,
+		UploadIndex				= 10
 	};
 
 	// Per-frame state
@@ -1663,14 +1679,70 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TMap<UTexture*, float> RoughnessCache;
 
 	INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet& Facet);
+	void UXOpenGLRenderDevice::GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, TArray<FVector>& OutVerts);
 	void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(FSceneNode* Frame, INT iSurf, TArray<AActor*>& outLights, int MaxStaticLights);
 	void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(FSceneNode* Frame, INT iSurf, TArray<AActor*>& outLights);
 	void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(FSceneNode* Frame, FSurfaceFacet& Facet, TArray<AActor*>& OutLights, INT MaxLights);
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	void UXOpenGLRenderDevice::InitLightLevelOverrides();
-	void UXOpenGLRenderDevice::NewLevel();
+	void UXOpenGLRenderDevice::NewLevelPP();
 	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
+
+	// BSP smoothing stuff
+	INT UXOpenGLRenderDevice::LocalFrameCounter = 0;
+
+	void UXOpenGLRenderDevice::NewLevelBSP();
+
+	struct FNodeInfo
+	{
+		TArray<glm::uint> VertIndices;   // indices into SI.Verts (vertex instances)
+		FVector PlaneNormal;             // true BSP node plane normal
+		float   PlaneW;                  // true BSP node plane W
+		float   Area;                    // polygon area (computed from VertIndices)
+	};
+	// Per-surface runtime info accessible to other renderer code.
+	struct FSurfInfo
+	{
+		TArray<FVector> Verts;           // vertex instances (all nodes appended)
+		TArray<FVector> UVs;
+		TArray<FNodeInfo> Nodes;         // one entry per Surf.Nodes[ni]
+		TArray<FVector> VertexNormals;   // per-instance normals (after smoothing)
+		TArray<FVector> Tangents;
+		TArray<FVector> Bitangents;
+
+		float   Area;                    // polygon area (computed from VertIndices)
+		FVector SurfaceNormal;           // editor normal (FBspSurf.vNormal)
+		int LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
+	};
+
+	// Map surface index -> FSurfInfoInternal (built by BuildSmoothVertexNormalsForLevel)
+	TMap<INT, FSurfInfo> SurfaceInfoMap;
+
+	// Threshold in degrees for smoothing edges. Normals between faces whose angle
+	// is greater than this will NOT be averaged. Default 45 degrees.
+	FLOAT SmoothNormalAngleThresholdDegrees = 50.0f;
+
+	VOID UXOpenGLRenderDevice::NewFrame(FSceneNode* Frame);
+
+	// Build the smooth per-vertex normals for the given level (call at NewLevel())
+	void BuildSmoothVertexNormalsForLevel(ULevel* Level);
+
+	// Per-surface triangulation indices. Stored as triplets of indices into SurfaceVertexPositions[iSurf].
+	// This avoids doing ear-clipping / triangulation at draw-time.
+	TMap<INT, TArray<glm::uint>> SurfaceTriIndices;
+
+	// FBO stuff
+	GLuint SceneFBO = 0;
+	GLuint SceneColorTex = 0;
+	GLuint SceneDepthTex = 0;
+	GLuint DepthSampler = 0;
+	GLuint64 SceneDepthBindlessHandle = 0;
+	INT SceneWidth = 0, SceneHeight = 0;
+
+	INT UXOpenGLRenderDevice::PrepareDepthTexture();
+
+	bool UXOpenGLRenderDevice::IsDepthFadeFX(const UTexture* Tex);
 
 	//
 	// Shader Data Structures
@@ -1680,14 +1752,14 @@ class UXOpenGLRenderDevice : public URenderDevice
 	struct DrawTileParameters
 	{
 		glm::vec4		DrawColor;
-		glm::uint64     TexHandles[2]; // mirrored as a uvec4 in GLSL since uint64 is not universally supported
+		glm::uint64     TexHandles[10]; // mirrored as a uvec4 in GLSL since uint64 is not universally supported
 		glm::uint32     DrawFlags;
+		glm::uint32     SceneWidth;
+		glm::uint32     SceneHeight;
 		glm::uint32     Dummy0;
-		glm::uint32     Dummy1;
-		glm::uint32     Dummy2;
 	};
 	static const ShaderProgram::DrawCallParameterInfo DrawTileParametersInfo[];
-	static_assert(sizeof(DrawTileParameters) == 48, "Invalid tile draw parameters size");
+	static_assert(sizeof(DrawTileParameters) == 112, "Invalid tile draw parameters size");
 
 	struct DrawTileVertexES
 	{
@@ -1728,7 +1800,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::vec4 DetailMacroInfo;		// Detail UMult, Detail VMult, Macro UMult, Macro VMult
 		glm::vec4 MiscInfo;				// BumpMap Specular, Gamma
 		glm::vec4 DrawColor;
-		glm::uint64 TexHandles[8];		// mirrored as 4 uvec4s
+		glm::uint64 TexHandles[8];		// mirrored as 5 uvec4s
 		glm::uint32 DrawFlags;
 		glm::uint32 Dummy0;
 		glm::uint32 Dummy1;
@@ -1776,15 +1848,18 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	struct DrawComplexVertex
 	{
-		glm::vec3 Coords;   // 12 bytes
-		glm::uint DrawID;   // 4  -> completes first 16-byte block
-		glm::vec4 Normal;   // 16 -> offset 16
-		glm::uint FacetID;  // 4  -> offset 32
-		glm::uint Padding0; // 4
-		glm::uint Padding1; // 4
-		glm::uint Padding2; // 4  -> total size 48
+		glm::vec3 Coords;     // 12 bytes
+		glm::uint DrawID;     // 4 bytes  -> offset 12, completes 16-byte block
+
+		glm::vec4 Normal;     // 16 bytes -> offset 16
+		glm::vec4 Tangent;    // 16 bytes -> offset 32
+		glm::vec4 Bitangent;  // 16 bytes -> offset 48
+
+		glm::uint FacetID;    // 4 bytes  -> offset 64
+		glm::uint Padding0;   // 4 bytes  -> offset 68
+
 	};
-	static_assert(sizeof(DrawComplexVertex) == 48, "Invalid complex buffered vertex size");
+	static_assert(sizeof(DrawComplexVertex) == 72, "Invalid complex buffered vertex size");
 
 	// ============================== NOPROGRAM ==============================
 	struct NoParameters

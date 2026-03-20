@@ -64,6 +64,9 @@
     <ClCompile Include="PerPixel.cpp">
       <Filter>Src</Filter>
     </ClCompile>
+    <ClCompile Include="BspCache.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Inc\XOpenGL.h">

@@ -395,6 +395,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="BspCache.cpp" />
     <ClCompile Include="CheckExtensions.cpp" />
     <ClCompile Include="DebugLog.cpp" />
     <ClCompile Include="DrawComplex.cpp" />

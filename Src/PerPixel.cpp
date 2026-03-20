@@ -29,11 +29,11 @@ INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet&
         if (iSurf < 0 || iSurf >= Level->Model->Surfs.Num())
             continue;
 
-		const FBspSurf& Surf = Level->Model->Surfs(iSurf);
-		AActor* Owner = Surf.Actor;
+		//const FBspSurf& Surf = Level->Model->Surfs(iSurf);
+		//AActor* Owner = Surf.Actor;
 
-		if (Owner && Owner->IsA(AMover::StaticClass()))
-			return INDEX_NONE;
+		//if (Owner && Owner->IsA(AMover::StaticClass()))
+			//return INDEX_NONE;
 
         return iSurf; // Found a valid surface ID
     }
@@ -124,7 +124,7 @@ INT Compare(const RankedLight& A, const RankedLight& B)
 }
 
 // Collect world-space vertices for a surface (iSurf)
-void GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, TArray<FVector>& OutVerts)
+void UXOpenGLRenderDevice::GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, TArray<FVector>& OutVerts)
 {
     OutVerts.Empty();
 
@@ -255,117 +255,126 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 
 	ULevel* Level = Frame->Level;
 
-    // --- Retrieve world-space polygon vertices ---
+	// --- Retrieve cached world-space polygon vertices if present ---
+	TArray<glm::uint>* TriIdx = SurfaceTriIndices.Find(iSurf);
     TArray<FVector> Verts;
-    GetWorldspaceSurfaceVerts(Level, iSurf, Verts);
+	FSurfInfo* SurfaceInfo = SurfaceInfoMap.Find(iSurf);
+	if (SurfaceInfo)
+	{
+        Verts = SurfaceInfo->Verts;
+	}
+    else
+    {
+        // fallback: compute world-space verts now
+        GetWorldspaceSurfaceVerts(Level, iSurf, Verts);
+    }
 
     if (Verts.Num() < 3)
         return;
 
-	// --- Dedupicate ---
-	for (INT i = 0; i < Verts.Num(); i++)
+	// If we don't have a precomputed triangulation, build it (dedupe + earclip)
+	TArray<FVector> Triangles; // triplets of vertices
+	if (TriIdx && TriIdx->Num() > 0)
 	{
-		for (INT j = i + 1; j < Verts.Num(); j++)
+		for (INT t = 0; t < TriIdx->Num(); t += 3)
 		{
-			if (FPointsAreNear(Verts(i), Verts(j), 0.0025f))
-			{
-				Verts.Remove(j);
-				j--;
-			}
+			Triangles.AddItem(Verts((*TriIdx)(t)));
+			Triangles.AddItem(Verts((*TriIdx)(t+1)));
+			Triangles.AddItem(Verts((*TriIdx)(t+2)));
 		}
-	}
-
-	// --- Stable world-space normal ---
-    const FBspSurf& Surf = Level->Model->Surfs(iSurf);
-    FVector FacetNormal = Level->Model->Vectors(Surf.vNormal);
-    FacetNormal.Normalize();
-
-    // --- Stable world-space centroid ---
-    FVector FacetPos(0,0,0);
-    for (INT i = 0; i < Verts.Num(); ++i)
-        FacetPos += Verts(i);
-    FacetPos /= Verts.Num();
-
-	// Temporary struct
-	TArray<FVert2D> Temp;
-	Temp.Empty(Verts.Num());
-
-	FVector X;
-	// Pick the axis least aligned with the normal
-	if (Abs(FacetNormal.X) > Abs(FacetNormal.Z))
-	{
-		// Use Y axis to build perpendicular
-		X = FVector(-FacetNormal.Y, FacetNormal.X, 0.f);
 	}
 	else
 	{
-		// Use X axis to build perpendicular
-		X = FVector(0.f, -FacetNormal.Z, FacetNormal.Y);
-	}
-	X.Normalize();
-	// Now build Y = N × X
-	FVector Y = (FacetNormal ^ X).SafeNormal();
-
-	TArray<FVert2D> Poly2D;
-
-	for (INT i = 0; i < Verts.Num(); i++)
-	{
-		FVector d = Verts(i) - FacetPos;
-		FVert2D v;
-		v.X = d | X;
-		v.Y = d | Y;
-		v.P = Verts(i);
-		Poly2D.AddItem(v);
-	}
-
-	TArray<FVector> Triangles; // output: triplets of vertices
-	TArray<FVert2D> P = Poly2D; // working copy
-
-	while (P.Num() >= 3)
-	{
-		UBOOL earFound = 0;
-
-		for (INT i = 0; i < P.Num(); i++)
+		// existing dedupe + earclip triangulation (same as earlier)
+		// --- Dedupicate ---
+		for (INT i = 0; i < Verts.Num(); i++)
 		{
-			INT i0 = (i + P.Num() - 1) % P.Num();
-			INT i1 = i;
-			INT i2 = (i + 1) % P.Num();
-
-			const FVert2D& A = P(i0);
-			const FVert2D& B = P(i1);
-			const FVert2D& C = P(i2);
-
-			if (!IsConvex(A, B, C))
-				continue;
-
-			UBOOL containsPoint = 0;
-			for (INT j = 0; j < P.Num(); j++)
+			for (INT j = i + 1; j < Verts.Num(); j++)
 			{
-				if (j == i0 || j == i1 || j == i2)
-					continue;
-
-				if (PointInTri(P(j), A, B, C))
+				if (FPointsAreNear(Verts(i), Verts(j), 0.0025f))
 				{
-					containsPoint = 1;
-					break;
+					Verts.Remove(j);
+					j--;
 				}
 			}
-
-			if (containsPoint)
-				continue;
-
-			// This is an ear
-			Triangles.AddItem(A.P);
-			Triangles.AddItem(B.P);
-			Triangles.AddItem(C.P);
-
-			P.Remove(i1);
-			earFound = 1;
-			break;
 		}
 
-		if (!earFound)
-			break; // polygon is degenerate
+		// --- Stable world-space normal ---
+		const FBspSurf& Surf = Level->Model->Surfs(iSurf);
+		FVector FacetNormal = Level->Model->Vectors(Surf.vNormal);
+		FacetNormal.Normalize();
+
+		// --- Stable world-space centroid ---
+		FVector FacetPos(0,0,0);
+		for (INT i = 0; i < Verts.Num(); ++i)
+			FacetPos += Verts(i);
+		FacetPos /= Verts.Num();
+
+		FVector X;
+		if (Abs(FacetNormal.X) > Abs(FacetNormal.Z))
+			X = FVector(-FacetNormal.Y, FacetNormal.X, 0.f);
+		else
+			X = FVector(0.f, -FacetNormal.Z, FacetNormal.Y);
+		X.Normalize();
+		FVector Y = (FacetNormal ^ X).SafeNormal();
+
+		TArray<FVert2D> Poly2D;
+		for (INT i = 0; i < Verts.Num(); i++)
+		{
+			FVector d = Verts(i) - FacetPos;
+			FVert2D v;
+			v.X = d | X;
+			v.Y = d | Y;
+			v.P = Verts(i);
+			Poly2D.AddItem(v);
+		}
+
+		TArray<FVert2D> P = Poly2D;
+		while (P.Num() >= 3)
+		{
+			UBOOL earFound = 0;
+			for (INT i = 0; i < P.Num(); i++)
+			{
+				INT i0 = (i + P.Num() - 1) % P.Num();
+				INT i1 = i;
+				INT i2 = (i + 1) % P.Num();
+
+				const FVert2D& A = P(i0);
+				const FVert2D& B = P(i1);
+				const FVert2D& C = P(i2);
+
+				if (!IsConvex(A, B, C))
+					continue;
+
+				UBOOL containsPoint = 0;
+				for (INT j = 0; j < P.Num(); j++)
+				{
+					if (j == i0 || j == i1 || j == i2)
+						continue;
+
+					if (PointInTri(P(j), A, B, C))
+					{
+						containsPoint = 1;
+						break;
+					}
+				}
+
+				if (containsPoint)
+					continue;
+
+				// This is an ear
+				Triangles.AddItem(A.P);
+				Triangles.AddItem(B.P);
+				Triangles.AddItem(C.P);
+
+				P.Remove(i1);
+				earFound = 1;
+				break;
+			}
+
+			if (!earFound)
+				break; // polygon is degenerate
+		}
 	}
 
     TArray<RankedLight> Ranked;
@@ -383,14 +392,14 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
             continue;
 
 		FVector LightPos = (L->Location);
-		
-		float planeDist = (LightPos - FacetPos) | FacetNormal;
-        //if (abs(planeDist) > Radius)
-        //    continue;
 
+		float planeDist = (LightPos - (Verts.Num()>0 ? Verts(0) : FVector(0,0,0))) | (Level->Model->Vectors(Level->Model->Surfs(iSurf).vNormal));
+		// projection onto surface plane
+		FVector FacetNormal = Level->Model->Vectors(Level->Model->Surfs(iSurf).vNormal);
 		FVector projected = LightPos - FacetNormal * planeDist;
+
 		FVector closest;
-        // Inside test (fan triangulation over Verts)
+        // Inside test using triangles
         bool inside = false;
 		for (INT t = 0; t < Triangles.Num(); t += 3)
 		{
@@ -408,7 +417,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 
         if (!inside)
         {
-            // Closest point on polygon edges
+            // Closest point on polygon edges (fallback to triangle closest)
             float minDistSq = FLT_MAX;
 			for (INT t = 0; t < Triangles.Num(); t += 3)
 			{
@@ -447,7 +456,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 		FVector LightDir = (LightPos - closest).SafeNormal();
 		float lambert = Max(0.f, FacetNormal | LightDir);
 
-        float score = attenuation * brightnessFactor * lambert;
+        float score = attenuation *brightnessFactor* lambert;
 
         RankedLight R;
         R.Light = L;
@@ -476,17 +485,24 @@ void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(
 
 	ULevel* Level = Frame->Level;
 
-	const FBspSurf& Surf = Level->Model->Surfs(iSurf);
-
-	// --- Retrieve world-space polygon vertices ---
+	// Try cached verts
     TArray<FVector> Verts;
-    GetWorldspaceSurfaceVerts(Level, iSurf, Verts);
+	FSurfInfo* SurfaceInfo = SurfaceInfoMap.Find(iSurf);
+	if (SurfaceInfo)
+	{
+        Verts = SurfaceInfo->Verts;
+	}
+    else
+    {
+        // fallback: compute world-space verts now
+        GetWorldspaceSurfaceVerts(Level, iSurf, Verts);
+    }
 
     if (Verts.Num() < 3)
         return;
 
     // --- Stable world-space normal ---
-    FVector N = Level->Model->Vectors(Surf.vNormal);
+    FVector N = Level->Model->Vectors(Level->Model->Surfs(iSurf).vNormal);
     N.Normalize();
 
     // --- Stable world-space centroid ---
@@ -511,11 +527,6 @@ void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(
         if (!A || !IsDynamicLight(A))
             continue;
 
-		/*if (true) {
-			OutLights.AddItem(A);
-			continue;
-		}*/
-		
 		const FVector LightWorld = A->Location;
 
 		const float dist1 = (LightWorld - C).Size();
@@ -788,7 +799,7 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     }
 }
 
-void UXOpenGLRenderDevice::NewLevel()
+void UXOpenGLRenderDevice::NewLevelPP()
 {
 	StaticLightsForFacet.Empty();
     DynamicLightsForFacet.Empty();
@@ -802,6 +813,11 @@ void UXOpenGLRenderDevice::NewLevel()
 	FString Lower = LevelName.Locs();
 	//debugf(TEXT("new level %s"), Lower);
 	LevelLightCap = GetLevelLightCap(Lower);
+	// Build smooth vertex normals for phong shading (precompute once per level)
+	if (LastLevel && LastLevel->Model)
+	{
+		BuildSmoothVertexNormalsForLevel(LastLevel);
+	}
 }
 
 INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle)
@@ -819,3 +835,274 @@ INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle)
 
     return Cap;
 }
+
+
+static const char* DepthFadeKeys[] = {
+    "asaring",
+    "asasring",
+    "asmdalt_a00",
+    "asmdalt_a01",
+    "asmdalt_a02",
+    "asmdalt_a03",
+    "asmdex_a00",
+    "asmdex_a01",
+    "asmdex_a02",
+    "asmdex_a03",
+    "asmdex_a04",
+    "asmdex_a05",
+    "asmdex_a06",
+    "asmdex_a07",
+    "asmdex_a08",
+    "asmdex_a09",
+    "asmdex_a10",
+    "asmdex_a11",
+    "exp1_a00",
+    "exp1_a01",
+    "exp1_a02",
+    "exp1_a03",
+    "exp1_a04",
+    "exp1_a05",
+    "exp1_a06",
+    "exp1_a07",
+    "exp1_a08",
+    "exp1_a09",
+    "exp2_a00",
+    "exp2_a01",
+    "exp2_a02",
+    "exp2_a03",
+    "exp2_a04",
+    "exp2_a05",
+    "exp2_a06",
+    "exp2_a07",
+    "exp2_a08",
+    "exp2_a09",
+    "exp2_a10",
+    "exp2_a11",
+    "exp2_a12",
+    "exp2_a13",
+    "exp2_a14",
+    "exp2_a15",
+    "exp2_a16",
+    "exp2_a17",
+    "exp3_a00",
+    "exp3_a01",
+    "exp3_a02",
+    "exp3_a03",
+    "exp3_a04",
+    "exp3_a05",
+    "exp3_a06",
+    "exp3_a07",
+    "exp3_a08",
+    "exp4_a00",
+    "exp4_a01",
+    "exp4_a02",
+    "exp4_a03",
+    "exp4_a04",
+    "exp4_a05",
+    "exp4_a06",
+    "exp4_a07",
+    "exp4_a08",
+    "exp5_a00",
+    "exp5_a01",
+    "exp5_a02",
+    "exp5_a03",
+    "exp5_a04",
+    "exp5_a05",
+    "exp5_a06",
+    "exp5_a07",
+    "exp5_a08",
+    "exp5_a09",
+    "exp5_a10",
+    "exp5_a11",
+    "exp5_a12",
+    "exp5_a13",
+    "exp6_a00",
+    "exp6_a01",
+    "exp6_a02",
+    "exp6_a03",
+    "exp6_a04",
+    "exp6_a05",
+    "exp6_a06",
+    "exp6_a07",
+    "exp6_a08",
+    "exp6_a09",
+    "exp6_a10",
+    "exp7_a00",
+    "exp7_a01",
+    "exp7_a02",
+    "exp7_a03",
+    "exp7_a04",
+    "exp7_a05",
+    "exp7_a06",
+    "exp7_a07",
+    "exp7_a08",
+    "exp7_a09",
+    "exp7_a10",
+    "exp7_a11",
+    "exp7_a12",
+    "g1r_a00",
+    "g1r_a01",
+    "g1r_a02",
+    "g1r_a03",
+    "g1r_a04",
+    "g1r_a05",
+    "g1r_a06",
+    "g1r_a07",
+    "g1r_a08",
+    "g1r_a09",
+    "g1r_a10",
+    "g2r_a00",
+    "g2r_a01",
+    "g2r_a02",
+    "g2r_a03",
+    "g2r_a04",
+    "g2r_a05",
+    "g2r_a06",
+    "g2r_a07",
+    "g2r_a08",
+    "g2r_a09",
+    "g2r_a10",
+    "g3r_a00",
+    "g3r_a01",
+    "g3r_a02",
+    "g3r_a03",
+    "g3r_a04",
+    "g3r_a05",
+    "g3r_a06",
+    "g3r_a07",
+    "g3r_a08",
+    "g3r_a09",
+    "g3r_a10",
+    "gbproj0",
+    "gbproj1",
+    "gbproj2",
+    "gbproj3",
+    "gbproj4",
+    "gbproj5",
+    "ge1_a00",
+    "ge1_a01",
+    "ge1_a02",
+    "ge1_a03",
+    "ge1_a04",
+    "ge1_a05",
+    "ge1_a06",
+    "ge1_a07",
+    "ge1_a08",
+    "ge1_a09",
+    "ge1_a10",
+    "heexpl1_a00",
+    "heexpl1_a01",
+    "heexpl1_a02",
+    "heexpl1_a03",
+    "heexpl1_a04",
+    "heexpl1_a05",
+    "heexpl1_a06",
+    "impact_a00",
+    "impact_a01",
+    "impact_a02",
+    "impact_a03",
+    "impact_a04",
+    "jenergy2",
+    "jenergy3",
+    "ne_a00",
+    "ne_a01",
+    "ne_a02",
+    "ne_a03",
+    "ne_a04",
+    "ne_a05",
+    "ne_a06",
+    "ne_a07",
+    "ne_a08",
+    "ne_a09",
+    "ne_a10",
+    "ne_a11",
+    "ne_a12",
+    "pblst_a00",
+    "pblst_a01",
+    "pblst_a02",
+    "pblst_a03",
+    "pblst_a04",
+    "pbluering",
+    "pbolt1",
+    "pbolt2",
+    "pbolt3",
+    "pbolt4",
+    "pend_a00",
+    "pend_a01",
+    "pend_a02",
+    "pend_a03",
+    "phit_a00",
+    "phit_a01",
+    "phit_a02",
+    "phit_a03",
+    "ppurplering",
+    "sbolt0",
+    "sbolt1",
+    "sbolt2",
+    "sbolt3",
+    "sbolt4",
+    "we_a00",
+    "we_a01",
+    "we_a02",
+    "we_a03",
+    "we_a04",
+    "we_a05",
+    "we_a06",
+    "we_a07",
+    "we_a08",
+    "we_a09",
+    "we_a10",
+    "we_a11",
+    "we_a12",
+    "we_a13",
+    "we_a14",
+    "we_a15",
+    "we_a16",
+    "we_a17",
+};
+
+bool BinarySearchDepthFade(const char* key)
+{
+    int low = 0;
+    int high = sizeof(DepthFadeKeys) / sizeof(DepthFadeKeys[0]) - 1;
+
+    while (low <= high)
+    {
+        int mid = (low + high) >> 1;
+        int cmp = strcmp(key, DepthFadeKeys[mid]);
+
+        if (cmp == 0)
+            return true;
+        if (cmp < 0)
+            high = mid - 1;
+        else
+            low = mid + 1;
+    }
+    return false;
+}
+
+inline void ToLowerASCII(const char* src, char* dst)
+{
+    while (*src)
+    {
+        char c = *src++;
+        if (c >= 'A' && c <= 'Z')
+            c = c + ('a' - 'A');
+        *dst++ = c;
+    }
+    *dst = 0;
+}
+
+bool UXOpenGLRenderDevice::IsDepthFadeFX(const UTexture* Tex)
+{
+    if (!Tex)
+        return false;
+
+    const char* RawName = TCHAR_TO_ANSI(Tex->GetName());
+
+    char LowerName[64];
+    ToLowerASCII(RawName, LowerName);
+
+    return BinarySearchDepthFade(LowerName);
+}
+

@@ -18,11 +18,11 @@ const UXOpenGLRenderDevice::ShaderProgram::DrawCallParameterInfo UXOpenGLRenderD
 =
 {
 	{"vec4", "DrawColor", 0},
-	{"uvec4", "TexHandle", 0},
+	{"uvec4", "TexHandles", 5},
 	{"uint", "DrawFlags", 0},
+	{"uint", "SceneWidth", 0},
+	{"uint", "SceneHeight", 0},
 	{"uint", "Dummy0", 0},
-	{"uint", "Dummy1", 0},
-	{"uint", "Dummy2", 0},
 	{ nullptr, nullptr, 0}
 };
 
@@ -278,6 +278,19 @@ in GeometryData
 	Out << R"(
 } In;
 
+uvec2 GetTexHandleHelper(uint DrawID, uint Index)
+{
+	uvec4 Handles = GetTexHandles(DrawID, Index / 2u);
+	return (Index % 2u == 0u) ? Handles.xy : Handles.zw;
+}
+
+float Linearize(float z)
+{
+    float n = 1.0;  // pass from CPU
+    float f = 65336.0;   // pass from CPU
+    return (2.0 * n) / (f + n - z * (f - n));
+}
+
 void main(void)
 {
 #if OPT_GeometryShaders
@@ -289,12 +302,53 @@ void main(void)
   uint DrawFlags = GetDrawFlags(DrawID);
 
   vec4 TotalColor;
-  vec4 Color = GetTexel(GetTexHandle(DrawID).xy, TMUDiffuse, In.TexCoords.xy);
+  //vec4 Color = GetTexel(GetTexHandle(DrawID).xy, TMUDiffuse, In.TexCoords.xy);
+  vec4 Color = GetTexel(GetTexHandleHelper(DrawID, DiffuseTextureIndex), TMUDiffuse, In.TexCoords.xy);
 
   TotalColor = ApplyPolyFlags(Color, DrawFlags) * GetDrawColor(DrawID);
 
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
     TotalColor = GammaCorrect(Gamma, TotalColor);
+
+if ((DrawFlags & DF_ReadDepth) == DF_ReadDepth)
+{
+    // depth sampling
+    vec2 screenUV = gl_FragCoord.xy /
+                    vec2(DrawDrawTileParams[DrawID].SceneWidth,
+                         DrawDrawTileParams[DrawID].SceneHeight);
+
+    float sceneZ = GetTexel(GetTexHandleHelper(DrawID, DepthMapIndex),
+                            TMUDepthMap, screenUV).r;
+    float spriteZ = gl_FragCoord.z;
+
+    // linearization
+    float n = 1.0;
+    float f = 65336.0;
+    float sceneL  = (2.0 * n) / (f + n - sceneZ  * (f - n));
+    float spriteL = (2.0 * n) / (f + n - spriteZ * (f - n));
+
+    float diff = sceneL - spriteL;
+
+    // radial distance
+    vec2 uv = In.TexCoords.xy;
+    vec2 centered = uv * 2.0 - 1.0;
+    float r = length(centered);
+    float radialFade = clamp(r / 1.4142, 0.0, 1.0);
+
+    // fade zone widens toward edges
+    float minWidth = 0.002;   // narrow at center
+    float maxWidth = 0.010;   // wide at edges
+    float fadeWidth = mix(minWidth, maxWidth, radialFade);
+
+    // proximity fade with variable width
+    float proximityFade = smoothstep(0.0, fadeWidth, diff);
+
+    // additive fade
+    TotalColor.rgb *= proximityFade;
+    TotalColor.a = 1.0;
+}
+
+
 
 #if OPT_Editor
   if ((DrawFlags & DF_Selected) == DF_Selected)

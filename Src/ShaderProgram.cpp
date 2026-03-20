@@ -111,6 +111,8 @@ precision lowp int;
 	Out << "#define DF_BumpMap " << ShaderDrawFlags::DF_BumpMap << "u" << END_LINE;
 	Out << "#define DF_EnvironmentMap " << ShaderDrawFlags::DF_EnvironmentMap << "u" << END_LINE;
 	Out << "#define DF_HeightMap " << ShaderDrawFlags::DF_HeightMap << "u" << END_LINE;
+	Out << "#define DF_PhongShading " << ShaderDrawFlags::DF_PhongShading << "u" << END_LINE;
+	Out << "#define DF_ReadDepth " << ShaderDrawFlags::DF_ReadDepth << "u" << END_LINE;
 	Out << "#define DF_Masked " << ShaderDrawFlags::DF_Masked << "u" << END_LINE;
 	Out << "#define DF_Unlit " << ShaderDrawFlags::DF_Unlit << "u" << END_LINE;
 	Out << "#define DF_Modulated " << ShaderDrawFlags::DF_Modulated << "u" << END_LINE;
@@ -129,6 +131,8 @@ precision lowp int;
 	Out << "#define BumpMapIndex " << BumpMapIndex << "u" << END_LINE;
 	Out << "#define EnvironmentMapIndex " << EnvironmentMapIndex << "u" << END_LINE;
 	Out << "#define HeightMapIndex " << HeightMapIndex << "u" << END_LINE;
+	Out << "#define RoughnessMapIndex " << RoughnessMapIndex << "u" << END_LINE;
+	Out << "#define DepthMapIndex " << DepthMapIndex << "u" << END_LINE;
 
 	// Aliases for the TMUs we bind textures to when we're not using bindless textures
 	Out << "#define TMUDiffuse Texture" << DiffuseTextureIndex << END_LINE;
@@ -139,6 +143,8 @@ precision lowp int;
 	Out << "#define TMUBumpMap Texture" << BumpMapIndex << END_LINE;
 	Out << "#define TMUEnvironmentMap Texture" << EnvironmentMapIndex << END_LINE;
 	Out << "#define TMUHeightMap Texture" << HeightMapIndex << END_LINE;
+	Out << "#define TMURoughnessMap Texture" << RoughnessMapIndex << END_LINE;
+	Out << "#define TMUDepthMap Texture" << DepthMapIndex << END_LINE;
 
 	Out << R"(
 layout(std140) uniform FrameState
@@ -741,7 +747,7 @@ void UXOpenGLRenderDevice::ShaderProgram::BindShaderState(CompiledShader* Specia
 		BindUniform(Specialization, ParametersBufferBindingIndex, appToAnsi(*FString::Printf(TEXT("All%lsShaderDrawParams"), ShaderName)));
 
 	// Bind regular texture samplers to their respective TMUs
-	check(NumTextureSamplers >= 0 && NumTextureSamplers < 9);
+	check(NumTextureSamplers >= 0 && NumTextureSamplers <= 10);
 	for (INT i = 0; i < NumTextureSamplers; i++)
 	{
 		GLint MultiTextureUniform;
@@ -863,6 +869,8 @@ void UXOpenGLRenderDevice::ShaderCompilationOptions::SetOptionsForRendererConfig
 		SetOption(OPT_BumpMaps);
 	if (RenDev->ParallaxVersion != Parallax_Disabled)
 		SetOption(OPT_HeightMaps);
+	if (RenDev->PhongShading)
+		SetOption(OPT_PhongShading);
 	if (RenDev->SimulateMultiPass)
 		SetOption(OPT_SimulateMultiPass);
 	if (RenDev->UseHWLighting)
@@ -897,6 +905,7 @@ AddOptionFunc(Result, L ## #x, (OptionsMask & x) ? true : false);
     ADD_OPTION(OPT_MacroTextures)
     ADD_OPTION(OPT_BumpMaps)
     ADD_OPTION(OPT_HeightMaps)
+	ADD_OPTION(OPT_PhongShading)
 	ADD_OPTION(OPT_EnvironmentMaps)
     ADD_OPTION(OPT_DistanceFog)
     ADD_OPTION(OPT_SimulateMultiPass)

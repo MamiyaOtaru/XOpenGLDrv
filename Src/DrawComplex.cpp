@@ -14,6 +14,10 @@
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
 #include "ExternalTextureLoader.h"
+#include <algorithm>
+#include <vector>
+#include <cmath>
+
 
 /*-----------------------------------------------------------------------------
 	Helpers
@@ -45,18 +49,12 @@ static void SetTextureHelper
 /*-----------------------------------------------------------------------------
 	RenDev Interface
 -----------------------------------------------------------------------------*/
-
 void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& Surface, FSurfaceFacet& Facet)
 {
 	guard(UXOpenGLRenderDevice::DrawComplexSurface);
 
 	if (NoDrawComplexSurface)
 		return;
-
-	auto Shader = dynamic_cast<DrawComplexProgram*>(Shaders[Complex_Prog]);
-
-    STAT(clockFast(Stats.ComplexCycles));
-	SetProgram(Complex_Prog);
 
 	check(Surface.Texture);
 
@@ -67,34 +65,61 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawFlags |= ShaderDrawFlags::DF_Selected;
 
 	bool IsSolidBSP = (Frame->Recursion == 0) && !(NextPolyFlags & (PF_Modulated | PF_FakeBackdrop | PF_NoSmooth | PF_Flat | PF_Unlit | PF_Highlighted | PF_FlatShaded | PF_Portal));
-        //&& !(Surf->bInvisible)
-        //&& (Surf->Actor == nullptr); // BSP, not mesh
+
+	INT facetSurfId = INDEX_NONE;
+	FSurfInfo* SI = nullptr;
+	bool isMover = false;
+	if (IsSolidBSP)
+	{
+		facetSurfId = GetFacetSurfId(Frame, Facet);
+		if (facetSurfId != INDEX_NONE)
+		{
+			const FBspSurf& Surf = Frame->Level->Model->Surfs(facetSurfId);
+			AActor* Owner = Surf.Actor;
+			isMover = (Owner && Owner->IsA(AMover::StaticClass()));
+
+			SI = SurfaceInfoMap.Find(facetSurfId);
+			if (PhongShading && BumpMaps && !isMover && SI && SI->LastDrawnFrame == LocalFrameCounter)
+				return;
+			if (SI)
+				SI->LastDrawnFrame = LocalFrameCounter;
+		}
+	} 
+
+	auto Shader = dynamic_cast<DrawComplexProgram*>(Shaders[Complex_Prog]);
+
+	STAT(clockFast(Stats.ComplexCycles));
+	SetProgram(Complex_Prog);
 
 	TArray<glm::uint> facetIndices;
+	// Per-surface precomputed normals (if available) and world-space verts for matching
+	TArray<FVector> SurfWorldVerts;
+	TArray<FVector> SurfNormals;
+	TArray<FVector> SurfTangents;
+	TArray<FVector> SurfBitangents;
+
 	if (BumpMaps && IsSolidBSP) { // do per pixel lighting
 
 		TArray<AActor*> merged;
-		INT keyInt = GetFacetSurfId(Frame, Facet);
-		if (keyInt == INDEX_NONE)
+
+		if (facetSurfId == INDEX_NONE || isMover)
 		{
-			ComputeStaticAndDynamicLightsForFacet(Frame, Facet, merged, LevelLightCap - 10);
-			//INT Count = merged.Num();
-			//debugf(TEXT("Mover facet %p: SurfaceLightList count=%d"), keyInt, Count);
+			ComputeStaticAndDynamicLightsForFacet(Frame, Facet, merged, LevelLightCap);
 		}
 		else
 		{
-			TArray<AActor*>* SurfaceLightList = StaticLightsForFacet.Find(keyInt);
+			TArray<AActor*>* SurfaceLightList = StaticLightsForFacet.Find(facetSurfId);
 			if (!SurfaceLightList)
 			{
 				TArray<AActor*> list;
-				ComputeStaticLightsForFacet(Frame, keyInt, list, LevelLightCap - 10);
-				StaticLightsForFacet.Set(keyInt, list);
-				SurfaceLightList = StaticLightsForFacet.Find(keyInt);
+				ComputeStaticLightsForFacet(Frame, facetSurfId, list, LevelLightCap - 10);
+				StaticLightsForFacet.Set(facetSurfId, list);
+				SurfaceLightList = StaticLightsForFacet.Find(facetSurfId);
 			}
 
 			// Dynamic lights (cheap)
 			TArray<AActor*> dynamicList;
-			ComputeDynamicLightsForFacet(Frame, keyInt, dynamicList);
+			ComputeDynamicLightsForFacet(Frame, facetSurfId, dynamicList);
 
 			// Combine
 			merged = *SurfaceLightList;   // copy the static list
@@ -125,9 +150,9 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			if (facetIndices.Num() >= LevelLightCap)
 				break;
 		}
-    } // end if bumpmapping
+	} // end if bumpmapping (gather lights)
 
-	const bool CanBuffer = !Shader->DrawBuffer.IsFull() 
+	const bool CanBuffer = !Shader->DrawBuffer.IsFull()
 		&& Shader->ParametersBuffer.CanBuffer(1)
 		&& Shader->FacetIndexRing.CanBuffer(facetIndices.Num())
 		&& Shader->FacetMetaRing.CanBuffer(1);
@@ -180,7 +205,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			metaPtr->x = startIndex;
 			metaPtr->y = count;
 			Shader->FacetMetaRing.Advance(1);
-		}
+        } // end if there is at least one light affecting this facet
 		else
 		{
 			// no lights -> write zero meta and metaIndex pointing to current meta slot
@@ -190,7 +215,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			metaPtr->y = 0u;
 			Shader->FacetMetaRing.Advance(1);
 		}
-	}
+	} // end if per pixel (write lights to buffer)
 	DrawComplexParameters* DrawCallParams = Shader->ParametersBuffer.GetCurrentElementPtr();
 
 	// Editor Support.
@@ -276,8 +301,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	// ------------------------------------------------------------
 	if (hasHeight)
 	{
-		FTextureInfo* ExternalHeightInfo =
-			ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height);
+		FTextureInfo* ExternalHeightInfo = ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height);
+
 
 		if (ExternalHeightInfo)
 		{
@@ -308,61 +333,309 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	DrawCallParams->XAxis = glm::vec4(Facet.MapCoords.XAxis.X, Facet.MapCoords.XAxis.Y, Facet.MapCoords.XAxis.Z, Facet.MapCoords.XAxis | Facet.MapCoords.Origin);
 	DrawCallParams->YAxis = glm::vec4(Facet.MapCoords.YAxis.X, Facet.MapCoords.YAxis.Y, Facet.MapCoords.YAxis.Z, Facet.MapCoords.YAxis | Facet.MapCoords.Origin);
 	DrawCallParams->ZAxis = glm::vec4(Facet.MapCoords.ZAxis.X, Facet.MapCoords.ZAxis.Y, Facet.MapCoords.ZAxis.Z, 0.0);
-	DrawCallParams->DrawFlags = DrawFlags;
-	if (BumpMaps) 
+	if (BumpMaps)
 		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
+	if (PhongShading && !isMover && BumpMaps) // phong only works in per pixel lighting mode
+		DrawFlags |= ShaderDrawFlags::DF_PhongShading;
+	DrawCallParams->DrawFlags = DrawFlags;
 
 	Shader->DrawBuffer.StartDrawCall();
 	auto DrawID = Shader->DrawBuffer.GetDrawID();
 	auto facetIDForVerts = metaIndex; // absolute index into FacetMeta SSBO
 
 	INT FacetVertexCount = 0;
-	for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
+	TArray<glm::vec3> PolyVertices;
+	TArray<glm::vec4> PolyVertexNormals;
+	TArray<glm::vec4> PolyVertexTangents;
+	TArray<glm::vec4> PolyVertexBitangents;
+	int NumPts = 0;
+
+	if (PhongShading && BumpMaps && SI && !isMover) // phong shading only works with "bumpmaps" aka per pixel lighting
 	{
-		const INT NumPts = Poly->NumPts;
-		if (NumPts < 3) //Skip invalid polygons,if any?
-			continue;
+		SurfWorldVerts   = SI->Verts;
+		SurfNormals      = SI->VertexNormals;
+		SurfTangents     = SI->Tangents;
+		SurfBitangents   = SI->Bitangents;
 
-		if (!Shader->VertBuffer.CanBuffer((NumPts - 2) * 3))
+		const INT numNodes = SI->Nodes.Num();
+		for (INT ni = 0; ni < numNodes; ++ni)
 		{
-			Shader->DrawBuffer.EndDrawCall(FacetVertexCount);
-			Shader->ParametersBuffer.Advance(1); // advance so Flush automatically restores the drawcall params of the _current_ drawcall
-			Shader->Flush(true);
-			Shader->DrawBuffer.StartDrawCall();
-			DrawID = Shader->DrawBuffer.GetDrawID();
+			const FNodeInfo& NI = SI->Nodes(ni);
 
-			// just in case...
-			if ((NumPts - 2) * 3 >= Shader->VertexBufferSize)
-			{
-				debugf(TEXT("DrawComplexSurface facet too big (facet has %d vertices - need to buffer %d points - Vertex Buffer Size is %d)!"), NumPts, (NumPts-2) * 3, Shader->VertexBufferSize);
+			NumPts = NI.VertIndices.Num();
+			if (NumPts < 3)
 				continue;
+
+			PolyVertices.Empty();
+			PolyVertices.AddZeroed(NumPts);
+			PolyVertexNormals.Empty();
+			PolyVertexNormals.AddZeroed(NumPts);
+			PolyVertexTangents.Empty();
+			PolyVertexTangents.AddZeroed(NumPts);
+			PolyVertexBitangents.Empty();
+			PolyVertexBitangents.AddZeroed(NumPts);
+
+			// Build per-vertex data for this node polygon
+			for (INT vi = 0; vi < NumPts; ++vi)
+			{
+				const INT idx = NI.VertIndices(vi);
+				if (idx < 0 || idx >= SurfWorldVerts.Num())
+					continue;
+
+				FVector Vert      = SurfWorldVerts(idx).TransformPointBy(Frame->Coords);
+				FVector Normal    = SurfNormals(idx).TransformVectorBy(Frame->Coords).SafeNormal();
+				FVector Tangent   = SurfTangents(idx).TransformVectorBy(Frame->Coords).SafeNormal();
+				FVector Bitangent = SurfBitangents(idx).TransformVectorBy(Frame->Coords).SafeNormal();
+
+				PolyVertices(vi)        = glm::vec4(Vert.X, Vert.Y, Vert.Z, 0.0f);
+				PolyVertexNormals(vi)   = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
+				PolyVertexTangents(vi)  = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
+				PolyVertexBitangents(vi)= glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
 			}
 
-			FacetVertexCount = 0;
+			const INT triCount    = NumPts - 2;
+			const INT neededVerts = triCount * 3;
+
+			if (!Shader->VertBuffer.CanBuffer(neededVerts))
+			{
+				Shader->DrawBuffer.EndDrawCall(FacetVertexCount);
+				Shader->ParametersBuffer.Advance(1);
+				Shader->Flush(true);
+				Shader->DrawBuffer.StartDrawCall();
+				DrawID = Shader->DrawBuffer.GetDrawID();
+
+				if (neededVerts >= Shader->VertexBufferSize)
+				{
+					debugf(TEXT("DrawComplexSurface facet too big (facet has %d vertices - need to buffer %d points - Vertex Buffer Size is %d)!"),
+						   NumPts, neededVerts, Shader->VertexBufferSize);
+					continue;
+				}
+
+				FacetVertexCount = 0;
+			}
+
+			auto Out = Shader->VertBuffer.GetCurrentElementPtr();
+			INT emittedVerts = 0;
+
+			// Fan triangulation: (0, i+1, i+2)
+			for (INT i = 0; i < triCount; ++i)
+			{
+				const INT ia = 0;
+				const INT ib = i + 1;
+				const INT ic = i + 2;
+
+				// Degenerate check in world space
+				FVector PwA(PolyVertices(ia).x, PolyVertices(ia).y, PolyVertices(ia).z);
+				FVector PwB(PolyVertices(ib).x, PolyVertices(ib).y, PolyVertices(ib).z);
+				FVector PwC(PolyVertices(ic).x, PolyVertices(ic).y, PolyVertices(ic).z);
+
+				FVector e1   = PwB - PwA;
+				FVector e2   = PwC - PwA;
+				FVector triN = e1 ^ e2;
+				if (triN.SizeSquared() < 1e-8f)
+					continue;
+
+				// ---- Vertex 0 ----
+				Out->Coords     = PolyVertices(ia);
+				Out->DrawID     = DrawID;
+				Out->Normal     = PolyVertexNormals(ia);
+				Out->Tangent    = PolyVertexTangents(ia);
+				Out->Bitangent  = PolyVertexBitangents(ia);
+				Out->FacetID    = facetIDForVerts;
+				Out++;
+				emittedVerts++;
+
+				// ---- Vertex 1 ----
+				Out->Coords     = PolyVertices(ib);
+				Out->DrawID     = DrawID;
+				Out->Normal     = PolyVertexNormals(ib);
+				Out->Tangent    = PolyVertexTangents(ib);
+				Out->Bitangent  = PolyVertexBitangents(ib);
+				Out->FacetID    = facetIDForVerts;
+				Out++;
+				emittedVerts++;
+
+				// ---- Vertex 2 ----
+				Out->Coords     = PolyVertices(ic);
+				Out->DrawID     = DrawID;
+				Out->Normal     = PolyVertexNormals(ic);
+				Out->Tangent    = PolyVertexTangents(ic);
+				Out->Bitangent  = PolyVertexBitangents(ic);
+				Out->FacetID    = facetIDForVerts;
+				Out++;
+				emittedVerts++;
+			}
+
+			FacetVertexCount          += emittedVerts;
+			Shader->VertBuffer.Advance(emittedVerts);
 		}
+	} // end if SI (with normal data)
+	else if (PhongShading && BumpMaps)
+	{
+		//debugf(TEXT("Facet: no cached surf for =%d"), facetSurfId);
+		// 
+		// No smoothing data available: compute polygon normal from facet.MapCoords.ZAxis (already provided in DrawCallParams)
+		// Flat fallback TBN from DrawCallParams axes
+		glm::vec3 N = glm::normalize(DrawCallParams->ZAxis);
+		glm::vec3 T = glm::vec3(DrawCallParams->XAxis);
+		glm::vec3 B = glm::vec3(DrawCallParams->YAxis);
+		// Ensure T is valid
+		if (glm::length(T) < 1e-6f) {
+			glm::vec3 up = (std::abs(N.z) < 0.999f) ? glm::vec3(0,0,1) : glm::vec3(0,1,0);
+			T = glm::normalize(glm::cross(up, N));
+		} else {
+			T = glm::normalize(T);
+		}
+		// Gram–Schmidt T against N
+		T = glm::normalize(T - N * glm::dot(N, T));
+		// Recompute B from N×T to guarantee orthonormality
+		B = glm::normalize(glm::cross(N, T));
 
-		FTransform** In = &Poly->Pts[0];
-		auto Out = Shader->VertBuffer.GetCurrentElementPtr();
+		glm::vec4 fallbackN = glm::vec4(N, 0.0f);
+		glm::vec4 fallbackT = glm::vec4(T, 0.0f);
+		glm::vec4 fallbackB = glm::vec4(T, 0.0f);
 
-		for (INT i = 0; i < NumPts - 2; i++)
+		for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
 		{
-			// stijn: not using the normals currently, but we're keeping them in
-			// because they make our vertex data aligned to a 48 byte boundary
-			(Out)->Coords = FPlaneToVec4(In[0]->Point);
-			(Out++)->DrawID = DrawID;
-			(Out  )->FacetID = facetIDForVerts;
-			(Out)->Coords = FPlaneToVec4(In[i + 1]->Point);
-			(Out++)->DrawID = DrawID;
-			(Out  )->FacetID = facetIDForVerts;
-			(Out)->Coords = FPlaneToVec4(In[i + 2]->Point);
-			(Out++)->DrawID = DrawID;
-			(Out  )->FacetID = facetIDForVerts;
-		}
+			NumPts = Poly->NumPts;
 
-		FacetVertexCount += (NumPts - 2) * 3;
-		Shader->VertBuffer.Advance((NumPts - 2) * 3);
-	}
+			PolyVertices.Empty();
+			PolyVertices.AddZeroed(NumPts);
+			PolyVertexNormals.Empty();
+			PolyVertexNormals.AddZeroed(NumPts);
+			PolyVertexTangents.Empty();
+			PolyVertexTangents.AddZeroed(NumPts);
+			PolyVertexBitangents.Empty();
+			PolyVertexBitangents.AddZeroed(NumPts);
 
+			// assign same flat TBN to all verts
+			for (INT vi = 0; vi < NumPts; ++vi) 
+			{
+				const FVector& Pvs = Poly->Pts[vi]->Point;
+				PolyVertices(vi)         = glm::vec3(Pvs.X, Pvs.Y, Pvs.Z);
+				PolyVertexNormals(vi)    = fallbackN;
+				PolyVertexTangents(vi)   = fallbackT;
+				PolyVertexBitangents(vi) = fallbackB;
+			}
+
+			if (!Shader->VertBuffer.CanBuffer((NumPts - 2) * 3))
+			{
+				Shader->DrawBuffer.EndDrawCall(FacetVertexCount);
+				Shader->ParametersBuffer.Advance(1); // advance so Flush automatically restores the drawcall params of the _current_ drawcall
+				Shader->Flush(true);
+				Shader->DrawBuffer.StartDrawCall();
+				DrawID = Shader->DrawBuffer.GetDrawID();
+
+				// just in case...
+				if ((NumPts - 2) * 3 >= Shader->VertexBufferSize)
+				{
+					debugf(TEXT("DrawComplexSurface facet too big (facet has %d vertices - need to buffer %d points - Vertex Buffer Size is %d)!"), NumPts, (NumPts - 2) * 3, Shader->VertexBufferSize);
+					continue;
+				}
+
+				FacetVertexCount = 0;
+			}
+
+			// write facet poly to buffer
+			auto Out = Shader->VertBuffer.GetCurrentElementPtr();
+			for (INT i = 0; i < PolyVertices.Num() - 2; i++)
+			{
+				// ---- Vertex 0 ----
+				Out->Coords   = PolyVertices(0);
+				Out->DrawID   = DrawID;
+
+				Out->Normal   = PolyVertexNormals(0);
+				Out->Tangent  = PolyVertexTangents(0);
+				Out->Bitangent  = PolyVertexBitangents(0);
+
+				Out->FacetID  = facetIDForVerts;
+				Out++;
+
+				// ---- Vertex 1 ----
+				Out->Coords   = PolyVertices(i + 1);
+				Out->DrawID   = DrawID;
+
+				Out->Normal   = PolyVertexNormals(i + 1);
+				Out->Tangent  = PolyVertexTangents(i + 1);
+				Out->Bitangent  = PolyVertexBitangents(i + 1);
+
+				Out->FacetID  = facetIDForVerts;
+				Out++;
+
+				// ---- Vertex 2 ----
+				Out->Coords   = PolyVertices(i + 2);
+				Out->DrawID   = DrawID;
+
+				Out->Normal   = PolyVertexNormals(i + 2);
+				Out->Tangent  = PolyVertexTangents(i + 2);
+				Out->Bitangent  = PolyVertexBitangents(i + 2);
+
+				Out->FacetID  = facetIDForVerts;
+				Out++;
+			}
+
+			FacetVertexCount += (PolyVertices.Num() - 2) * 3;
+			Shader->VertBuffer.Advance((PolyVertices.Num() - 2) * 3);
+		} // end loop through polys
+	} // end have an SI but is a mover or we are not doing phong
+	else {
+		glm::vec4 fallbackN = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+		glm::vec4 fallbackT = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+		glm::vec4 fallbackB = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+		for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
+		{
+			const INT NumPts = Poly->NumPts;
+			if (NumPts < 3) //Skip invalid polygons,if any?
+				continue;
+
+			if (!Shader->VertBuffer.CanBuffer((NumPts - 2) * 3))
+			{
+				Shader->DrawBuffer.EndDrawCall(FacetVertexCount);
+				Shader->ParametersBuffer.Advance(1); // advance so Flush automatically restores the drawcall params of the _current_ drawcall
+				Shader->Flush(true);
+				Shader->DrawBuffer.StartDrawCall();
+				DrawID = Shader->DrawBuffer.GetDrawID();
+
+				// just in case...
+				if ((NumPts - 2) * 3 >= Shader->VertexBufferSize)
+				{
+					debugf(TEXT("DrawComplexSurface facet too big (facet has %d vertices - need to buffer %d points - Vertex Buffer Size is %d)!"), NumPts, (NumPts - 2) * 3, Shader->VertexBufferSize);
+					continue;
+				}
+
+				FacetVertexCount = 0;
+			}
+
+			FTransform** In = &Poly->Pts[0];
+			auto Out = Shader->VertBuffer.GetCurrentElementPtr();
+			for (INT i = 0; i < NumPts - 2; i++)
+			{
+				// stijn: not using the normals currently, but we're keeping them in
+				// because they make our vertex data aligned to a 48 byte boundary
+				(Out)->Coords = FPlaneToVec4(In[0]->Point);
+				(Out++)->DrawID = DrawID;
+				Out->Normal   = fallbackN;
+				Out->Tangent  = fallbackT;
+				Out->Bitangent  = fallbackB;
+				(Out)->FacetID = facetIDForVerts;
+				(Out)->Coords = FPlaneToVec4(In[i + 1]->Point);
+				(Out++)->DrawID = DrawID;
+				Out->Normal   = fallbackN;
+				Out->Tangent  = fallbackT;
+				Out->Bitangent  = fallbackB;
+				(Out)->FacetID = facetIDForVerts;
+				(Out)->Coords = FPlaneToVec4(In[i + 2]->Point);
+				(Out++)->DrawID = DrawID;
+				Out->Normal   = fallbackN;
+				Out->Tangent  = fallbackT;
+				Out->Bitangent  = fallbackB;
+				(Out)->FacetID = facetIDForVerts;
+			}
+			FacetVertexCount += (NumPts - 2) * 3;
+			Shader->VertBuffer.Advance((NumPts - 2) * 3);
+		} // end loop through polys
+	} // end if just straight up old path
+		
 	Shader->DrawBuffer.EndDrawCall(FacetVertexCount);
 	Shader->ParametersBuffer.Advance(1);
 
@@ -411,6 +684,7 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 		ShaderCompilationOptions::OPT_EnvironmentMaps |
 		ShaderCompilationOptions::OPT_BumpMaps |
 		ShaderCompilationOptions::OPT_HeightMaps |
+		ShaderCompilationOptions::OPT_PhongShading |
 		ShaderCompilationOptions::OPT_HWLighting |
 		ShaderCompilationOptions::OPT_DistanceFog |
 		ShaderCompilationOptions::OPT_ClipDistance |
@@ -420,12 +694,17 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 
 void UXOpenGLRenderDevice::DrawComplexProgram::CreateInputLayout()
 {
-	for (INT i = 0; i < 4; ++i)
+	for (INT i = 0; i < 6; ++i)
 		glEnableVertexAttribArray(i);
-	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)(0));
-	glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT,   sizeof(DrawComplexVertex), (GLvoid*)(offsetof(DrawComplexVertex, DrawID)));
-	glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)(offsetof(DrawComplexVertex, Normal)));
-	glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT,   sizeof(DrawComplexVertex), (GLvoid*)(offsetof(DrawComplexVertex, FacetID)));
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, Coords));
+	glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, DrawID));
+	// Normal - vec3 in shader (we store vec4, shader reads xyz)
+	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, Normal));
+	// Tangent
+	glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, Tangent));
+	// Bitangent
+	glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, Bitangent));
+	glVertexAttribIPointer(5, 1, GL_UNSIGNED_INT, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, FacetID));
 	VertBuffer.SetInputLayoutCreated();
 }
 

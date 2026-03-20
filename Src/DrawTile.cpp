@@ -31,7 +31,10 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 
 	auto ShaderCore = dynamic_cast<DrawTileCoreProgram*>(Shaders[Tile_Prog]);
 	auto ShaderES   = dynamic_cast<DrawTileESProgram*>  (Shaders[Tile_Prog]);
-	
+
+	bool isSprite = IsDepthFadeFX(Info.Texture);
+	bool safeToReadDepth = !(PolyFlags & PF_Occlude);
+
 	DWORD DrawFlags = ShaderDrawFlags::DF_None;
 	DWORD NextPolyFlags = GetPolyFlagsAndDrawFlags(PolyFlags, DrawFlags, TRUE);
 	DrawFlags |= ShaderDrawFlags::DF_DiffuseTexture;
@@ -80,7 +83,7 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 			ShaderES->ParametersBuffer.CanBuffer(1) &&
 			!ShaderES->DrawBuffer.IsFull();
 		DrawCallParams = ShaderES->ParametersBuffer.GetCurrentElementPtr();
-	}	
+	}
 
 	// Check if global GL state will change
 	if (WillBlendStateChange(CurrentBlendPolyFlags, PolyFlags) || 
@@ -107,7 +110,7 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 
 		// Set new GL state
 		SetBlend(PolyFlags); // yes, we use the original polyflags here!
-
+		glDepthMask(GL_FALSE);
 #if UNREAL_TOURNAMENT_OLDUNREAL
 		if (DepthTesting != ShouldDepthTest)
 		{
@@ -120,14 +123,25 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 #endif
 	}
 
-	// Bind texture or fetch its bindless handle
-	SetTexture(DiffuseTextureIndex, Info, PolyFlags, 0);	
+	SetTexture(DiffuseTextureIndex, Info, PolyFlags, 0);
+	if (isSprite && safeToReadDepth)
+	{
+		// Fix shader-side behavior
+		//DrawFlags &= ~ShaderDrawFlags::DF_Translucent;
+		//DrawFlags |= ShaderDrawFlags::DF_AlphaBlended;
+		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
+		DrawCallParams->SceneWidth = SceneWidth;
+		DrawCallParams->SceneHeight = SceneHeight;
+	}
 
 	// Buffer new drawcall parameters
 	const auto& TexInfo = this->TexInfo[DiffuseTextureIndex];
 	DrawCallParams->DrawColor = DrawColor;
 	DrawCallParams->TexHandles[DiffuseTextureIndex] = TexInfo.BindlessTexHandle;
 	DrawCallParams->DrawFlags = DrawFlags;
+
+	INT depthIndex = PrepareDepthTexture();
+	DrawCallParams->TexHandles[depthIndex] = SceneDepthBindlessHandle;
 
 	if (GIsEditor &&
 		Frame->Viewport->Actor &&
@@ -290,7 +304,7 @@ UXOpenGLRenderDevice::DrawTileCoreProgram::DrawTileCoreProgram(const TCHAR* Name
 	VertexBufferSize				= DRAWTILE_SIZE * 3;
 	ParametersBufferSize			= DRAWTILE_SIZE;
 	ParametersBufferBindingIndex	= GlobalShaderBindingIndices::TileParametersIndex;
-	NumTextureSamplers				= 1;
+	NumTextureSamplers				= 10;
 	DrawMode						= GL_TRIANGLES;
 	UseSSBOParametersBuffer			= RenDev->UsingShaderDrawParameters;
 	ParametersInfo					= DrawTileParametersInfo;

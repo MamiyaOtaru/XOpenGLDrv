@@ -133,7 +133,7 @@ namespace ExternalTexture
 	//static std::map<unsigned long long, bool> g_hasExtras;
 	static std::map<uint64_t, bool> g_hasExtraState;
 
-	inline uint64_t MakeExtraStateKey(uint64_t parentID, int extraIdx) { 
+	inline uint64_t MakeExtraStateKey(uint64_t parentID, int extraIdx) {
 		return parentID ^ (uint64_t(extraIdx + 1) << 60); 
 	}
 
