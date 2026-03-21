@@ -32,9 +32,6 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 	auto ShaderCore = dynamic_cast<DrawTileCoreProgram*>(Shaders[Tile_Prog]);
 	auto ShaderES   = dynamic_cast<DrawTileESProgram*>  (Shaders[Tile_Prog]);
 
-	bool isSprite = IsDepthFadeFX(Info.Texture);
-	bool safeToReadDepth = !(PolyFlags & PF_Occlude);
-
 	DWORD DrawFlags = ShaderDrawFlags::DF_None;
 	DWORD NextPolyFlags = GetPolyFlagsAndDrawFlags(PolyFlags, DrawFlags, TRUE);
 	DrawFlags |= ShaderDrawFlags::DF_DiffuseTexture;
@@ -124,7 +121,9 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 	}
 
 	SetTexture(DiffuseTextureIndex, Info, PolyFlags, 0);
-	if (isSprite && safeToReadDepth)
+
+	bool safeToReadDepth = !(PolyFlags & PF_Occlude);
+	if (safeToReadDepth && IsDepthFadeFX(Info.Texture))
 	{
 		// Fix shader-side behavior
 		//DrawFlags &= ~ShaderDrawFlags::DF_Translucent;
@@ -132,6 +131,9 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
 		DrawCallParams->SceneWidth = SceneWidth;
 		DrawCallParams->SceneHeight = SceneHeight;
+		INT depthIndex = PrepareDepthTexture();
+		DrawCallParams->TexHandles[depthIndex] = SceneDepthBindlessHandle;
+		Z -= 50 * min(Z / 300.f, 1);
 	}
 
 	// Buffer new drawcall parameters
@@ -139,9 +141,6 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 	DrawCallParams->DrawColor = DrawColor;
 	DrawCallParams->TexHandles[DiffuseTextureIndex] = TexInfo.BindlessTexHandle;
 	DrawCallParams->DrawFlags = DrawFlags;
-
-	INT depthIndex = PrepareDepthTexture();
-	DrawCallParams->TexHandles[depthIndex] = SceneDepthBindlessHandle;
 
 	if (GIsEditor &&
 		Frame->Viewport->Actor &&

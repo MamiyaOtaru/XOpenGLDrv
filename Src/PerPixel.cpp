@@ -5,6 +5,7 @@
 
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
+#include "ExternalTextureLoader.h"
 
 INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet& Facet)
 {
@@ -452,7 +453,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         float brightnessFactor = Max(lum, brightness);
 
 		FVector LightDir = (LightPos - closest).SafeNormal();
-		float lambert = Max(0.f, FacetNormal | LightDir);
+        float lambert = 1;// Max(0.f, FacetNormal | LightDir);
 
         float score = attenuation *brightnessFactor* lambert;
 
@@ -819,7 +820,7 @@ void UXOpenGLRenderDevice::NewLevelPP()
     // build lightlist map
     if (LastLevel && LastLevel->Model)
     {
-        // Precompute static lights for every surface in the level
+        // Precompute static lights for every surface in the level and load extra textures
         UModel* Model = LastLevel->Model;
         INT NumSurfs = Model->Surfs.Num();
 
@@ -834,8 +835,19 @@ void UXOpenGLRenderDevice::NewLevelPP()
 
             TArray<AActor*> StaticList;
             ComputeStaticLightsForFacet(LastLevel, SurfIndex, StaticList, LevelLightCap - 10);
-
             StaticLightsForFacet.Set(SurfIndex, StaticList);
+
+            FTextureInfo Info;
+            if (Surf.Texture) {
+                Surf.Texture->Lock(Info, appSeconds(), 0, Viewport->RenDev);
+                QWORD parentID = Info.CacheID;
+                if (parentID == INDEX_NONE)
+                    continue;
+
+                // Force load bump/height map if present
+                ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Bump);
+                ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height);
+            }
         }
     }
 }

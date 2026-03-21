@@ -337,9 +337,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
 	if (PhongShading && !isMover && BumpMaps) // phong only works in per pixel lighting mode
 		DrawFlags |= ShaderDrawFlags::DF_PhongShading;
-	bool isSprite = IsDepthFadeFX(Surface.Texture->Texture);
 	bool safeToReadDepth = !(Surface.PolyFlags & PF_Occlude);
-	if (isSprite && safeToReadDepth)
+	if (safeToReadDepth && !IsSolidBSP)// && IsDepthFadeFX(Surface.Texture->Texture))
 	{
 		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
 		DrawCallParams->SceneWidth = SceneWidth;

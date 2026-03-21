@@ -22,11 +22,11 @@ const UXOpenGLRenderDevice::ShaderProgram::DrawCallParameterInfo UXOpenGLRenderD
     {"vec4", "DetailMacroInfo", 0},
     {"vec4", "MiscInfo", 0},
     {"vec4", "DrawColor", 0},
-    {"uvec4", "TexHandles", 4},
+    {"uvec4", "TexHandles", 5},
     {"uint", "DrawFlags", 0},
+    {"uint", "SceneWidth", 0},
+    {"uint", "SceneHeight", 0},
     {"uint", "Dummy0", 0},
-    {"uint", "Dummy1", 0},
-    {"uint", "Dummy2", 0},
     { nullptr, nullptr, 0}
 };
 
@@ -515,6 +515,35 @@ void main(void)
     TotalColor = GammaCorrect(Gamma, TotalColor);
 
 #endif // OPT_Editor
+
+  if ((DrawFlags & DF_ReadDepth) == DF_ReadDepth)
+  {
+    // depth sampling
+    vec2 screenUV = gl_FragCoord.xy /
+                    vec2(DrawDrawGouraudParams[DrawID].SceneWidth,
+                         DrawDrawGouraudParams[DrawID].SceneHeight);
+
+    float sceneZ = GetTexel(GetTexHandleHelper(DrawID, DepthMapIndex),
+                            TMUDepthMap, screenUV).r;
+    float spriteZ = gl_FragCoord.z;
+
+    // linearization
+    float n = 1.0;
+    float f = 65336.0;
+    float sceneL  = (2.0 * n) / (f + n - sceneZ  * (f - n));
+    float spriteL = (2.0 * n) / (f + n - spriteZ * (f - n));
+
+    float diff = sceneL - spriteL;
+
+    float fadeWidth = 0.001;
+
+    // proximity fade
+    float proximityFade = smoothstep(0.0, fadeWidth, diff);
+
+    // additive fade
+    TotalColor.rgb *= proximityFade;
+    TotalColor.a = 1.0;
+  }
 
 #if OPT_SimulateMultiPass
   FragColor = TotalColor;

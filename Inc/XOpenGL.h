@@ -1800,14 +1800,14 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::vec4 DetailMacroInfo;		// Detail UMult, Detail VMult, Macro UMult, Macro VMult
 		glm::vec4 MiscInfo;				// BumpMap Specular, Gamma
 		glm::vec4 DrawColor;
-		glm::uint64 TexHandles[8];		// mirrored as 5 uvec4s
+		glm::uint64 TexHandles[10];		// mirrored as 5 uvec4s
 		glm::uint32 DrawFlags;
+		glm::uint32 SceneWidth;
+		glm::uint32 SceneHeight;
 		glm::uint32 Dummy0;
-		glm::uint32 Dummy1;
-		glm::uint32 Dummy2;
 	};
 	static const ShaderProgram::DrawCallParameterInfo DrawGouraudParametersInfo[];
-	static_assert(sizeof(DrawGouraudParameters) == 144, "Invalid complex drawcall parameters size");
+	static_assert(sizeof(DrawGouraudParameters) == 160, "Invalid complex drawcall parameters size");
 
 	struct DrawGouraudVertex
 	{

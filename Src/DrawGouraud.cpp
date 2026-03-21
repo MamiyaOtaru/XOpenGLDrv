@@ -140,6 +140,18 @@ DWORD UXOpenGLRenderDevice::PrepareGouraudCall(FSceneNode* Frame, FTextureInfo& 
 		DrawCallParams->DetailMacroInfo.w = TexInfo[MacroTextureIndex].VMult;
 	}
 
+	bool safeToReadDepth = !(PolyFlags & PF_Occlude);
+	if (safeToReadDepth && IsDepthFadeFX(Info.Texture))
+	{
+		// Fix shader-side behavior
+		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
+		DrawCallParams->SceneWidth = SceneWidth;
+		DrawCallParams->SceneHeight = SceneHeight;
+		INT depthIndex = PrepareDepthTexture();
+		DrawCallParams->TexHandles[depthIndex] = SceneDepthBindlessHandle;
+		//Z -= 50 * min(Z / 300, 1);
+	}
+
 	DrawCallParams->DrawFlags = DrawFlags;
 	return DrawFlags;
 }
@@ -208,6 +220,16 @@ void UXOpenGLRenderDevice::DrawGouraudPolygon(FSceneNode* Frame, FTextureInfo& I
 	auto Out = Shader->VertBuffer.GetCurrentElementPtr();
 	const auto DrawID = Shader->DrawBuffer.GetDrawID();
 
+	if (DrawFlags & ShaderDrawFlags::DF_ReadDepth)
+	{
+		for (INT i = 0; i < InVertexCount; i++)
+		{
+			FLOAT Z = Pts[i]->Point.Z;
+			int offsetZ = 50 * min(Z / 300.f, 1);
+			Pts[i]->Point.Z -= offsetZ;
+		}
+	}
+
 	// Unfan and buffer
 	for (INT i = 0; i < InVertexCount; i++)
 	{
@@ -258,6 +280,17 @@ void UXOpenGLRenderDevice::DrawGouraudPolyList(FSceneNode* Frame, FTextureInfo& 
 	auto DrawID = Shader->DrawBuffer.GetDrawID();
 
 	INT PolyListSize = 0;
+
+	if (DrawFlags & ShaderDrawFlags::DF_ReadDepth)
+	{
+		for (INT i = 0; i < NumPts; i++)
+		{
+			FLOAT Z = (&Pts[i])->Point.Z;
+			int offsetZ = 10 * min(Z / 60.f, 1);
+			(&Pts[i])->Point.Z -= offsetZ;
+		}
+	}
+
 	for (INT i = 0; i < NumPts; i++)
 	{
 		// Polylists can be bigger than the vertex buffer so check here if we
@@ -401,7 +434,7 @@ UXOpenGLRenderDevice::DrawGouraudProgram::DrawGouraudProgram(const TCHAR* Name, 
 	VertexBufferSize				= DRAWGOURAUDPOLY_SIZE * 12;
 	ParametersBufferSize			= DRAWGOURAUDPOLY_SIZE;
 	ParametersBufferBindingIndex	= GlobalShaderBindingIndices::GouraudParametersIndex;
-	NumTextureSamplers				= 6;
+	NumTextureSamplers				= 10;
 	DrawMode						= GL_TRIANGLES;
 	UseSSBOParametersBuffer			= RenDev->UsingShaderDrawParameters;
 	ParametersInfo					= DrawGouraudParametersInfo;
