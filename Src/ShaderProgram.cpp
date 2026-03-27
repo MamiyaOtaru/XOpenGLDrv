@@ -822,7 +822,7 @@ void UXOpenGLRenderDevice::ShaderProgram::RecompileShader(ShaderCompilationOptio
         if (CurrentSpecialization)
         {
             DeleteShader();
-            delete CurrentSpecialization;
+            //delete CurrentSpecialization;
         }
 
         CurrentSpecialization = new CompiledShader;
@@ -859,7 +859,7 @@ void UXOpenGLRenderDevice::ShaderProgram::RecompileShader(ShaderCompilationOptio
 	if (CurrentSpecialization)
 	{
 		DeleteShader();
-		delete CurrentSpecialization;
+		//delete CurrentSpecialization;
 	}
 	CurrentSpecialization = new CompiledShader;
 	CurrentSpecialization->Options = Options;
