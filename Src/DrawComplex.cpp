@@ -92,11 +92,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	SetProgram(Complex_Prog);
 
 	TArray<glm::uint> facetIndices;
-	// Per-surface precomputed normals (if available) and world-space verts for matching
-	TArray<FVector> SurfWorldVerts;
-	TArray<FVector> SurfNormals;
-	TArray<FVector> SurfTangents;
-	TArray<FVector> SurfBitangents;
 
 	if (BumpMaps && IsSolidBSP) { // do per pixel lighting
 
@@ -303,7 +298,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	{
 		FTextureInfo* ExternalHeightInfo = ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height);
 
-
 		if (ExternalHeightInfo)
 		{
 			// Give the external FTextureInfo a valid UTexture* for metadata
@@ -329,6 +323,26 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		}
 	}
 
+	if (BumpMaps && Multipass && IsSolidBSP && !isMover) // only works in per pixel
+	{
+		glActiveTexture(GL_TEXTURE0 + PostProcessIndex);
+		glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
+
+		DrawCallParams->TexHandles[PostProcessIndex] =
+			glGetTextureHandleARB(SsaoFbo->colorTexIDs[0]);
+
+		glMakeTextureHandleResidentARB(DrawCallParams->TexHandles[PostProcessIndex]);
+
+		DrawFlags |= ShaderDrawFlags::DF_Multipass;
+	}
+
+	if (BumpMaps && Multipass)
+	{
+		PreparePrepassDepthTexture();
+		INT depthIndex = PrepassDepthIndex;
+		DrawCallParams->TexHandles[depthIndex] = gbufferFbo->depthBindlessHandle;
+	}
+
 	// Other draw data
 	DrawCallParams->XAxis = glm::vec4(Facet.MapCoords.XAxis.X, Facet.MapCoords.XAxis.Y, Facet.MapCoords.XAxis.Z, Facet.MapCoords.XAxis | Facet.MapCoords.Origin);
 	DrawCallParams->YAxis = glm::vec4(Facet.MapCoords.YAxis.X, Facet.MapCoords.YAxis.Y, Facet.MapCoords.YAxis.Z, Facet.MapCoords.YAxis | Facet.MapCoords.Origin);
@@ -341,11 +355,12 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	if (safeToReadDepth && !IsSolidBSP)// && IsDepthFadeFX(Surface.Texture->Texture))
 	{
 		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
-		DrawCallParams->SceneWidth = SceneWidth;
-		DrawCallParams->SceneHeight = SceneHeight;
-		INT depthIndex = PrepareDepthTexture();
-		DrawCallParams->TexHandles[depthIndex] = SceneDepthBindlessHandle;
+		PrepareDepthTexture();
+		INT depthIndex = SceneDepthIndex;
+		DrawCallParams->TexHandles[depthIndex] = SceneFbo->depthBindlessHandle;
 	}
+	DrawCallParams->SceneWidth = SceneWidth;
+	DrawCallParams->SceneHeight = SceneHeight;
 	DrawCallParams->DrawFlags = DrawFlags;
 
 	Shader->DrawBuffer.StartDrawCall();
@@ -361,49 +376,52 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	if (PhongShading && BumpMaps && SI && !isMover) // phong shading only works with "bumpmaps" aka per pixel lighting
 	{
-		SurfWorldVerts   = SI->Verts;
-		SurfNormals      = SI->VertexNormals;
-		SurfTangents     = SI->Tangents;
-		SurfBitangents   = SI->Bitangents;
+		// Per-surface precomputed normals (if available) and world-space verts for matching
+		TArray<FVector>& SurfWorldVerts   = SI->Verts;
+		TArray<FVector>& SurfNormals      = SI->VertexNormals;
+		TArray<FVector>& SurfTangents     = SI->Tangents;
+		TArray<FVector>& SurfBitangents   = SI->Bitangents;
+
+		INT NumPts = SurfWorldVerts.Num();
+
+		PolyVertices.Empty();
+		PolyVertices.AddZeroed(NumPts);
+		PolyVertexNormals.Empty();
+		PolyVertexNormals.AddZeroed(NumPts);
+		PolyVertexTangents.Empty();
+		PolyVertexTangents.AddZeroed(NumPts);
+		PolyVertexBitangents.Empty();
+		PolyVertexBitangents.AddZeroed(NumPts);
+
+		TArray<glm::uint>& TriIdx = SI->TriIdx;
+
+		// Build per-vertex data for this node polygon
+		for (INT vi = 0; vi < NumPts; ++vi)
+		{
+			FVector Vert      = SurfWorldVerts(vi).TransformPointBy(Frame->Coords);
+			FVector Normal    = SurfNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+			FVector Tangent   = SurfTangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+			FVector Bitangent = SurfBitangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+
+			PolyVertices(vi)        = glm::vec4(Vert.X, Vert.Y, Vert.Z, 0.0f);
+			PolyVertexNormals(vi)   = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
+			PolyVertexTangents(vi)  = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
+			PolyVertexBitangents(vi)= glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
+		}
 
 		const INT numNodes = SI->Nodes.Num();
 		for (INT ni = 0; ni < numNodes; ++ni)
 		{
 			const FNodeInfo& NI = SI->Nodes(ni);
 
-			NumPts = NI.VertIndices.Num();
-			if (NumPts < 3)
+			INT numTriVerts = NI.TriCount;
+			INT triStart = NI.TriStart;
+			INT triEnd = triStart + numTriVerts;
+
+			if (NI.VertIndices.Num() < 3)
 				continue;
 
-			PolyVertices.Empty();
-			PolyVertices.AddZeroed(NumPts);
-			PolyVertexNormals.Empty();
-			PolyVertexNormals.AddZeroed(NumPts);
-			PolyVertexTangents.Empty();
-			PolyVertexTangents.AddZeroed(NumPts);
-			PolyVertexBitangents.Empty();
-			PolyVertexBitangents.AddZeroed(NumPts);
-
-			// Build per-vertex data for this node polygon
-			for (INT vi = 0; vi < NumPts; ++vi)
-			{
-				const INT idx = NI.VertIndices(vi);
-				if (idx < 0 || idx >= SurfWorldVerts.Num())
-					continue;
-
-				FVector Vert      = SurfWorldVerts(idx).TransformPointBy(Frame->Coords);
-				FVector Normal    = SurfNormals(idx).TransformVectorBy(Frame->Coords).SafeNormal();
-				FVector Tangent   = SurfTangents(idx).TransformVectorBy(Frame->Coords).SafeNormal();
-				FVector Bitangent = SurfBitangents(idx).TransformVectorBy(Frame->Coords).SafeNormal();
-
-				PolyVertices(vi)        = glm::vec4(Vert.X, Vert.Y, Vert.Z, 0.0f);
-				PolyVertexNormals(vi)   = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
-				PolyVertexTangents(vi)  = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
-				PolyVertexBitangents(vi)= glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
-			}
-
-			const INT triCount    = NumPts - 2;
-			const INT neededVerts = triCount * 3;
+			const INT neededVerts = numTriVerts;
 
 			if (!Shader->VertBuffer.CanBuffer(neededVerts))
 			{
@@ -426,23 +444,11 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			auto Out = Shader->VertBuffer.GetCurrentElementPtr();
 			INT emittedVerts = 0;
 
-			// Fan triangulation: (0, i+1, i+2)
-			for (INT i = 0; i < triCount; ++i)
+			for (INT ti = triStart; ti < triEnd; ti += 3)
 			{
-				const INT ia = 0;
-				const INT ib = i + 1;
-				const INT ic = i + 2;
-
-				// Degenerate check in world space
-				FVector PwA(PolyVertices(ia).x, PolyVertices(ia).y, PolyVertices(ia).z);
-				FVector PwB(PolyVertices(ib).x, PolyVertices(ib).y, PolyVertices(ib).z);
-				FVector PwC(PolyVertices(ic).x, PolyVertices(ic).y, PolyVertices(ic).z);
-
-				FVector e1   = PwB - PwA;
-				FVector e2   = PwC - PwA;
-				FVector triN = e1 ^ e2;
-				if (triN.SizeSquared() < 1e-8f)
-					continue;
+				const INT ia = TriIdx(ti);
+				const INT ib = TriIdx(ti + 1);
+				const INT ic = TriIdx(ti + 2);
 
 				// ---- Vertex 0 ----
 				Out->Coords     = PolyVertices(ia);
@@ -622,23 +628,23 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				// stijn: not using the normals currently, but we're keeping them in
 				// because they make our vertex data aligned to a 48 byte boundary
 				(Out)->Coords = FPlaneToVec4(In[0]->Point);
-				(Out++)->DrawID = DrawID;
+				(Out)->DrawID = DrawID;
 				Out->Normal   = fallbackN;
 				Out->Tangent  = fallbackT;
 				Out->Bitangent  = fallbackB;
-				(Out)->FacetID = facetIDForVerts;
+				(Out++)->FacetID = facetIDForVerts;
 				(Out)->Coords = FPlaneToVec4(In[i + 1]->Point);
-				(Out++)->DrawID = DrawID;
+				(Out)->DrawID = DrawID;
 				Out->Normal   = fallbackN;
 				Out->Tangent  = fallbackT;
 				Out->Bitangent  = fallbackB;
-				(Out)->FacetID = facetIDForVerts;
+				(Out++)->FacetID = facetIDForVerts;
 				(Out)->Coords = FPlaneToVec4(In[i + 2]->Point);
-				(Out++)->DrawID = DrawID;
+				(Out)->DrawID = DrawID;
 				Out->Normal   = fallbackN;
 				Out->Tangent  = fallbackT;
 				Out->Bitangent  = fallbackB;
-				(Out)->FacetID = facetIDForVerts;
+				(Out++)->FacetID = facetIDForVerts;
 			}
 			FacetVertexCount += (NumPts - 2) * 3;
 			Shader->VertBuffer.Advance((NumPts - 2) * 3);
@@ -677,7 +683,7 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 	VertexBufferSize				= DRAWCOMPLEX_SIZE * 12;
 	ParametersBufferSize			= DRAWCOMPLEX_SIZE;
 	ParametersBufferBindingIndex	= GlobalShaderBindingIndices::ComplexParametersIndex;
-	NumTextureSamplers				= 10;
+	NumTextureSamplers				= 12;
 	DrawMode						= GL_TRIANGLES;
 	UseSSBOParametersBuffer			= RenDev->UsingShaderDrawParameters;
 	ParametersInfo					= DrawComplexParametersInfo;
@@ -694,6 +700,8 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 		ShaderCompilationOptions::OPT_BumpMaps |
 		ShaderCompilationOptions::OPT_HeightMaps |
 		ShaderCompilationOptions::OPT_PhongShading |
+		ShaderCompilationOptions::OPT_Multipass |
+		ShaderCompilationOptions::OPT_MSAA |
 		ShaderCompilationOptions::OPT_HWLighting |
 		ShaderCompilationOptions::OPT_DistanceFog |
 		ShaderCompilationOptions::OPT_ClipDistance |

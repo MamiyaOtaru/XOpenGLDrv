@@ -6,12 +6,6 @@
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
 
-void UXOpenGLRenderDevice::NewFrame(FSceneNode* Frame)
-{
-	//RealUncoords = BuildUncoordsFromCoords(Frame->Coords);
-	//Frame->Uncoords = RealUncoords;
-}
-
 // --- New helper: build smooth vertex normals per-surface (called from NewLevel) ---
 //
 // Algorithm summary:
@@ -23,15 +17,13 @@ void UXOpenGLRenderDevice::NewFrame(FSceneNode* Frame)
 // 5. For each position, for each referenced (iSurf, localIndex) compute an
 //    averaged normal by including only surfaces whose face normal is within
 //    the angle threshold; weight each contributor by its surface area.
-// 6. Store resulting per-vertex normals in SurfaceVertexNormals[iSurf] and
-//    positions/tri indices into SurfaceVertexPositions/SurfaceTriIndices.
+// 6. Store resulting per-vertex normals in SurfaceVertexNormals[iSurf]
 //
 // Notes:
 // - Uses quantized keys to group identical/near-identical positions.
 // - If triangulation/earclip fails, SurfaceTriIndices might be empty and consumers fall back to per-facet handling.
 void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 {
-	SurfaceTriIndices.Empty();
 	SurfaceInfoMap.Empty();
 
 	if (!Level || !Level->Model)
@@ -123,26 +115,6 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 
 				NI.VertIndices(vi) = SI.Verts.Num() - 1;
 			}
-
-			// triangulate to compute approximate area (fan from v0)
-			if (NI.VertIndices.Num() >= 3)
-			{
-				const FVector& v0 = SI.Verts(NI.VertIndices(0));
-				for (INT i = 1; i < NI.VertIndices.Num() - 1; ++i)
-				{
-					FVector e1 = SI.Verts(NI.VertIndices(i)) - v0;
-					FVector e2 = SI.Verts(NI.VertIndices(i+1)) - v0;
-					float triArea = ((e1 ^ e2).Size()) * 0.5f;
-					NI.Area += triArea;
-				}
-				if (NI.Area <= 0.f)
-					NI.Area = 1.0f;
-			}
-			else
-			{
-				NI.Area = 1.0f;
-			}
-			// compute polygon area
 		} // end loop through nodes
 
 		SI.VertexNormals.AddZeroed(SI.Verts.Num()); // initialize non-deduped per-vertex normals
@@ -192,143 +164,6 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 			}
 		} // end loop through verts
 	} // end loop through surfaces
-
-	// Triangulate polygons per surface (ear clipping in local 2D)
-	for (INT iSurf = 0; iSurf < Level->Model->Surfs.Num(); ++iSurf)
-	{
-		FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
-		if (!pSI) continue;
-		auto& SI = *pSI;
-
-		TArray<glm::uint> TriIndices;
-
-		if (SI.Verts.Num() >= 3)
-		{
-			// --- Build working copy + remap to original indices ---
-			TArray<FVector> WorkVerts = SI.Verts;
-			TArray<INT> Remap;
-			Remap.AddZeroed(SI.Verts.Num());
-			for (INT i = 0; i < SI.Verts.Num(); ++i)
-				Remap(i) = i; // identity mapping initially
-
-			// --- Dedupe WorkVerts, updating Remap accordingly ---
-			for (INT i = 0; i < WorkVerts.Num(); ++i)
-			{
-				for (INT j = i + 1; j < WorkVerts.Num(); ++j)
-				{
-					if (FPointsAreNear(WorkVerts(i), WorkVerts(j), 0.0025f))
-					{
-						WorkVerts.Remove(j);
-						Remap.Remove(j);
-						j--;
-					}
-				}
-			}
-
-			if (WorkVerts.Num() < 3)
-				return;
-
-			// --- Stable normal + centroid ---
-			FVector FacetNormal = SI.SurfaceNormal;
-			FacetNormal.Normalize();
-
-			FVector FacetPos(0,0,0);
-			for (INT i = 0; i < WorkVerts.Num(); ++i)
-				FacetPos += WorkVerts(i);
-			FacetPos /= WorkVerts.Num();
-
-			// --- Projection basis ---
-			FVector X;
-			if (Abs(FacetNormal.X) > Abs(FacetNormal.Z))
-				X = FVector(-FacetNormal.Y, FacetNormal.X, 0.f);
-			else
-				X = FVector(0.f, -FacetNormal.Z, FacetNormal.Y);
-			X.Normalize();
-
-			FVector Y = (FacetNormal ^ X).SafeNormal();
-
-			// --- Build 2D verts with indices into WorkVerts ---
-			struct FVert2D_W { FLOAT X, Y; INT Orig; };
-			TArray<FVert2D_W> P;
-			for (INT i = 0; i < WorkVerts.Num(); ++i)
-			{
-				FVector d = WorkVerts(i) - FacetPos;
-				FVert2D_W v;
-				v.X = d | X;
-				v.Y = d | Y;
-				v.Orig = i; // index into WorkVerts
-				P.AddItem(v);
-			}
-
-			auto IsConvex_W = [](const FVert2D_W& A, const FVert2D_W& B, const FVert2D_W& C)
-			{
-				FLOAT cross = (B.X - A.X)*(C.Y - A.Y) - (B.Y - A.Y)*(C.X - A.X);
-				return cross > 0.f;
-			};
-
-			auto PointInTri_W = [](const FVert2D_W& P,
-								   const FVert2D_W& A,
-								   const FVert2D_W& B,
-								   const FVert2D_W& C)
-			{
-				FLOAT c1 = (B.X - A.X)*(P.Y - A.Y) - (B.Y - A.Y)*(P.X - A.X);
-				FLOAT c2 = (C.X - B.X)*(P.Y - B.Y) - (C.Y - B.Y)*(P.X - B.X);
-				FLOAT c3 = (A.X - C.X)*(P.Y - C.Y) - (A.Y - C.Y)*(P.X - C.X);
-				return (c1 >= 0 && c2 >= 0 && c3 >= 0);
-			};
-
-			// --- Ear clipping identical to live version ---
-			while (P.Num() >= 3)
-			{
-				bool earFound = false;
-
-				for (INT i = 0; i < P.Num(); ++i)
-				{
-					INT i0 = (i + P.Num() - 1) % P.Num();
-					INT i1 = i;
-					INT i2 = (i + 1) % P.Num();
-
-					const FVert2D_W& A = P(i0);
-					const FVert2D_W& B = P(i1);
-					const FVert2D_W& C = P(i2);
-
-					if (!IsConvex_W(A, B, C))
-						continue;
-
-					bool containsPoint = false;
-					for (INT j = 0; j < P.Num(); ++j)
-					{
-						if (j == i0 || j == i1 || j == i2)
-							continue;
-
-						if (PointInTri_W(P(j), A, B, C))
-						{
-							containsPoint = true;
-							break;
-						}
-					}
-
-					if (containsPoint)
-						continue;
-
-					// --- Emit triangle using ORIGINAL SI.Verts indices ---
-					TriIndices.AddItem((glm::uint)Remap(A.Orig));
-					TriIndices.AddItem((glm::uint)Remap(B.Orig));
-					TriIndices.AddItem((glm::uint)Remap(C.Orig));
-
-					P.Remove(i1);
-					earFound = true;
-					break;
-				}
-
-				if (!earFound)
-					break;
-			}
-
-			if (TriIndices.Num() > 0)
-				SurfaceTriIndices.Set(iSurf, TriIndices);
-		}
-	} // end loop through SurfInfos
 
 	const float posTolSq = 0.0025f * 0.0025f;
 
@@ -542,6 +377,88 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 		}
 
 	}
+}
+
+void UXOpenGLRenderDevice::BuildSurfaceTriangulation(ULevel* Level)
+{
+    if (!Level || !Level->Model)
+        return;
+
+    for (INT iSurf = 0; iSurf < Level->Model->Surfs.Num(); ++iSurf)
+    {
+		FBspSurf& Surf = Level->Model->Surfs(iSurf);
+		DWORD PolyFlags = Surf.PolyFlags;
+
+		if (PolyFlags & (PF_Modulated | PF_FakeBackdrop | PF_NoSmooth |
+						 PF_Flat | PF_Unlit | PF_Highlighted |
+						 PF_FlatShaded | PF_Portal))
+		{
+			continue; // skip this surface entirely, not solid
+		}
+
+        FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
+        if (!pSI)
+            continue;
+
+        FSurfInfo& SI = *pSI;
+        const INT vcount = SI.Verts.Num();
+        if (vcount < 3 || SI.Nodes.Num() == 0)
+            continue;
+
+        // Create an empty tri index array for this surface
+        TArray<glm::uint>& TriIdx = SI.TriIdx;
+        TriIdx.Empty();
+
+        const INT numNodes = SI.Nodes.Num();
+        for (INT ni = 0; ni < numNodes; ++ni)
+        {
+            FNodeInfo& NI = SI.Nodes(ni);
+
+            const INT NumPts = NI.VertIndices.Num();
+            if (NumPts < 3)
+            {
+                NI.TriStart = TriIdx.Num();
+                NI.TriCount = 0;
+                continue;
+            }
+
+            const INT triStart = TriIdx.Num();
+            const INT triCount = NumPts - 2;
+
+            for (INT i = 0; i < triCount; ++i)
+            {
+                const INT ia = 0;
+                const INT ib = i + 1;
+                const INT ic = i + 2;
+
+                const INT va = (INT)NI.VertIndices(ia);
+                const INT vb = (INT)NI.VertIndices(ib);
+                const INT vc = (INT)NI.VertIndices(ic);
+
+                if (va < 0 || vb < 0 || vc < 0 ||
+                    va >= vcount || vb >= vcount || vc >= vcount)
+                    continue;
+
+                const FVector& PwA = SI.Verts(va);
+                const FVector& PwB = SI.Verts(vb);
+                const FVector& PwC = SI.Verts(vc);
+
+                const FVector e1   = PwB - PwA;
+                const FVector e2   = PwC - PwA;
+                const FVector triN = e1 ^ e2;
+                if (triN.SizeSquared() < 1e-8f)
+                    continue;
+
+                TriIdx.AddItem((glm::uint)va);
+                TriIdx.AddItem((glm::uint)vb);
+                TriIdx.AddItem((glm::uint)vc);
+            }
+
+            const INT triEnd = TriIdx.Num();
+            NI.TriStart = triStart;
+            NI.TriCount = triEnd - triStart; // multiple of 3, may be 0
+        }
+    }
 }
 
 bool FacetInsidePolygonUV(

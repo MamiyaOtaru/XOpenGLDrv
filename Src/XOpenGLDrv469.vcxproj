@@ -395,11 +395,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="BlurPass.cpp" />
     <ClCompile Include="BspCache.cpp" />
     <ClCompile Include="CheckExtensions.cpp" />
     <ClCompile Include="DebugLog.cpp" />
+    <ClCompile Include="DrawPrepass.cpp" />
     <ClCompile Include="DrawComplex.cpp" />
     <ClCompile Include="DrawComplex_GLSL.cpp" />
+    <ClCompile Include="DrawDepthOnly_GLSL.cpp" />
     <ClCompile Include="DrawGouraud.cpp" />
     <ClCompile Include="DrawGouraud_GLSL.cpp" />
     <ClCompile Include="DrawSimple.cpp" />
@@ -408,16 +411,22 @@
     <ClCompile Include="DrawTile_GLSL.cpp" />
     <ClCompile Include="EditorHit.cpp" />
     <ClCompile Include="ExternalTextureLoader.cpp" />
+    <ClCompile Include="FBO.cpp" />
     <ClCompile Include="glad.cpp" />
     <ClCompile Include="PerPixel.cpp" />
+    <ClCompile Include="PostProcess.cpp" />
     <ClCompile Include="SetTexture.cpp" />
+    <ClCompile Include="ShaderLoader.cpp" />
     <ClCompile Include="ShaderProgram.cpp" />
+    <ClCompile Include="SSAOPass.cpp" />
     <ClCompile Include="XOpenGL.cpp" />
     <ClCompile Include="XOpenGLDrv.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Inc\ExternalTextureLoader.h" />
+    <ClInclude Include="..\Inc\FBO.h" />
     <ClInclude Include="..\Inc\glad.h" />
+    <ClInclude Include="..\Inc\ShaderLoader.h" />
     <ClInclude Include="..\Inc\thirdparty\stb\stb_image.h" />
     <ClInclude Include="..\Inc\thirdparty\tinyddsloader\tinyddsloader.h" />
     <ClInclude Include="..\Inc\XOpenGL.h" />

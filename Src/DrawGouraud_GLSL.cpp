@@ -523,7 +523,7 @@ void main(void)
                     vec2(DrawDrawGouraudParams[DrawID].SceneWidth,
                          DrawDrawGouraudParams[DrawID].SceneHeight);
 
-    float sceneZ = GetTexel(GetTexHandleHelper(DrawID, DepthMapIndex),
+    float sceneZ = GetDepthTexel(GetTexHandleHelper(DrawID, SceneDepthIndex),
                             TMUDepthMap, screenUV).r;
     float spriteZ = gl_FragCoord.z;
 

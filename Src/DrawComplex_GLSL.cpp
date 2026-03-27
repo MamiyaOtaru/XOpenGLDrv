@@ -32,7 +32,7 @@ const UXOpenGLRenderDevice::ShaderProgram::DrawCallParameterInfo UXOpenGLRenderD
 	{"vec4", "YAxis", 0},
 	{"vec4", "ZAxis", 0},
 	{"vec4", "DrawColor", 0},
-    {"uvec4", "TexHandles", 5},
+    {"uvec4", "TexHandles", 6},
 	{"uint", "DrawFlags", 0},
     {"float", "Roughness", 0},
     {"uint", "SceneWidth", 0},
@@ -456,6 +456,13 @@ uvec2 GetTexHandleHelper(uint DrawID, uint Index)
 	return (Index % 2u == 0u) ? Handles.xy : Handles.zw;
 }
 
+float LinearizeDepth(float depth, float nearZ, float farZ)
+{
+    float z = depth * 2.0 - 1.0;        // back to NDC
+    return (2.0 * nearZ * farZ) /
+           (farZ + nearZ - z * (farZ - nearZ));
+}
+
 void main(void)
 {
   // normals debug
@@ -639,6 +646,13 @@ void main(void)
   }
 #endif
 
+  vec2 screenUV = vec2(0,0);
+  if ((DrawFlags & (DF_ReadDepth | DF_Multipass)) != 0)
+  {
+    screenUV = gl_FragCoord.xy / vec2(DrawDrawComplexParams[vDrawID].SceneWidth, DrawDrawComplexParams[vDrawID].SceneHeight);
+  }
+
+
   // BumpMap (Normal Map)
   vec3 totalSpec  = vec3(0.0);
   uint numSurfaceLights = 0;
@@ -731,9 +745,21 @@ void main(void)
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {
+      totalLight = clamp(totalLight, 0.0, 1.0);
+#if OPT_Multipass
+      if ((DrawFlags & DF_Multipass) == DF_Multipass) {
+        // Sample SSAO (0 = dark, 1 = no occlusion)
+        float AO = GetTexel(GetTexHandleHelper(vDrawID, PostProcessIndex), TMUPostProcessMap, screenUV).r;
+        // Compute ambient = inverse of direct light (per channel)
+        vec3 ambient = vec3(1.0) - totalLight;
+        // Subtractive AO applied only to ambient
+        //totalLight = totalLight - (1.0 - AO) * ambient;
+totalLight *= AO * AO * AO * AO * AO * AO;
+      }
+#endif
       float lmIntensity = dot(LightColor.rgb, vec3(0.299, 0.587, 0.114));
       totalSpec *= lmIntensity; // attenuate specular by the lightmap
-      LightColor.rgb *= clamp(totalLight, 0.0, 1.0);
+      LightColor.rgb *= totalLight;
       
       // lighting debug
       /*if (true) {
@@ -836,11 +862,7 @@ void main(void)
   if ((DrawFlags & DF_ReadDepth) == DF_ReadDepth)
   {
     // depth sampling
-    vec2 screenUV = gl_FragCoord.xy /
-                    vec2(DrawDrawComplexParams[vDrawID].SceneWidth,
-                         DrawDrawComplexParams[vDrawID].SceneHeight);
-
-    float sceneZ = GetTexel(GetTexHandleHelper(vDrawID, DepthMapIndex), TMUDepthMap, screenUV).r;
+    float sceneZ = GetDepthTexel(GetTexHandleHelper(vDrawID, SceneDepthIndex), TMUDepthMap, screenUV).r;
     float spriteZ = gl_FragCoord.z;
 
     // linearization
@@ -850,20 +872,22 @@ void main(void)
     float spriteL = (2.0 * n) / (f + n - spriteZ * (f - n));
 
     float diff = sceneL - spriteL;
+    float fadeWidth = .002;
 
-    // radial distance
-    vec2 uv = vTexCoords.xy;
-    vec2 centered = uv * 2.0 - 1.0;
-    float r = length(centered);
-    float radialFade = clamp(r / 1.4142, 0.0, 1.0);
-
-    // fade zone widens toward edges
-    float minWidth = 0.002;   // narrow at center
-    float maxWidth = 0.004;   // wide at edges
-    float fadeWidth = .002;//mix(minWidth, maxWidth, radialFade);
-
-    // proximity fade with variable width
+    // proximity fade
     float proximityFade = smoothstep(0.0, fadeWidth, diff);
+    /*
+    // more "correct" tunable version?
+    float sceneL = n / (f - sceneZ * (f - n));
+    float spriteL = n / (f - spriteZ * (f - n));
+    float diff = sceneL - spriteL;
+
+    // 2. Linear Scaling with a "Floor"
+    // 0.001 is your "Minimum Thickness" (about 65 world units)
+    // + 0.01 * spriteL makes it get even THICKER as it moves away
+    float fadeWidth = 0.001 + (0.01 * spriteL); 
+
+    float proximityFade = smoothstep(0.0, fadeWidth, diff);*/
 
     // alpha fade
     TotalColor.rgb *= proximityFade;

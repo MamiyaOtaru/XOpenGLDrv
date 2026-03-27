@@ -55,6 +55,8 @@
 
 #include "XOpenGLTemplate.h" //thanks han!
 
+#include "FBO.h"
+
 #if ENGINE_VERSION==436 || ENGINE_VERSION==430
 #define clockFast(Timer)   {Timer -= appCycles();}
 #define unclockFast(Timer) {Timer += appCycles()-34;}
@@ -486,6 +488,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	// Dumb bling
 	BITFIELD PhongShading;
+	BITFIELD Multipass;
 
 	FLOAT GammaMultiplier;
 	FLOAT GammaMultiplierUED;
@@ -1150,6 +1153,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 		Tile_Prog,
 		Gouraud_Prog,
 		Complex_Prog,
+		Prepass_Prog,
+		SSAO_Prog,
+		SsaoBlur_Prog,
 		Max_Prog,
 	};
 
@@ -1184,44 +1190,48 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 			// Dumb visual stuff
 			DF_PhongShading	  = 1 << 16,
-			DF_ReadDepth	  = 1 << 17
+			DF_ReadDepth	  = 1 << 17,
+			DF_Multipass	  = 1 << 18,
 		};
 	};
     
     class ShaderCompilationOptions
     {
 		public:
-        enum
-        {
-            OPT_None				 = 0x000000,
+		enum
+		{
+			OPT_None               = 0,
 
-			// Texture types enabled in the renderer config
-			OPT_DetailTextures       = 0x000001,
-			OPT_MacroTextures        = 0x000002,
-			OPT_EnvironmentMaps		 = 0x000004,
-			OPT_BumpMaps			 = 0x000008,
-			OPT_HeightMaps			 = 0x000010,
+			// Texture types
+			OPT_DetailTextures     = 1 << 0,
+			OPT_MacroTextures      = 1 << 1,
+			OPT_EnvironmentMaps    = 1 << 2,
+			OPT_BumpMaps           = 1 << 3,
+			OPT_HeightMaps         = 1 << 4,
 
-			// Features enabled in the renderer config
-			OPT_DistanceFog			 = 0x000020,
-			OPT_SimulateMultiPass    = 0x000040,
-			OPT_HWLighting           = 0x000080,
+			// Renderer features
+			OPT_DistanceFog        = 1 << 5,
+			OPT_SimulateMultiPass  = 1 << 6,
+			OPT_HWLighting         = 1 << 7,
 
-			// Hardware/driver capabilities we're using
-			OPT_GLCore               = 0x000100,
-			OPT_GLES                 = 0x000200,
-			OPT_GeometryShaders      = 0x000400,
-			OPT_BindlessTextures     = 0x000800,
-			OPT_PersistentBuffers    = 0x001000,
-			OPT_ShaderDrawParameters = 0x002000,
-			OPT_ClipDistance         = 0x004000,
+			// Hardware / driver capabilities
+			OPT_GLCore             = 1 << 8,
+			OPT_GLES               = 1 << 9,
+			OPT_GeometryShaders    = 1 << 10,
+			OPT_BindlessTextures   = 1 << 11,
+			OPT_PersistentBuffers  = 1 << 12,
+			OPT_ShaderDrawParameters = 1 << 13,
+			OPT_ClipDistance       = 1 << 14,
 
-			// Enabled editor-specific code
-			OPT_Editor				 = 0x008000,
+			// Editor
+			OPT_Editor             = 1 << 15,
 
-			// Additions
-			OPT_PhongShading		 = 0x016000
-        };
+			// Additional renderer features
+			OPT_PhongShading       = 1 << 16,
+			OPT_Multipass          = 1 << 17,
+			OPT_MSAA               = 1 << 18
+		};
+
 
 		ShaderCompilationOptions(DWORD ShaderOptions)
 		{
@@ -1304,10 +1314,13 @@ class UXOpenGLRenderDevice : public URenderDevice
         INT                                         NumTextureSamplers;
         GLenum                                      DrawMode;
 		BOOL										UseSSBOParametersBuffer;
-		const DrawCallParameterInfo*				ParametersInfo;		
+		const DrawCallParameterInfo*				ParametersInfo;
 		ShaderWriterFunc*							VertexShaderFunc;
 		ShaderWriterFunc*							GeoShaderFunc;
 		ShaderWriterFunc*							FragmentShaderFunc;
+		bool										bUseExternalShaders = false;
+		FString										ExternalVertexPath;
+		FString										ExternalFragmentPath;
 
 		virtual ~ShaderProgram();
 
@@ -1599,8 +1612,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 		EnvironmentMapIndex		= 6,
 		HeightMapIndex			= 7,
 		RoughnessMapIndex		= 8,
-		DepthMapIndex			= 9,
-		UploadIndex				= 10
+		SceneDepthIndex			= 9,
+		PrepassDepthIndex		= 10,
+		PostProcessIndex		= 11,
+		UploadIndex				= 12
 	};
 
 	// Per-frame state
@@ -1699,7 +1714,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 		TArray<glm::uint> VertIndices;   // indices into SI.Verts (vertex instances)
 		FVector PlaneNormal;             // true BSP node plane normal
 		float   PlaneW;                  // true BSP node plane W
-		float   Area;                    // polygon area (computed from VertIndices)
+		INT TriStart = 0;  // index into SurfaceTriIndices[iSurf]
+		INT TriCount = 0;  // number of indices (multiple of 3)
 	};
 	// Per-surface runtime info accessible to other renderer code.
 	struct FSurfInfo
@@ -1710,6 +1726,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 		TArray<FVector> VertexNormals;   // per-instance normals (after smoothing)
 		TArray<FVector> Tangents;
 		TArray<FVector> Bitangents;
+
+		// Per-surface triangulation indices. Stored as triplets of indices into SurfaceVertexPositions[iSurf].
+		// This avoids doing triangulation at draw-time.
+		TArray<glm::uint> TriIdx;
 
 		float   Area;                    // polygon area (computed from VertIndices)
 		FVector SurfaceNormal;           // editor normal (FBspSurf.vNormal)
@@ -1723,26 +1743,50 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// is greater than this will NOT be averaged. Default 45 degrees.
 	FLOAT SmoothNormalAngleThresholdDegrees = 50.0f;
 
-	VOID UXOpenGLRenderDevice::NewFrame(FSceneNode* Frame);
-
 	// Build the smooth per-vertex normals for the given level (call at NewLevel())
 	void BuildSmoothVertexNormalsForLevel(ULevel* Level);
 
-	// Per-surface triangulation indices. Stored as triplets of indices into SurfaceVertexPositions[iSurf].
-	// This avoids doing ear-clipping / triangulation at draw-time.
-	TMap<INT, TArray<glm::uint>> SurfaceTriIndices;
+	// triangulate surface (store node level triangle indices)
+	void UXOpenGLRenderDevice::BuildSurfaceTriangulation(ULevel* Level);
 
 	// FBO stuff
-	GLuint SceneFBO = 0;
-	GLuint SceneColorTex = 0;
-	GLuint SceneDepthTex = 0;
-	GLuint DepthSampler = 0;
-	GLuint64 SceneDepthBindlessHandle = 0;
-	INT SceneWidth = 0, SceneHeight = 0;
+	// --- Scene render target (MSAA or not) ---
+	Fbo* SceneFbo = nullptr;
 
-	INT UXOpenGLRenderDevice::PrepareDepthTexture();
+	// --- Prepass / GBuffer (depth + normal, maybe more later) ---
+	Fbo* gbufferFbo = nullptr;
+
+	// --- SSAO passes ---
+	Fbo* SsaoFbo = nullptr;        // half-res AO compute
+	Fbo* SsaoBlurFbo = nullptr;    // half-res blur ping-pong
+	Fbo* SsaoFullResFbo = nullptr; // optional full-res upsample
+
+	// --- Sizes ---
+	INT SceneWidth = 0;
+	INT SceneHeight = 0;
+
+	UBOOL DepthPrepassDone = false;
+
+	// main fbo depth texture
+	void UXOpenGLRenderDevice::PrepareDepthTexture();
+	// prepass fbo depth texture (aka gbuffer)
+	void UXOpenGLRenderDevice::PreparePrepassDepthTexture();
 
 	bool UXOpenGLRenderDevice::IsDepthFadeFX(const UTexture* Tex);
+
+	GLuint UXOpenGLRenderDevice::CreateSSAONoiseTexture();
+	std::vector<glm::vec3> UXOpenGLRenderDevice::GenerateSSAOKernel(int total);
+	void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame);
+	void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations);
+
+	std::vector<glm::vec3> SSAOKernel;
+
+	GLuint FullscreenVAO = 0;
+	GLuint FullscreenVBO = 0;
+
+	void UXOpenGLRenderDevice::CreateFullscreenQuad();
+	void UXOpenGLRenderDevice::DeleteFullscreenQuad();
+	void UXOpenGLRenderDevice::DrawFullscreenQuad();
 
 	//
 	// Shader Data Structures
@@ -1837,14 +1881,14 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::vec4 YAxis;
 		glm::vec4 ZAxis;
 		glm::vec4 DrawColor;
-		glm::uint64 TexHandles[10]; // mirrored as 5 uvec2s
+		glm::uint64 TexHandles[12]; // mirrored as 6 uvec2s
 		glm::uint32 DrawFlags;
 		glm::float32 Roughness;
 		glm::uint32 SceneWidth;
 		glm::uint32 SceneHeight;
 	};
 	static const ShaderProgram::DrawCallParameterInfo DrawComplexParametersInfo[];
-	static_assert(sizeof(DrawComplexParameters) == 320, "Invalid complex drawcall parameters size");
+	static_assert(sizeof(DrawComplexParameters) == 336, "Invalid complex drawcall parameters size");
 
 	struct DrawComplexVertex
 	{
@@ -1860,6 +1904,17 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	};
 	static_assert(sizeof(DrawComplexVertex) == 72, "Invalid complex buffered vertex size");
+
+	// ============================== DRAWPREPASS ==============================
+
+	void UXOpenGLRenderDevice::DrawPrepassSurface(const FSceneNode* Frame, /*const FSurfaceInfo& Surface,*/ FSurfInfo& SI);
+
+	struct DrawPrepassVertex
+	{
+		glm::vec3 Coords;   // 12 bytes
+		glm::vec3 Normal;   // 12 bytes
+	};
+	static_assert(sizeof(DrawPrepassVertex) == 24, "Invalid prepass vertex size");
 
 	// ============================== NOPROGRAM ==============================
 	struct NoParameters
@@ -1971,6 +2026,99 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 		// Cached texture Info
 		FTEXTURE_PTR BumpMapInfo{};
+	};
+	
+	//
+	// Prepass Shader
+	//
+	class DrawPrepassProgram : public ShaderProgramImpl<DrawPrepassVertex, NoParameters>
+	{
+	public:
+		DrawPrepassProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
+		void CreateInputLayout();
+		void BuildCommonSpecializations();
+		void MapBuffers();
+		void UnmapBuffers();
+	    void Flush(bool Rotate);
+		void ActivateShader();
+		void DeactivateShader();
+
+		static void BuildVertexShader(GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out);
+		static void BuildFragmentShader(GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out);
+	};
+
+	//
+	// SSAO Shader
+	//
+	class SSAOProgram : public ShaderProgramImpl<NoVertex, NoParameters>
+	{
+	public:
+		SSAOProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
+
+		// Sampler uniform locations
+		GLint uDepth      = -1;   // gDepth
+		GLint uNormal     = -1;   // gNormal
+		GLint uNoise      = -1;   // texNoise
+
+		// Scalar uniforms
+		GLint uKernelSize = -1;   // kernelSize
+		GLint uNearPlane  = -1;   // nearPlane
+		GLint uFarPlane   = -1;   // farPlane
+
+		// Matrix uniform
+		GLint uProjection = -1;   // projectionMatrix
+
+		GLint uNoiseScale = -1;
+
+		// Kernel sample array
+		GLint uSamples[64];       
+
+		// Fullscreen quad uses its own VAO/VBO, so no layout
+		void CreateInputLayout() {}
+
+		// No vertex buffer, no parameters buffer
+		void MapBuffers();
+		void UnmapBuffers();
+
+		// No batching — single fullscreen draw
+		void Flush(bool Rotate);
+
+		void ActivateShader();
+		void DeactivateShader();
+
+		void BindShaderState(CompiledShader* Spec);
+	};
+
+	//
+	// SSAO Blur Shader
+	//
+	class SsaoBlurProgram : public ShaderProgramImpl<NoVertex, NoParameters>
+	{
+	public:
+		SsaoBlurProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
+
+
+		// Required overrides (even if empty)
+		void CreateInputLayout() override {}   // fullscreen quad uses shared VAO
+		void MapBuffers() override {}          // no vertex buffer
+		void UnmapBuffers() override {}        // no parameters buffer
+		void Flush(bool Rotate) override {}    // no batching
+		void ActivateShader() override;        // call UseShader()
+		void DeactivateShader() override {}    // nothing to do
+
+		// Uniform setters
+		void SetOffset(float x, float y);
+		void SetResolution(float w, float h);
+		void SetInput(int unit);
+
+		// Bind uniforms
+		void BindShaderState(CompiledShader* Spec) override;
+
+		GLint ssaoInputLoc;
+		GLint offsetLoc;
+		GLint resolutionLoc;
+
+	private:
 	};
 
 	//

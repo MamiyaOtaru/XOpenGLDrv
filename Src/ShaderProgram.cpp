@@ -15,6 +15,7 @@
 
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
+#include "ShaderLoader.h"
 
 void UXOpenGLRenderDevice::ShaderProgram::EmitGlobals(ShaderCompilationOptions Options, GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out, bool HaveGeoShader)
 {
@@ -113,6 +114,7 @@ precision lowp int;
 	Out << "#define DF_HeightMap " << ShaderDrawFlags::DF_HeightMap << "u" << END_LINE;
 	Out << "#define DF_PhongShading " << ShaderDrawFlags::DF_PhongShading << "u" << END_LINE;
 	Out << "#define DF_ReadDepth " << ShaderDrawFlags::DF_ReadDepth << "u" << END_LINE;
+	Out << "#define DF_Multipass " << ShaderDrawFlags::DF_Multipass << "u" << END_LINE;
 	Out << "#define DF_Masked " << ShaderDrawFlags::DF_Masked << "u" << END_LINE;
 	Out << "#define DF_Unlit " << ShaderDrawFlags::DF_Unlit << "u" << END_LINE;
 	Out << "#define DF_Modulated " << ShaderDrawFlags::DF_Modulated << "u" << END_LINE;
@@ -132,7 +134,8 @@ precision lowp int;
 	Out << "#define EnvironmentMapIndex " << EnvironmentMapIndex << "u" << END_LINE;
 	Out << "#define HeightMapIndex " << HeightMapIndex << "u" << END_LINE;
 	Out << "#define RoughnessMapIndex " << RoughnessMapIndex << "u" << END_LINE;
-	Out << "#define DepthMapIndex " << DepthMapIndex << "u" << END_LINE;
+	Out << "#define SceneDepthIndex " << SceneDepthIndex << "u" << END_LINE;
+	Out << "#define PostProcessIndex " << PostProcessIndex << "u" << END_LINE;
 
 	// Aliases for the TMUs we bind textures to when we're not using bindless textures
 	Out << "#define TMUDiffuse Texture" << DiffuseTextureIndex << END_LINE;
@@ -144,7 +147,9 @@ precision lowp int;
 	Out << "#define TMUEnvironmentMap Texture" << EnvironmentMapIndex << END_LINE;
 	Out << "#define TMUHeightMap Texture" << HeightMapIndex << END_LINE;
 	Out << "#define TMURoughnessMap Texture" << RoughnessMapIndex << END_LINE;
-	Out << "#define TMUDepthMap Texture" << DepthMapIndex << END_LINE;
+	Out << "#define TMUDepthMap Texture" << SceneDepthIndex << END_LINE;
+	Out << "#define TMUPrepassDepthMap Texture" << PrepassDepthIndex << END_LINE;
+	Out << "#define TMUPostProcessMap Texture" << PostProcessIndex << END_LINE;
 
 	Out << R"(
 layout(std140) uniform FrameState
@@ -164,7 +169,16 @@ layout(std140) uniform FrameState
 )";
 
 	for (INT i = 0; i < NumTextureSamplers; ++i)
-		Out << "uniform sampler2D Texture" << i << ";" << END_LINE;
+	{
+		if (i == SceneDepthIndex && RenDev->UseAA)
+		{
+			Out << "uniform sampler2DMS Texture" << i << ";" << END_LINE;
+		}
+		else
+		{
+			Out << "uniform sampler2D Texture" << i << ";" << END_LINE;
+		}
+	}
 
 	if (RenDev->SupportsSSBO)
 	{
@@ -285,6 +299,31 @@ vec4 GetTexel(uvec2 BindlessTexHandle, sampler2D BoundSampler, vec2 TexCoords)
 }
 #endif
 )";
+
+	if (ShaderType == GL_FRAGMENT_SHADER)
+	{
+		Out << R"(
+#if OPT_MSAA
+vec4 GetDepthTexel(uvec2 BindlessTexHandle, sampler2DMS DepthSampler, vec2 TexCoords)
+{
+#if OPT_BindlessTextures
+    return texelFetch(sampler2DMS(BindlessTexHandle), ivec2(gl_FragCoord.xy), 0);
+#else
+    return texelFetch(DepthSampler, ivec2(gl_FragCoord.xy), 0);
+#endif
+}
+#else
+vec4 GetDepthTexel(uvec2 BindlessTexHandle, sampler2D DepthSampler, vec2 TexCoords)
+{
+#if OPT_BindlessTextures
+    return texture(sampler2D(BindlessTexHandle), TexCoords);
+#else
+    return texture(DepthSampler, TexCoords);
+#endif
+}
+#endif
+)";
+	}
 
 	if (ShaderType == GL_FRAGMENT_SHADER)
 	{
@@ -615,6 +654,10 @@ void UXOpenGLRenderDevice::InitShaders()
 		: static_cast<ShaderProgram*>(new DrawTileESProgram(TEXT("DrawTile"), this));
 	Shaders[Gouraud_Prog]			= new DrawGouraudProgram(TEXT("DrawGouraud"), this);
 	Shaders[Complex_Prog]			= new DrawComplexProgram(TEXT("DrawComplex"), this);
+	Shaders[Prepass_Prog]			= new DrawPrepassProgram(TEXT("DrawPrepass"), this);
+	Shaders[SSAO_Prog]				= new SSAOProgram(TEXT("DrawSSAO"), this);
+	Shaders[SsaoBlur_Prog]			= new SsaoBlurProgram(TEXT("DrawSSAOBlur"), this);
+
 
 	// (Re)initialize UBOs
 	if (!FrameStateBuffer.Buffer)
@@ -747,7 +790,7 @@ void UXOpenGLRenderDevice::ShaderProgram::BindShaderState(CompiledShader* Specia
 		BindUniform(Specialization, ParametersBufferBindingIndex, appToAnsi(*FString::Printf(TEXT("All%lsShaderDrawParams"), ShaderName)));
 
 	// Bind regular texture samplers to their respective TMUs
-	check(NumTextureSamplers >= 0 && NumTextureSamplers <= 10);
+	check(NumTextureSamplers >= 0 && NumTextureSamplers <= 16);
 	for (INT i = 0; i < NumTextureSamplers; i++)
 	{
 		GLint MultiTextureUniform;
@@ -759,6 +802,8 @@ void UXOpenGLRenderDevice::ShaderProgram::BindShaderState(CompiledShader* Specia
 
 void UXOpenGLRenderDevice::ShaderProgram::UseShader()
 {
+	if (!CurrentSpecialization)
+        return;
 	glUseProgram(CurrentSpecialization->ShaderProgramObject);
 }
 
@@ -770,6 +815,43 @@ void UXOpenGLRenderDevice::ShaderProgram::RecompileShader(ShaderCompilationOptio
 		// No relevant options changed - skip recompilation
 		return;
 	}
+
+	// external shader path
+    if (bUseExternalShaders)
+    {
+        if (CurrentSpecialization)
+        {
+            DeleteShader();
+            delete CurrentSpecialization;
+        }
+
+        CurrentSpecialization = new CompiledShader;
+        CurrentSpecialization->Options = Options;
+        CurrentSpecialization->ShaderName = FString::Printf(TEXT("%ls%ls"), ShaderName, *Options.GetShortString());
+
+        // Build program object
+        CurrentSpecialization->ShaderProgramObject = glCreateProgram();
+
+		// Load + compile + attach external GLSL
+		bool ok = ShaderLoader::LoadExternalShaders(
+			CurrentSpecialization->ShaderProgramObject,
+			TCHAR_TO_ANSI(*ExternalVertexPath),
+			TCHAR_TO_ANSI(*ExternalFragmentPath));
+
+		if (!ok)
+		{
+			debugf(TEXT("EXTERNAL SHADER LOAD FAILED for %ls"), *CurrentSpecialization->ShaderName);
+
+			glDeleteProgram(CurrentSpecialization->ShaderProgramObject);
+			delete CurrentSpecialization;
+			CurrentSpecialization = nullptr;
+			return;
+		}
+
+        glUseProgram(CurrentSpecialization->ShaderProgramObject);
+        BindShaderState(CurrentSpecialization);
+        return;
+    }
 
 	if (!VertexShaderFunc || !FragmentShaderFunc)
 		return;
@@ -871,6 +953,10 @@ void UXOpenGLRenderDevice::ShaderCompilationOptions::SetOptionsForRendererConfig
 		SetOption(OPT_HeightMaps);
 	if (RenDev->PhongShading)
 		SetOption(OPT_PhongShading);
+	if (RenDev->Multipass)
+		SetOption(OPT_Multipass);
+	if (RenDev->UseAA)
+		SetOption(OPT_MSAA);
 	if (RenDev->SimulateMultiPass)
 		SetOption(OPT_SimulateMultiPass);
 	if (RenDev->UseHWLighting)
@@ -901,11 +987,13 @@ AddOptionFunc(Result, L ## #x, (OptionsMask & x) ? true : false);
 
 	ADD_OPTION(OPT_GLES)
 	ADD_OPTION(OPT_GLCore)
-    ADD_OPTION(OPT_DetailTextures)
-    ADD_OPTION(OPT_MacroTextures)
-    ADD_OPTION(OPT_BumpMaps)
-    ADD_OPTION(OPT_HeightMaps)
+	ADD_OPTION(OPT_DetailTextures)
+	ADD_OPTION(OPT_MacroTextures)
+	ADD_OPTION(OPT_BumpMaps)
+	ADD_OPTION(OPT_HeightMaps)
 	ADD_OPTION(OPT_PhongShading)
+	ADD_OPTION(OPT_Multipass)
+	ADD_OPTION(OPT_MSAA)
 	ADD_OPTION(OPT_EnvironmentMaps)
     ADD_OPTION(OPT_DistanceFog)
     ADD_OPTION(OPT_SimulateMultiPass)

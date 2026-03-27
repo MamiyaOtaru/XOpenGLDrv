@@ -131,8 +131,9 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
 		DrawCallParams->SceneWidth = SceneWidth;
 		DrawCallParams->SceneHeight = SceneHeight;
-		INT depthIndex = PrepareDepthTexture();
-		DrawCallParams->TexHandles[depthIndex] = SceneDepthBindlessHandle;
+		PrepareDepthTexture();
+		INT depthIndex = SceneDepthIndex;
+		DrawCallParams->TexHandles[depthIndex] = SceneFbo->depthBindlessHandle;
 		Z -= 50 * min(Z / 300.f, 1);
 	}
 
@@ -315,7 +316,8 @@ UXOpenGLRenderDevice::DrawTileCoreProgram::DrawTileCoreProgram(const TCHAR* Name
 		ShaderCompilationOptions::OPT_ClipDistance |
 		ShaderCompilationOptions::OPT_Editor |
 		ShaderCompilationOptions::OPT_SimulateMultiPass |
-		ShaderCompilationOptions::OPT_GeometryShaders;
+		ShaderCompilationOptions::OPT_GeometryShaders |
+		ShaderCompilationOptions::OPT_MSAA;
 }
 
 void UXOpenGLRenderDevice::DrawTileCoreProgram::CreateInputLayout()

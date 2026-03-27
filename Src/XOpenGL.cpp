@@ -26,6 +26,7 @@
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
 #include "ExternalTextureLoader.h"
+#include "ShaderLoader.h"
 
 #ifndef _WIN32
 #include <sys/time.h>
@@ -161,7 +162,8 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	new(GetClass(), TEXT("MacroTextures"), RF_Public)UBoolProperty(CPP_PROPERTY(MacroTextures), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("BumpMaps"), RF_Public)UBoolProperty(CPP_PROPERTY(BumpMaps), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("ParallaxVersion"), RF_Public)UByteProperty(CPP_PROPERTY(ParallaxVersion), TEXT("Options"), CPF_Config, ParallaxVersions);
-	new(GetClass(), TEXT("PhongShading"), RF_Public)UBoolProperty(CPP_PROPERTY(PhongShading), TEXT("Options"), CPF_Config);	
+	new(GetClass(), TEXT("PhongShading"), RF_Public)UBoolProperty(CPP_PROPERTY(PhongShading), TEXT("Options"), CPF_Config);
+	new(GetClass(), TEXT("Multipass"), RF_Public)UBoolProperty(CPP_PROPERTY(Multipass), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("NoAATiles"), RF_Public)UBoolProperty(CPP_PROPERTY(NoAATiles), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("GenerateMipMaps"), RF_Public)UBoolProperty(CPP_PROPERTY(GenerateMipMaps), TEXT("Options"), CPF_Config);
 
@@ -231,6 +233,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	MacroTextures = 1;
 	BumpMaps = 1;
 	PhongShading = 1;
+	Multipass = 1;
 	GammaMultiplier = 1.75f;
 	GammaMultiplierUED  = 1.75f;
 	ParallaxVersion = Parallax_Disabled;
@@ -448,6 +451,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	debugf(NAME_DevLoad, TEXT("BumpMaps %i"), BumpMaps);
 	debugf(NAME_DevLoad, TEXT("ParallaxVersion %i (%ls)"),ParallaxVersion, ParallaxVersion == Parallax_Basic ? TEXT("Basic") : ParallaxVersion == Parallax_Occlusion ? TEXT("Occlusion") : ParallaxVersion == Parallax_Relief ? TEXT("Relief") : TEXT("Disabled"));
 	debugf(NAME_DevLoad, TEXT("PhongShading %i"), PhongShading);
+	debugf(NAME_DevLoad, TEXT("Multipass %i"), Multipass);
 	debugf(NAME_DevLoad, TEXT("EnvironmentMaps %i"), EnvironmentMaps);
 	debugf(NAME_DevLoad, TEXT("NoAATiles %i"), NoAATiles);
 	debugf(NAME_DevLoad, TEXT("GenerateMipMaps %i"), GenerateMipMaps);
@@ -1196,73 +1200,99 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 	else
 		CreateOpenGLContext(Viewport->GetWindow(), NewColorBytes);
 
-	// Destroy old FBO + textures + sampler + bindless handle
-	if (SceneFBO)
-	{
-		// Un-resident the bindless handle if it exists
-		if (SceneDepthBindlessHandle)
-		{
-			glMakeTextureHandleNonResidentARB(SceneDepthBindlessHandle);
-			SceneDepthBindlessHandle = 0;
-		}
-		// Delete sampler
-		if (DepthSampler)
-		{
-			glDeleteSamplers(1, &DepthSampler);
-			DepthSampler = 0;
-		}
-		// Delete textures
-		glDeleteTextures(1, &SceneColorTex);
-		glDeleteTextures(1, &SceneDepthTex);
-		// Delete FBO
-		glDeleteFramebuffers(1, &SceneFBO);
-		SceneFBO = SceneColorTex = SceneDepthTex = 0;
-	}
+    // Destroy old FBOs
+    if (SceneFbo)
+    {
+        SceneFbo->Dispose();
+        delete SceneFbo;
+        SceneFbo = nullptr;
+    }
 
-	SceneWidth  = NewX;
-	SceneHeight = NewY;
+    if (gbufferFbo)
+    {
+        gbufferFbo->Dispose();
+        delete gbufferFbo;
+        gbufferFbo = nullptr;
+    }
 
-	// Create FBO
-	glGenFramebuffers(1, &SceneFBO);
-	glBindFramebuffer(GL_FRAMEBUFFER, SceneFBO);
+    if (SsaoFbo)
+    {
+        SsaoFbo->Dispose();
+        delete SsaoFbo;
+        SsaoFbo = nullptr;
+    }
 
-	// Color
-	glGenTextures(1, &SceneColorTex);
-	glBindTexture(GL_TEXTURE_2D, SceneColorTex);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SceneWidth, SceneHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, SceneColorTex, 0);
+    if (SsaoBlurFbo)
+    {
+        SsaoBlurFbo->Dispose();
+        delete SsaoBlurFbo;
+        SsaoBlurFbo = nullptr;
+    }
 
-	// Depth
-	glGenTextures(1, &SceneDepthTex);
-	glBindTexture(GL_TEXTURE_2D, SceneDepthTex);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, SceneWidth, SceneHeight, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, SceneDepthTex, 0);
+    if (SsaoFullResFbo)
+    {
+        SsaoFullResFbo->Dispose();
+        delete SsaoFullResFbo;
+        SsaoFullResFbo = nullptr;
+    }
+	DeleteFullscreenQuad();
 
-	GLint depthAttachment = 0;
-glGetFramebufferAttachmentParameteriv(
-    GL_FRAMEBUFFER,
-    GL_DEPTH_ATTACHMENT,
-    GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,
-    &depthAttachment
-);
-debugf(TEXT("Depth attachment = %d"), depthAttachment);
+    SceneWidth  = NewX;
+    SceneHeight = NewY;
 
-	// Create sampler for depth texture
-	if (!DepthSampler)
-	{
-		glGenSamplers(1, &DepthSampler);
-		glSamplerParameteri(DepthSampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glSamplerParameteri(DepthSampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glSamplerParameteri(DepthSampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glSamplerParameteri(DepthSampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	}
+    INT Samples = (UseAA ? 4 : 1); // or whatever max samples you want
 
-	// Back to default
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	SceneFbo = new Fbo(
+		SceneWidth,
+		SceneHeight,
+		Samples,
+		1,
+		TRUE,   // depth texture (active depth buffer)
+		FALSE   // no depth RBO
+	);
+
+    if (Multipass)
+    {
+        gbufferFbo = new Fbo(
+            SceneWidth,
+            SceneHeight,
+            1,      // single-sample
+            2,      // color0 = normals, color1 = spare/future
+            TRUE,   // depth texture (SSAO needs depth)
+            FALSE,  // no depth RBO
+			GL_RGB16F  // for normals
+        );
+
+		// Half-res SSAO
+		SsaoFbo = new Fbo(
+			SceneWidth / 2,
+			SceneHeight / 2,
+			1,
+			1,      // AO only
+			FALSE,
+			FALSE
+		);
+
+		SsaoBlurFbo = new Fbo(
+			SceneWidth / 2,
+			SceneHeight / 2,
+			1,
+			1,
+			FALSE,
+			FALSE
+		);
+
+		SsaoFullResFbo = new Fbo(
+			SceneWidth,
+			SceneHeight,
+			1,
+			1,
+			FALSE,
+			FALSE
+		);
+
+		CreateFullscreenQuad();
+    }
 
 	// Flush textures.
 	Flush(1);
@@ -1290,24 +1320,20 @@ void UXOpenGLRenderDevice::UnsetRes()
 	unguard;
 }
 
-INT UXOpenGLRenderDevice::PrepareDepthTexture()
+void UXOpenGLRenderDevice::PrepareDepthTexture()
 {
-    if (UsingBindlessTextures)
+    // Scene depth
+    if (SceneFbo && SceneFbo->depthTexID)
     {
-        if (!SceneDepthBindlessHandle)
+        if (UsingBindlessTextures)
         {
-            SceneDepthBindlessHandle = glGetTextureSamplerHandleARB(SceneDepthTex, DepthSampler);
-            glMakeTextureHandleResidentARB(SceneDepthBindlessHandle);
+            SceneFbo->GetDepthBindlessHandle();
+        }
+        else
+        {
+            SceneFbo->BindDepthTexture(SceneDepthIndex);
         }
     }
-    else
-    {
-        glActiveTexture(GL_TEXTURE0 + DepthMapIndex);
-        glBindTexture(GL_TEXTURE_2D, SceneDepthTex);
-        glBindSampler(DepthMapIndex, DepthSampler);
-    }
-
-    return DepthMapIndex;
 }
 
 void UXOpenGLRenderDevice::SwapControl()
@@ -1577,6 +1603,68 @@ void UXOpenGLRenderDevice::UpdateCoords(FSceneNode* Frame)
 	unguard;
 }
 
+void DrawDebugViewspaceTri()
+{
+    static GLuint vao = 0, vbo = 0;
+
+    if (!vao)
+    {
+        float verts[] = {
+            // x, y, z in VIEW SPACE
+            -0.5f, -0.5f, 10.0f,   // try Z = -10 (in front)
+             0.5f, -0.5f, 10.0f,
+             0.0f,  0.5f, 10.0f
+        };
+
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+    }
+
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
+
+void DrawDebugTriangle()
+{
+    static GLuint vao = 0, vbo = 0;
+
+    if (!vao)
+    {
+        float verts[] = {
+            // Coords.xy, Coords.z, Normal.xyz
+            -0.5f, -0.5f, 0.0f,   0,0,1,
+             0.5f, -0.5f, 0.0f,   0,0,1,
+             0.0f,  0.5f, 0.0f,   0,0,1
+        };
+
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+
+        // location = 0  Coords
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+
+        // location = 1  Normal
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    }
+
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
 void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 {
 	guard(UXOpenGLRenderDevice::SetSceneNode);
@@ -1686,7 +1774,47 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 
 	LightInfoBuffer.Bind();
 	LightInfoBuffer.BufferData(true);
-	NewFrame(Frame);
+
+	// Depth prepass into gbufferFbo (for SSAO)
+	if (Multipass && !DepthPrepassDone && LastLevel && !LastLevel->IsEntry)
+	{
+		gbufferFbo->Bind();
+		glViewport(0, 0, SceneWidth, SceneHeight);
+
+		glClearColor(1.0, 0.0, 1.0, 1.0);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+		glEnable(GL_DEPTH_TEST);
+		glDepthFunc(GL_LEQUAL);
+		glDepthMask(GL_TRUE);
+		glFrontFace(GL_CW);
+		glEnable(GL_CULL_FACE);
+		glCullFace(GL_BACK);
+
+		for (INT iSurf = 0; iSurf < LastLevel->Model->Surfs.Num(); ++iSurf)
+		{
+			FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
+			if (!pSI)
+				continue;
+
+			UXOpenGLRenderDevice::DrawPrepassSurface(Frame, *pSI);
+		}
+
+		auto Shader = static_cast<DrawPrepassProgram*>(Shaders[Prepass_Prog]);
+		Shader->Flush(false);
+
+		//DrawDebugViewspaceTri();
+
+		DepthPrepassDone = true;
+
+		RunSSAOPass(Frame);
+		
+		glDisable(GL_CULL_FACE); // decals croak without
+		// Rebind scene FBO
+		SceneFbo->Bind();
+		glViewport(0, 0, SceneWidth, SceneHeight);
+	}
+
 	unguard;
 }
 
@@ -1733,6 +1861,7 @@ void UXOpenGLRenderDevice::SetOrthoProjection(FSceneNode* Frame)
 	FrameState->modelviewMat = FrameState->viewMat * FrameState->modelMat;
 
 	UpdateCoords(Frame);
+
 	unguard;
 }
 
@@ -1826,7 +1955,7 @@ BYTE UXOpenGLRenderDevice::PopClipPlane()
 	return 1;
 	unguard;
 }
-
+GLuint DebugDepthProgram = -1;
 static INT LockCount = 0;
 void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane ScreenClear, DWORD RenderLockFlags, BYTE* InHitData, INT* InHitSize)
 {
@@ -1837,16 +1966,34 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 	
 	MakeCurrent();
 
-	// Bind our offscreen FBO for world rendering
-	glBindFramebuffer(GL_FRAMEBUFFER, SceneFBO);
-	glViewport(0, 0, SceneWidth, SceneHeight);
-
 	// detect level change, clear out the facet->light hashmaps
-	if (Viewport->Actor->XLevel != LastLevel)
-    {
-		LastLevel = Viewport->Actor->XLevel;
-		NewLevelPP();
-    }
+	ULevel* level = Viewport->Actor->XLevel;
+
+	// Always update LastLevel first — it always means “current level”
+	bool levelChanged = (level != LastLevel);
+	LastLevel = level;
+
+	// Only run the transition handler for real levels
+	if (levelChanged && LastLevel && !LastLevel->IsEntry)
+	{
+		DebugDepthProgram = glCreateProgram();
+
+		if (!ShaderLoader::LoadExternalShaders(
+				DebugDepthProgram,
+				"xopengl/shaders/debug_depth.vert",
+				"xopengl/shaders/debug_depth.frag"))
+		{
+			debugf(TEXT("Failed to load DebugDepth shader"));
+		}
+
+		NewLevelPP();   // sees correct LastLevel
+	}
+
+	DepthPrepassDone = false;
+
+	// Bind our offscreen FBO for world rendering
+	SceneFbo->Bind();
+	glViewport(0, 0, SceneWidth, SceneHeight);
 
 	// Clear the Z buffer if needed.
 	glClearColor(ScreenClear.X, ScreenClear.Y, ScreenClear.Z, ScreenClear.W);
@@ -1909,7 +2056,7 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 	check(LockCount == 1);
 
 	// Blit from offscreen FBO to default framebuffer
-	glBindFramebuffer(GL_READ_FRAMEBUFFER, SceneFBO);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, SceneFbo->fboID);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
 	glBlitFramebuffer(
@@ -1918,6 +2065,37 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 		GL_COLOR_BUFFER_BIT,
 		GL_NEAREST
 	);
+
+	// Debug: visualize GBuffer normals
+	/*if (Multipass && LastLevel && !LastLevel->IsEntry)
+	{
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, gbufferFbo->fboID);
+
+		glReadBuffer(GL_COLOR_ATTACHMENT0);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+		glBlitFramebuffer(
+			0, 0, SceneWidth, SceneHeight,
+			0, 0, SceneWidth, SceneHeight,
+			GL_COLOR_BUFFER_BIT,
+			GL_NEAREST
+		);
+	}*/
+
+	// debug postprocessing
+	/*if (Multipass && LastLevel && !LastLevel->IsEntry)
+	{
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, SsaoFbo->fboID);
+		glReadBuffer(GL_COLOR_ATTACHMENT0);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+		glBlitFramebuffer(
+			0, 0, SceneWidth/2, SceneHeight/2,
+			0, 0, SceneWidth, SceneHeight,
+			GL_COLOR_BUFFER_BIT,
+			GL_NEAREST
+		);
+	}*/
 
 	// Unbind
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -2109,7 +2287,6 @@ void UXOpenGLRenderDevice::ClearZ(FSceneNode* Frame)
 #endif
 	SetBlend(PF_Occlude);
 	glClear(GL_DEPTH_BUFFER_BIT);
-	
 	unguard;
 }
 

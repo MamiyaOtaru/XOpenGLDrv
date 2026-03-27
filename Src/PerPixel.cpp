@@ -255,125 +255,33 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         return;
 
 	// --- Retrieve cached world-space polygon vertices if present ---
-	TArray<glm::uint>* TriIdx = SurfaceTriIndices.Find(iSurf);
     TArray<FVector> Verts;
 	FSurfInfo* SurfaceInfo = SurfaceInfoMap.Find(iSurf);
-	if (SurfaceInfo)
-	{
-        Verts = SurfaceInfo->Verts;
-	}
-    else
+    if (!SurfaceInfo)
     {
-        // fallback: compute world-space verts now
-        GetWorldspaceSurfaceVerts(Level, iSurf, Verts);
+        return;
     }
-
+    Verts = SurfaceInfo->Verts;
+	
     if (Verts.Num() < 3)
         return;
 
-	// If we don't have a precomputed triangulation, build it (dedupe + earclip)
+    TArray<glm::uint>& TriIdx = SurfaceInfo->TriIdx;
+
+	// get precomputed triangulation (surface is degenerate if there is none)
 	TArray<FVector> Triangles; // triplets of vertices
-	if (TriIdx && TriIdx->Num() > 0)
+	if (TriIdx.Num() > 0)
 	{
-		for (INT t = 0; t < TriIdx->Num(); t += 3)
+		for (INT t = 0; t < TriIdx.Num(); t += 3)
 		{
-			Triangles.AddItem(Verts((*TriIdx)(t)));
-			Triangles.AddItem(Verts((*TriIdx)(t+1)));
-			Triangles.AddItem(Verts((*TriIdx)(t+2)));
+			Triangles.AddItem(Verts(TriIdx(t)));
+			Triangles.AddItem(Verts(TriIdx(t+1)));
+			Triangles.AddItem(Verts(TriIdx(t+2)));
 		}
 	}
 	else
 	{
-		// existing dedupe + earclip triangulation (same as earlier)
-		// --- Dedupicate ---
-		for (INT i = 0; i < Verts.Num(); i++)
-		{
-			for (INT j = i + 1; j < Verts.Num(); j++)
-			{
-				if (FPointsAreNear(Verts(i), Verts(j), 0.0025f))
-				{
-					Verts.Remove(j);
-					j--;
-				}
-			}
-		}
-
-		// --- Stable world-space normal ---
-		const FBspSurf& Surf = Level->Model->Surfs(iSurf);
-		FVector FacetNormal = Level->Model->Vectors(Surf.vNormal);
-		FacetNormal.Normalize();
-
-		// --- Stable world-space centroid ---
-		FVector FacetPos(0,0,0);
-		for (INT i = 0; i < Verts.Num(); ++i)
-			FacetPos += Verts(i);
-		FacetPos /= Verts.Num();
-
-		FVector X;
-		if (Abs(FacetNormal.X) > Abs(FacetNormal.Z))
-			X = FVector(-FacetNormal.Y, FacetNormal.X, 0.f);
-		else
-			X = FVector(0.f, -FacetNormal.Z, FacetNormal.Y);
-		X.Normalize();
-		FVector Y = (FacetNormal ^ X).SafeNormal();
-
-		TArray<FVert2D> Poly2D;
-		for (INT i = 0; i < Verts.Num(); i++)
-		{
-			FVector d = Verts(i) - FacetPos;
-			FVert2D v;
-			v.X = d | X;
-			v.Y = d | Y;
-			v.P = Verts(i);
-			Poly2D.AddItem(v);
-		}
-
-		TArray<FVert2D> P = Poly2D;
-		while (P.Num() >= 3)
-		{
-			UBOOL earFound = 0;
-			for (INT i = 0; i < P.Num(); i++)
-			{
-				INT i0 = (i + P.Num() - 1) % P.Num();
-				INT i1 = i;
-				INT i2 = (i + 1) % P.Num();
-
-				const FVert2D& A = P(i0);
-				const FVert2D& B = P(i1);
-				const FVert2D& C = P(i2);
-
-				if (!IsConvex(A, B, C))
-					continue;
-
-				UBOOL containsPoint = 0;
-				for (INT j = 0; j < P.Num(); j++)
-				{
-					if (j == i0 || j == i1 || j == i2)
-						continue;
-
-					if (PointInTri(P(j), A, B, C))
-					{
-						containsPoint = 1;
-						break;
-					}
-				}
-
-				if (containsPoint)
-					continue;
-
-				// This is an ear
-				Triangles.AddItem(A.P);
-				Triangles.AddItem(B.P);
-				Triangles.AddItem(C.P);
-
-				P.Remove(i1);
-				earFound = 1;
-				break;
-			}
-
-			if (!earFound)
-				break; // polygon is degenerate
-		}
+        return;
 	}
 
     TArray<RankedLight> Ranked;
@@ -453,9 +361,9 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         float brightnessFactor = Max(lum, brightness);
 
 		FVector LightDir = (LightPos - closest).SafeNormal();
-        float lambert = 1;// Max(0.f, FacetNormal | LightDir);
+        float lambert = Max(0.f, FacetNormal | LightDir);
 
-        float score = attenuation *brightnessFactor* lambert;
+        float score = attenuation * brightnessFactor * lambert;
 
         RankedLight R;
         R.Light = L;
@@ -742,6 +650,7 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     Add(TEXT("ratchet"), 60);
     Add(TEXT("lament ]["), 55);
 	Add(TEXT("pressure"), 50);
+    Add(TEXT("viridian"), 50);
 	Add(TEXT("closer"), 45);
     Add(TEXT("metal dream"), 45);
     Add(TEXT("wolf's bay"), 45);
@@ -807,19 +716,21 @@ void UXOpenGLRenderDevice::NewLevelPP()
 	// empty this on new level.  Otherwise can get stale pointers
 	RoughnessCache.Empty();
 
-	// set number of lights for this level
-	FStringNoInit LevelName = LastLevel->GetLevelInfo()->Title;
-	FString Lower = LevelName.Locs();
-	//debugf(TEXT("new level %s"), Lower);
-	LevelLightCap = GetLevelLightCap(Lower);
-	// Build smooth vertex normals for phong shading (precompute once per level)
-	if (LastLevel && LastLevel->Model)
+    if (LastLevel && LastLevel->Model && LastLevel->GetLevelInfo())
 	{
+	    // set number of lights for this level
+	    FStringNoInit LevelName = LastLevel->GetLevelInfo()->Title;
+	    FString Lower = LevelName.Locs();
+	    //debugf(TEXT("new level %s"), Lower);
+	    LevelLightCap = GetLevelLightCap(Lower);
+
+    	// Build smooth vertex normals for phong shading (precompute once per level)
+
 		BuildSmoothVertexNormalsForLevel(LastLevel);
-	}
-    // build lightlist map
-    if (LastLevel && LastLevel->Model)
-    {
+        BuildSurfaceTriangulation(LastLevel);
+
+        // build lightlist map
+
         // Precompute static lights for every surface in the level and load extra textures
         UModel* Model = LastLevel->Model;
         INT NumSurfs = Model->Surfs.Num();

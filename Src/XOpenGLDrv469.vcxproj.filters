@@ -67,6 +67,27 @@
     <ClCompile Include="BspCache.cpp">
       <Filter>Src</Filter>
     </ClCompile>
+    <ClCompile Include="DrawPrepass.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="DrawDepthOnly_GLSL.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="FBO.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="ShaderLoader.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="PostProcess.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="SSAOPass.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="BlurPass.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Inc\XOpenGL.h">
@@ -89,6 +110,12 @@
       <Filter>Inc</Filter>
     </ClInclude>
     <ClInclude Include="..\Inc\thirdparty\stb\stb_image.h">
+      <Filter>Inc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Inc\FBO.h">
+      <Filter>Inc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Inc\ShaderLoader.h">
       <Filter>Inc</Filter>
     </ClInclude>
   </ItemGroup>
