@@ -135,6 +135,7 @@ precision lowp int;
 	Out << "#define HeightMapIndex " << HeightMapIndex << "u" << END_LINE;
 	Out << "#define RoughnessMapIndex " << RoughnessMapIndex << "u" << END_LINE;
 	Out << "#define SceneDepthIndex " << SceneDepthIndex << "u" << END_LINE;
+	Out << "#define PrepassDepthIndex " << PrepassDepthIndex << "u" << END_LINE;
 	Out << "#define PostProcessIndex " << PostProcessIndex << "u" << END_LINE;
 
 	// Aliases for the TMUs we bind textures to when we're not using bindless textures

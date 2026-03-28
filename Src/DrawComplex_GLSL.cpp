@@ -445,7 +445,7 @@ layout(location = 0, index = 1) out vec4 FragColor1;
 # endif
 layout(location = 0, index = 0) out vec4 FragColor;
 #endif
-)";
+    )";
 
     EmitParallaxFunction(GL, Out);
 
@@ -463,6 +463,72 @@ float LinearizeDepth(float depth, float nearZ, float farZ)
            (farZ + nearZ - z * (farZ - nearZ));
 }
 
+vec2 ViewToUV(vec3 viewPos) {
+    vec4 clip = projMat * vec4(viewPos, 1.0);
+    vec3 ndc  = clip.xyz / clip.w;
+    vec2 uv   = ndc.xy * 0.5 + 0.5;
+    
+    uv.x = 1.0 - uv.x; // The "Inversion" Fix
+    return uv;
+}
+
+float ShadowForLight(vec3 fragPosVS, vec3 lightPosVS)
+{
+    // --- Tunable parameters ---
+    const float bias      = 5;   // push off the surface
+    const float stepSize  = 2.0;   // march increment in view-space units
+    const float thickness = 50.0;   // how much depth difference counts as a hit
+    const int   maxSteps  = 640;    // safety cap
+
+    // --- View-space normal (already correct) ---
+    vec3 normalVS = normalize(vNormal);
+
+    // --- Push origin out of the surface ---
+    vec3 rayOrigin = fragPosVS + normalVS * bias;
+
+    // --- Compute direction and max distance FROM THE ORIGIN ---
+    vec3 L = lightPosVS - rayOrigin;
+    float distToLight = length(L);
+    vec3 lightDirVS = L / distToLight;
+
+    // --- March ---
+    for (int i = 0; i < maxSteps; i++)
+    {
+        float t = float(i) * stepSize;
+        if (t > distToLight)
+            break; // reached the light
+
+        vec3 currentPos = rayOrigin + lightDirVS * t;
+
+        // Project to screen
+        vec2 uv = ViewToUV(currentPos);
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) 
+            return 0.0;
+
+        // Sample depth
+        float depth = GetDepthTexel(GetTexHandleHelper(vDrawID, PrepassDepthIndex),
+                                    TMUPrepassDepthMap, uv).r;
+        float sceneZ = LinearizeDepth(depth, 0.5, 65336.0);
+
+        float rayZ = currentPos.z;
+
+        // Occlusion test
+        float dz = rayZ - sceneZ;
+        if (dz > 0.0 && dz < thickness)
+            return 1.0; // shadowed
+    }
+
+    return 0.0; // no occlusion
+}
+
+
+
+
+
+
+
+    )";
+    Out << R"(
 void main(void)
 {
   // normals debug
@@ -477,6 +543,28 @@ void main(void)
 
   vec4 TotalColor = vec4(1.0);
   vec2 texCoords = vTexCoords;
+
+if (false) {
+    vec3 fragPosVS = vCoords; // your view-space position
+
+    // Project that *same* point to UV
+    vec2 uv = ViewToUV(fragPosVS);
+
+    // Sample depth at that UV
+    float depth = GetDepthTexel(GetTexHandleHelper(vDrawID, PrepassDepthIndex),
+                                TMUPrepassDepthMap, uv).r;
+
+    // Whatever you *think* the right inverse is:
+    float sceneZ = LinearizeDepth(depth, 0.5, 65336.0);
+
+    // Compare
+    float rayZ = fragPosVS.z;
+    float diff = rayZ - sceneZ;
+    //FragColor = vec4(diff,0.0,0.0,1.0);
+vec3 normalVS = normalize(InFrameCoords * vNormal);
+FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
+    return;
+}
 
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
 #if OPT_PhongShading
@@ -691,6 +779,11 @@ void main(void)
       if (dist > WorldLightRadius)
         continue;
 
+      vec3 originVS = vec3(vCoords.x, vCoords.y, vCoords.z);
+      vec3 lightPosVS = vec3(InLightPos.x, InLightPos.y, InLightPos.z);
+      if (ShadowForLight(vCoords, lightPosVS) != 0)
+        continue;
+
       //float NormalLightRadius  = LightData5[i].x;
       // attenuation that fades out by radius.  worldLightRadius looks better here
       float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
@@ -866,7 +959,7 @@ totalLight *= AO * AO * AO * AO * AO * AO;
     float spriteZ = gl_FragCoord.z;
 
     // linearization
-    float n = 1.0;
+    float n = 0.5;
     float f = 65336.0;
     float sceneL  = (2.0 * n) / (f + n - sceneZ  * (f - n));
     float spriteL = (2.0 * n) / (f + n - spriteZ * (f - n));
