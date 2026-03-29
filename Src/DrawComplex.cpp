@@ -84,7 +84,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			if (SI)
 				SI->LastDrawnFrame = LocalFrameCounter;
 		}
-	} 
+	}
 
 	auto Shader = dynamic_cast<DrawComplexProgram*>(Shaders[Complex_Prog]);
 
@@ -173,44 +173,83 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		SetBlend(NextPolyFlags);
 	}
 
-	GLuint metaIndex = 0;
+	GLuint metaIndex = Shader->FacetMetaRing.SubBufferOffset + Shader->FacetMetaRing.NextElemIndex;
+	// Compute the facet record pointer ONCE
+	FFacetData* facetPtr = Shader->FacetMetaRing.GetCurrentElementPtr();
+	facetPtr->LightMeta      = glm::uvec2(0, 0);
+	facetPtr->StaticBasisU   = glm::vec4(0);
+	facetPtr->StaticBasisV   = glm::vec4(0);
+	facetPtr->StaticBasisO   = glm::vec4(0);
+	facetPtr->StaticUVMinMax = glm::vec4(0);
+	facetPtr->TexHandles[0]  = 0;
+	facetPtr->TexHandles[1]  = 0;
+
+	// Write light list meta (if BumpMaps enabled)
 	if (BumpMaps)
 	{
-		// Append indices and meta into ring buffers (compute absolute indices)
 		GLuint startIndex = 0;
 		GLuint count = static_cast<GLuint>(facetIndices.Num());
 
 		if (count > 0)
 		{
-			// absolute start index in the big SSBO = SubBufferOffset + NextElemIndex
+			// absolute start index in the big SSBO
 			startIndex = Shader->FacetIndexRing.SubBufferOffset + Shader->FacetIndexRing.NextElemIndex;
 
-			// Copy indices into mapped buffer memory
+			// copy indices
 			glm::uint* dst = Shader->FacetIndexRing.GetCurrentElementPtr();
-			for (UINT k = 0; k < (UINT)count; ++k)
+			for (UINT k = 0; k < count; ++k)
 				dst[k] = facetIndices(k);
 
 			Shader->FacetIndexRing.Advance(count);
 
-			// compute absolute meta index where we'll write the (start,count) pair
-			metaIndex = Shader->FacetMetaRing.SubBufferOffset + Shader->FacetMetaRing.NextElemIndex;
-
-			// Write meta (absolute start,count) into meta ring
-			glm::uvec2* metaPtr = Shader->FacetMetaRing.GetCurrentElementPtr();
-			metaPtr->x = startIndex;
-			metaPtr->y = count;
-			Shader->FacetMetaRing.Advance(1);
-        } // end if there is at least one light affecting this facet
-		else
-		{
-			// no lights -> write zero meta and metaIndex pointing to current meta slot
-			metaIndex = Shader->FacetMetaRing.SubBufferOffset + Shader->FacetMetaRing.NextElemIndex;
-			glm::uvec2* metaPtr = Shader->FacetMetaRing.GetCurrentElementPtr();
-			metaPtr->x = 0u;
-			metaPtr->y = 0u;
-			Shader->FacetMetaRing.Advance(1);
+			facetPtr->LightMeta = glm::uvec2(startIndex, count);
 		}
-	} // end if per pixel (write lights to buffer)
+	}
+
+	// Write static lightmap params (if present)
+	if (SI && SI->HasHDLightmap)
+	{
+		const FSurfaceLightmap& LM = SI->HDLightmap;
+		if (LM.TexId != 0 || LM.BindlessHandle != 0)
+		{
+			// World -> View matrix (same one used for vertices)
+			const FCoords& View = Frame->Coords;
+
+			// Transform basis vectors (direction only)
+			FVector Uv = LM.Basis.TangentU.TransformVectorBy(View);
+			FVector Vv = LM.Basis.TangentV.TransformVectorBy(View);
+
+			// Transform origin (position)
+			FVector Ov = LM.Basis.Origin.TransformPointBy(View);
+
+			// Store into facet record
+			facetPtr->StaticBasisU   = glm::vec4(Uv.X, Uv.Y, Uv.Z, 0.0f);
+			facetPtr->StaticBasisV   = glm::vec4(Vv.X, Vv.Y, Vv.Z, 0.0f);
+			facetPtr->StaticBasisO   = glm::vec4(Ov.X, Ov.Y, Ov.Z, 0.0f);
+
+			// world
+			/*facetPtr->StaticBasisU = glm::vec4(LM.Basis.TangentU.X, LM.Basis.TangentU.Y, LM.Basis.TangentU.Z, 0.0f);
+			facetPtr->StaticBasisV = glm::vec4(LM.Basis.TangentV.X, LM.Basis.TangentV.Y, LM.Basis.TangentV.Z, 0.0f);
+			facetPtr->StaticBasisO = glm::vec4(LM.Basis.Origin.X, LM.Basis.Origin.Y, LM.Basis.Origin.Z, 0.0f);*/
+			facetPtr->StaticUVMinMax = glm::vec4(LM.MinU, LM.MaxU, LM.MinV, LM.MaxV);
+			if (UseBindlessTextures)
+			{
+				// single static LM handle in x
+				facetPtr->TexHandles[0] = LM.BindlessHandle;
+				facetPtr->TexHandles[1] = 0;
+			}
+			else
+			{
+				// non-bindless path: shader uses sampler2D, handle unused
+				facetPtr->TexHandles[0] = 0;
+				facetPtr->TexHandles[1] = 0;
+			}
+			DrawFlags |= ShaderDrawFlags::DF_HDLightMap;
+		}
+	}
+	// Advance ONCE per facet
+	Shader->FacetMetaRing.Advance(1);
+	
 	DrawComplexParameters* DrawCallParams = Shader->ParametersBuffer.GetCurrentElementPtr();
 
 	// Editor Support.
@@ -683,7 +722,7 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 	VertexBufferSize				= DRAWCOMPLEX_SIZE * 12;
 	ParametersBufferSize			= DRAWCOMPLEX_SIZE;
 	ParametersBufferBindingIndex	= GlobalShaderBindingIndices::ComplexParametersIndex;
-	NumTextureSamplers				= 12;
+	NumTextureSamplers				= 13;
 	DrawMode						= GL_TRIANGLES;
 	UseSSBOParametersBuffer			= RenDev->UsingShaderDrawParameters;
 	ParametersInfo					= DrawComplexParametersInfo;

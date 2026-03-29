@@ -1192,6 +1192,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 			DF_PhongShading	  = 1 << 16,
 			DF_ReadDepth	  = 1 << 17,
 			DF_Multipass	  = 1 << 18,
+			DF_HDLightMap	  = 1 << 19,
 		};
 	};
     
@@ -1390,6 +1391,21 @@ class UXOpenGLRenderDevice : public URenderDevice
 		virtual void Flush(bool Rotate = false) = 0;
 	};
 
+	// ============================== per surface data ======================
+	struct FFacetData
+	{
+		glm::uvec2 LightMeta;        // x = startIndex, y = count
+		glm::uvec2 Padding; 
+
+		glm::vec4 StaticBasisU;      // TangentU.xyz
+		glm::vec4 StaticBasisV;      // TangentV.xyz
+		glm::vec4 StaticBasisO;      // Origin.xyz
+		glm::vec4 StaticUVMinMax;    // MinU, MaxU, MinV, MaxV
+
+		glm::uint64 TexHandles[2];   // x = bindless handle (or 0), yzw reserved
+	};
+	static_assert(sizeof(FFacetData) == 96, "FacetData size mismatch");
+
 	// Base class for shader implementations
     template
     <
@@ -1550,11 +1566,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 			}
 			if (FacetMetaRingSize > 0 && !FacetMetaRing.Buffer)
 			{
-				// meta ring (uvec2)
+				// meta ring (indices in the index ring, UV info for lightmap
 				FacetMetaRing.GenerateSSBOBuffer(RenDev, GlobalShaderBindingIndices::FacetMetaIndex);
 				FacetMetaRing.MapSSBOBuffer(RenDev->UsingPersistentBuffers, FacetMetaRingSize, DRAWCALL_BUFFER_USAGE_PATTERN);
 			}
-
 		}
 
 		virtual void UnmapBuffers()
@@ -1568,11 +1583,11 @@ class UXOpenGLRenderDevice : public URenderDevice
 		BufferObject<DrawCallParamsType>            ParametersBuffer;
 		BufferObject<VertexType>                    VertBuffer;
 
-		// Ring buffers for per-facet index lists (uses same NUMBUFFERS sub-buffer rotation mechanism)
-		BufferObject<glm::uint>                 FacetIndexRing;    // holds uint indices into LightInfoBuffer
-		BufferObject<glm::uvec2>                FacetMetaRing;     // holds (start,count) per drawID
 		GLuint                                  FacetIndexRingSize = 65536; // elements per sub-buffer (tunable)
 		GLuint                                  FacetMetaRingSize  = DRAWCOMPLEX_SIZE; // entries per sub-buffer (tunable)
+		// Ring buffers for per-facet index lists (uses same NUMBUFFERS sub-buffer rotation mechanism)
+		BufferObject<glm::uint>                 FacetIndexRing;    // holds uint indices into LightInfoBuffer
+		BufferObject<FFacetData>				FacetMetaRing;     // holds (start,count) per drawID
 	};
 
 	ShaderProgram* Shaders[Max_Prog]{};
@@ -1615,7 +1630,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 		SceneDepthIndex			= 9,
 		PrepassDepthIndex		= 10,
 		PostProcessIndex		= 11,
-		UploadIndex				= 12
+		StaticLightmapIndex		= 12,
+		UploadIndex				= 13
 	};
 
 	// Per-frame state
@@ -1683,6 +1699,34 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
 	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
 
+	struct SurfaceBasis
+	{
+		FVector Origin;      // world-space base point of the surface
+		FVector TangentU;    // world-space U direction (normalized)
+		FVector TangentV;    // world-space V direction (normalized)
+		FVector Normal;      // world-space surface normal (normalized)
+	};
+
+	struct FSurfaceLightmap
+	{
+		// Geometric mapping
+		SurfaceBasis Basis;
+
+		// UV extents in our own map space
+		float MinU;
+		float MaxU;
+		float MinV;
+		float MaxV;
+
+		// Lightmap resolution
+		INT Width;
+		INT Height;
+
+		// GPU resource
+		GLuint TexId;
+		QWORD  BindlessHandle;
+	};
+
 	#define MAX_SURFACE_LIGHTS 95 // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/
 	INT DefaultLightCap = 25;
     INT LevelLightCap = DefaultLightCap;
@@ -1701,6 +1745,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	void UXOpenGLRenderDevice::InitLightLevelOverrides();
+	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(UModel* Model, const FBspSurf& Surf);
+	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>* Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model);
+	FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(const TArray<AActor*>* Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model);
+	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level);
 	void UXOpenGLRenderDevice::NewLevelPP();
 	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
 
@@ -1734,6 +1782,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 		float   Area;                    // polygon area (computed from VertIndices)
 		FVector SurfaceNormal;           // editor normal (FBspSurf.vNormal)
 		int LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
+
+		bool HasHDLightmap = false;
+		FSurfaceLightmap HDLightmap; // our HD lightmap info
 	};
 
 	// Map surface index -> FSurfInfoInternal (built by BuildSmoothVertexNormalsForLevel)
@@ -1791,6 +1842,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	//
 	// Shader Data Structures
 	//
+
 
 	// ============================== DRAWTILE ==============================
 	struct DrawTileParameters
@@ -1881,14 +1933,14 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::vec4 YAxis;
 		glm::vec4 ZAxis;
 		glm::vec4 DrawColor;
-		glm::uint64 TexHandles[12]; // mirrored as 6 uvec2s
+		glm::uint64 TexHandles[14]; // mirrored as 7 uvec2s
 		glm::uint32 DrawFlags;
 		glm::float32 Roughness;
 		glm::uint32 SceneWidth;
 		glm::uint32 SceneHeight;
 	};
 	static const ShaderProgram::DrawCallParameterInfo DrawComplexParametersInfo[];
-	static_assert(sizeof(DrawComplexParameters) == 336, "Invalid complex drawcall parameters size");
+	static_assert(sizeof(DrawComplexParameters) == 352, "Invalid complex drawcall parameters size");
 
 	struct DrawComplexVertex
 	{

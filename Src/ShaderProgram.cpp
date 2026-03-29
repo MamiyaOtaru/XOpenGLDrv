@@ -115,6 +115,7 @@ precision lowp int;
 	Out << "#define DF_PhongShading " << ShaderDrawFlags::DF_PhongShading << "u" << END_LINE;
 	Out << "#define DF_ReadDepth " << ShaderDrawFlags::DF_ReadDepth << "u" << END_LINE;
 	Out << "#define DF_Multipass " << ShaderDrawFlags::DF_Multipass << "u" << END_LINE;
+	Out << "#define DF_HDLightMap " << ShaderDrawFlags::DF_HDLightMap << "u" << END_LINE;
 	Out << "#define DF_Masked " << ShaderDrawFlags::DF_Masked << "u" << END_LINE;
 	Out << "#define DF_Unlit " << ShaderDrawFlags::DF_Unlit << "u" << END_LINE;
 	Out << "#define DF_Modulated " << ShaderDrawFlags::DF_Modulated << "u" << END_LINE;
@@ -137,6 +138,7 @@ precision lowp int;
 	Out << "#define SceneDepthIndex " << SceneDepthIndex << "u" << END_LINE;
 	Out << "#define PrepassDepthIndex " << PrepassDepthIndex << "u" << END_LINE;
 	Out << "#define PostProcessIndex " << PostProcessIndex << "u" << END_LINE;
+	Out << "#define StaticLightmapIndex " << StaticLightmapIndex << "u" << END_LINE;
 
 	// Aliases for the TMUs we bind textures to when we're not using bindless textures
 	Out << "#define TMUDiffuse Texture" << DiffuseTextureIndex << END_LINE;
@@ -151,6 +153,7 @@ precision lowp int;
 	Out << "#define TMUDepthMap Texture" << SceneDepthIndex << END_LINE;
 	Out << "#define TMUPrepassDepthMap Texture" << PrepassDepthIndex << END_LINE;
 	Out << "#define TMUPostProcessMap Texture" << PostProcessIndex << END_LINE;
+	Out << "#define TMUStaticLightmap Texture" << StaticLightmapIndex << END_LINE;
 
 	Out << R"(
 layout(std140) uniform FrameState
@@ -213,7 +216,22 @@ layout(std140) uniform LightInfo
 	}
 
 	Out << R"(
-layout(std430, binding = )" << GlobalShaderBindingIndices::FacetMetaIndex << R"() readonly buffer FacetMeta { uvec2 FacetMetaArr[]; };)";
+struct FacetData
+{
+    uvec2 LightMeta;          // x = startIndex, y = count
+	uvec2 Padding;
+
+    vec4  StaticBasisU;       // TangentU.xyz
+    vec4  StaticBasisV;       // TangentV.xyz
+    vec4  StaticBasisO;       // Origin.xyz
+    vec4  StaticUVMinMax;     // MinU, MaxU, MinV, MaxV
+
+    uvec4 TexHandles[1];      // TexHandles.x = bindless handle (or 0)
+};
+layout(std430, binding = )" << GlobalShaderBindingIndices::FacetMetaIndex << R"() readonly buffer FacetMetaBuffer
+{
+    FacetData FacetMetaArr[];
+};)";
 	Out << R"(
 layout(std430, binding = )" << GlobalShaderBindingIndices::FacetIndexDataIndex << R"() readonly buffer FacetIndices { uint FacetIndicesArr[]; };)";
 

@@ -707,6 +707,327 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     }
 }
 
+// lightmap stuff
+
+
+UXOpenGLRenderDevice::SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(UModel* Model, const FBspSurf& Surf)
+{
+    SurfaceBasis B;
+
+    // Raw axes
+    FVector U = Model->Vectors(Surf.vTextureU);
+    FVector V = Model->Vectors(Surf.vTextureV);
+    FVector N = Model->Vectors(Surf.vNormal);
+
+    // Normalize and orthogonalize
+    if (!U.IsNearlyZero())
+        U = U.SafeNormal();
+    else
+        U = FVector(1,0,0);
+
+    if (!V.IsNearlyZero())
+        V = V.SafeNormal();
+    else
+        V = FVector(0,1,0);
+
+    if (!N.IsNearlyZero())
+        N = N.SafeNormal();
+    else
+        N = (U ^ V).SafeNormal();
+
+    // Re-orthogonalize V to U if needed
+    V = (N ^ U).SafeNormal();
+
+    B.TangentU = U;
+    B.TangentV = V;
+    B.Normal   = N;
+
+    // Pure geometric origin: pBase in world space
+    B.Origin = Model->Points(Surf.pBase);
+
+    return B;
+}
+
+struct FStaticLightContrib
+{
+    FPlane Shadowed;     // sum_i atten_i * vis_i * color_i
+    FPlane Unshadowed;   // sum_i atten_i * color_i
+};
+
+// build an occlusion map
+FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
+    const TArray<AActor*>* Lights,
+    const FVector& WorldPos,
+    const SurfaceBasis& Basis,
+    UModel* Model)
+{
+    FPlane Shadowed(0,0,0,0);
+    FPlane Unshadowed(0,0,0,0);
+
+    if (!Lights || Lights->Num() == 0)
+        return FPlane(1,1,1,1); // fully lit
+
+    for (INT i = 0; i < Lights->Num(); ++i)
+    {
+        AActor* Light = (*Lights)(i);
+        if (!Light)
+            continue;
+
+        float Radius = Light->WorldLightRadius();
+        if (Radius <= 0.f)
+            continue;
+
+        FVector L = Light->Location - WorldPos;
+        float Dist = L.Size();
+        if (Dist <= SMALL_NUMBER)
+            continue;
+
+        FVector Ldir = L / Dist;
+        float NdotL = (Basis.Normal | Ldir);
+        if (NdotL <= 0.f)
+            continue;
+
+        float x = Clamp(Dist / Radius, 0.0f, 1.0f);
+        float Atten = (1.f - x) / (1.f + 4.f * x * x);
+        if (Atten <= 0.f)
+            continue;
+
+        FPlane RGB = FGetHSV(
+            Light->LightHue,
+            Light->LightSaturation,
+            Light->LightBrightness
+        );
+
+        FVector Color = RGB * NdotL * Atten;
+
+        // Always accumulate unshadowed
+        Unshadowed.X += Color.X;
+        Unshadowed.Y += Color.Y;
+        Unshadowed.Z += Color.Z;
+
+        // Occlusion test
+        FCheckResult Hit;
+        UBOOL bUnobstructed = Model->LineCheck(
+            Hit, nullptr,
+            Light->Location,
+            WorldPos,
+            FVector(0,0,0),
+            0
+        );
+
+        if (bUnobstructed)
+        {
+            Shadowed.X += Color.X;
+            Shadowed.Y += Color.Y;
+            Shadowed.Z += Color.Z;
+        }
+    }
+
+    // Compute ratio per channel
+    const float eps = 0.0001f;
+    float r = Shadowed.X / (Unshadowed.X + eps);
+    float g = Shadowed.Y / (Unshadowed.Y + eps);
+    float b = Shadowed.Z / (Unshadowed.Z + eps);
+
+    // Optional alpha = luminance
+    float a = 0.2126f*r + 0.7152f*g + 0.0722f*b;
+
+    return FPlane(r, g, b, a);
+}
+
+// build a baked lightmap
+FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(
+    const TArray<AActor*>* Lights,
+    const FVector& WorldPos,
+    const SurfaceBasis& Basis,
+    UModel* Model)
+{
+    FPlane Accum(0,0,0,0);
+
+    if (!Lights || Lights->Num() == 0)
+        return Accum;
+
+    for (INT i = 0; i < Lights->Num(); ++i)
+    {
+        AActor* Light = (*Lights)(i);
+        if (!Light)
+            continue;
+
+        // Same radius as selection path
+        float Radius = Light->WorldLightRadius();
+        if (Radius <= 0.f)
+            continue;
+
+        FVector LightPos = Light->Location;
+        FVector L = LightPos - WorldPos;
+        float Dist = L.Size();
+        if (Dist <= SMALL_NUMBER)
+            continue;
+
+        FVector Ldir = L / Dist;
+
+        float NdotL = (Basis.Normal | Ldir);
+        if (NdotL <= 0.f)
+            continue;
+
+        // BSP occlusion
+        FCheckResult Hit;
+        UBOOL bUnobstructed = Model->LineCheck(
+            Hit,
+            nullptr,
+            LightPos,
+            WorldPos,
+            FVector(0,0,0),
+            0
+        );
+        if (!bUnobstructed)
+            continue;
+
+        // Same attenuation model as ComputeStaticLightsForFacet
+        float x = Clamp(Dist / Radius, 0.0f, 1.0f);
+        float Atten = (1.f - x) / (1.f + 4.f * x * x);
+        if (Atten <= 0.f)
+            continue;
+
+        // HSV -> RGB (same base as your ranking)
+        FPlane RGBColor = FGetHSV(Light->LightHue, Light->LightSaturation, Light->LightBrightness);
+
+        FVector Color = RGBColor * NdotL * Atten;
+
+        Accum.X += Color.X;
+        Accum.Y += Color.Y;
+        Accum.Z += Color.Z;
+    }
+
+    return Accum;
+}
+
+void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level)
+{
+    UModel* Model = Level->Model;
+
+    for (INT iSurf = 0; iSurf < Model->Surfs.Num(); ++iSurf)
+    {
+        FBspSurf& Surf = Model->Surfs(iSurf);
+
+        TArray<AActor*>* Lights = StaticLightsForFacet.Find(iSurf);
+        if (!Lights || Lights->Num() == 0)
+            continue;
+
+        FSurfInfo* SI = SurfaceInfoMap.Find(iSurf);
+        if (!SI || SI->Verts.Num() < 3)
+            continue;
+
+        SurfaceBasis Basis = BuildSurfaceBasis(Model, Surf);
+
+        // --------------------------------------------
+        // Compute extents in OUR UV space:
+        // U = dot(TangentU, P - Origin)
+        // V = dot(TangentV, P - Origin)
+        // --------------------------------------------
+        float minU = FLT_MAX, maxU = -FLT_MAX;
+        float minV = FLT_MAX, maxV = -FLT_MAX;
+
+        for (INT i = 0; i < SI->Verts.Num(); ++i)
+        {
+            const FVector& P = SI->Verts(i);
+            FVector Local = P - Basis.Origin;
+
+            float U = (Basis.TangentU | Local);
+            float V = (Basis.TangentV | Local);
+
+            if (U < minU) minU = U;
+            if (U > maxU) maxU = U;
+            if (V < minV) minV = V;
+            if (V > maxV) maxV = V;
+        }
+
+        float USize = Max(0.001f, maxU - minU);
+        float VSize = Max(0.001f, maxV - minV);
+
+        // --------------------------------------------
+        // Choose resolution based on world-space size
+        // --------------------------------------------
+        const float Density = 0.25f; // texels per unit, tweak as desired
+        INT W = Clamp(appRound(USize * Density), 8, 512);
+        INT H = Clamp(appRound(VSize * Density), 8, 512);
+
+        TArray<FPlane> Pixels;
+        Pixels.AddZeroed(W * H);
+
+        // --------------------------------------------
+        // Bake in OUR UV space
+        // --------------------------------------------
+        for (INT y = 0; y < H; ++y)
+        {
+            for (INT x = 0; x < W; ++x)
+            {
+                float u = (x + 0.5f) / float(W);
+                float v = (y + 0.5f) / float(H);
+
+                float U = minU + u * USize;
+                float V = minV + v * VSize;
+
+                FVector WorldPos =
+                    Basis.Origin +
+                    Basis.TangentU * U +
+                    Basis.TangentV * V;
+
+                FPlane Color = EvaluateStaticShadowFactor(Lights, WorldPos, Basis, Model);
+                Pixels(y * W + x) = Color;
+            }
+        }
+
+        // --------------------------------------------
+        // Upload to GL
+        // --------------------------------------------
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, W, H, 0, GL_RGBA, GL_FLOAT, Pixels.GetData());
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        // Build unified lightmap struct
+        FSurfaceLightmap LM;
+        appMemzero(&LM, sizeof(LM));
+
+        // GPU resource
+        LM.TexId          = tex;
+        LM.Width          = W;
+        LM.Height         = H;
+
+        if (UseBindlessTextures)
+        {
+            LM.BindlessHandle = glGetTextureHandleARB(tex);
+            glMakeTextureHandleResidentARB(LM.BindlessHandle);
+        }
+        else
+        {
+            LM.BindlessHandle = 0;
+        }
+
+        // Geometric basis
+        LM.Basis = Basis;
+
+        // UV extents in our own map space
+        LM.MinU = minU;
+        LM.MaxU = maxU;
+        LM.MinV = minV;
+        LM.MaxV = maxV;
+
+        // Store pointer/reference in FSurfInfo for draw-time
+        if (SI)
+        {
+            SI->HDLightmap = LM;
+            SI->HasHDLightmap = true;
+        }
+    }
+}
+
 void UXOpenGLRenderDevice::NewLevelPP()
 {
 	StaticLightsForFacet.Empty();
@@ -715,6 +1036,28 @@ void UXOpenGLRenderDevice::NewLevelPP()
 		
 	// empty this on new level.  Otherwise can get stale pointers
 	RoughnessCache.Empty();
+
+    for (TMap<INT, FSurfInfo>::TIterator It(SurfaceInfoMap); It; ++It)
+    {
+        FSurfInfo& SI = It.Value();
+
+        if (SI.HasHDLightmap)
+        {
+            FSurfaceLightmap LM = SI.HDLightmap;
+            if (LM.BindlessHandle != 0)
+            {
+                glMakeTextureHandleNonResidentARB(LM.BindlessHandle);
+                LM.BindlessHandle = 0;
+            }
+            // Delete GL texture
+            if (LM.TexId != 0)
+            {
+                glDeleteTextures(1, &LM.TexId);
+                LM.TexId = 0;
+            }
+            SI.HasHDLightmap = false;
+        }
+    }
 
     if (LastLevel && LastLevel->Model && LastLevel->GetLevelInfo())
 	{
@@ -744,10 +1087,12 @@ void UXOpenGLRenderDevice::NewLevelPP()
             if (isMover)
                 continue;
 
+            // Build static light list
             TArray<AActor*> StaticList;
             ComputeStaticLightsForFacet(LastLevel, SurfIndex, StaticList, LevelLightCap - 10);
             StaticLightsForFacet.Set(SurfIndex, StaticList);
 
+            // Preload bump/height maps
             FTextureInfo Info;
             if (Surf.Texture) {
                 Surf.Texture->Lock(Info, appSeconds(), 0, Viewport->RenDev);
@@ -760,6 +1105,11 @@ void UXOpenGLRenderDevice::NewLevelPP()
                 ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height);
             }
         }
+
+        // bake lighting
+        glFinish();  // ensure all in-flight draws using old handles are done
+
+        BuildPerSurfaceStaticLight(LastLevel);
     }
 }
 
@@ -1058,4 +1408,11 @@ bool UXOpenGLRenderDevice::IsDepthFadeFX(const UTexture* Tex)
 
     return BinarySearchDepthFade(LowerName);
 }
+
+
+
+
+
+
+
 

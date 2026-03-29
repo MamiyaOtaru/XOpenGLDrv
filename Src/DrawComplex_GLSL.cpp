@@ -32,7 +32,7 @@ const UXOpenGLRenderDevice::ShaderProgram::DrawCallParameterInfo UXOpenGLRenderD
 	{"vec4", "YAxis", 0},
 	{"vec4", "ZAxis", 0},
 	{"vec4", "DrawColor", 0},
-    {"uvec4", "TexHandles", 6},
+    {"uvec4", "TexHandles", 7},
 	{"uint", "DrawFlags", 0},
     {"float", "Roughness", 0},
     {"uint", "SceneWidth", 0},
@@ -474,57 +474,55 @@ vec2 ViewToUV(vec3 viewPos) {
 
 float ShadowForLight(vec3 fragPosVS, vec3 lightPosVS)
 {
-    // --- Tunable parameters ---
-    const float bias      = 5;   // push off the surface
-    const float stepSize  = 2.0;   // march increment in view-space units
-    const float thickness = 50.0;   // how much depth difference counts as a hit
-    const int   maxSteps  = 640;    // safety cap
+    const float bias = 5.0;
+    const int   maxSteps = 48;
 
-    // --- View-space normal (already correct) ---
+    // View-space normal
     vec3 normalVS = normalize(vNormal);
 
-    // --- Push origin out of the surface ---
+    // Push origin
     vec3 rayOrigin = fragPosVS + normalVS * bias;
 
-    // --- Compute direction and max distance FROM THE ORIGIN ---
+    // Direction and distance
     vec3 L = lightPosVS - rayOrigin;
     float distToLight = length(L);
     vec3 lightDirVS = L / distToLight;
 
-    // --- March ---
-    for (int i = 0; i < maxSteps; i++)
-    {
-        float t = float(i) * stepSize;
-        if (t > distToLight)
-            break; // reached the light
+    // Depth-relative step size
+    float baseStep = max(2.0, fragPosVS.z * 0.02);
 
+    // Clamp number of steps based on distance
+    int steps = clamp(int(distToLight / baseStep), 1, maxSteps);
+
+    // Jitter to break up banding
+    float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+
+    // Final step size
+    float stepSize = distToLight / float(steps);
+
+    // Thickness scales with step size
+    float thickness = stepSize * 4.0;
+
+    for (int i = 0; i < steps; i++)
+    {
+        float t = (float(i) + jitter) * stepSize;
         vec3 currentPos = rayOrigin + lightDirVS * t;
 
-        // Project to screen
         vec2 uv = ViewToUV(currentPos);
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) 
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
             return 0.0;
 
-        // Sample depth
         float depth = GetDepthTexel(GetTexHandleHelper(vDrawID, PrepassDepthIndex),
                                     TMUPrepassDepthMap, uv).r;
         float sceneZ = LinearizeDepth(depth, 0.5, 65336.0);
 
-        float rayZ = currentPos.z;
-
-        // Occlusion test
-        float dz = rayZ - sceneZ;
+        float dz = currentPos.z - sceneZ;
         if (dz > 0.0 && dz < thickness)
-            return 1.0; // shadowed
+            return 1.0;
     }
 
-    return 0.0; // no occlusion
+    return 0.0;
 }
-
-
-
-
-
 
 
     )";
@@ -636,6 +634,7 @@ FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
 
   TotalColor = ApplyPolyFlags(Color, DrawFlags);
   vec4 LightColor = vec4(1.0);
+  vec4 Occlusion = vec4(1.0);
 
 #if OPT_HWLighting
   float MinLight = 0.05f;
@@ -664,21 +663,65 @@ FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
   TotalColor *= LightColor;
 
 #else
-  if ((DrawFlags & DF_LightMap) == DF_LightMap)
-  {
-    LightColor = GetTexel(GetTexHandleHelper(vDrawID, LightMapIndex), TMULightMap, vLightMapCoords);
-    // Fetch lightmap texel. Data in LightMap is in 0..127/255 range, which needs to be scaled to 0..2 range.
-    LightColor.rgb =
-# if OPT_GLES
-  	  LightColor.bgr
-# else
-	  LightColor.rgb
-# endif
-	  * (LightMapIntensity * 255.0 / 127.0);
-    LightColor.a = 1.0;
+  if ((DrawFlags & DF_LightMap) == DF_LightMap) {
+    if ((DrawFlags & DF_HDLightMap) == DF_HDLightMap) {
+      // View-space fragment position
+      vec3 P = vCoords.xyz;
+
+      FacetData fd = FacetMetaArr[vFacetID];
+
+      // Static LM basis
+      vec3 Uaxis  = fd.StaticBasisU.xyz;
+      vec3 Vaxis  = fd.StaticBasisV.xyz;
+      vec3 Origin = fd.StaticBasisO.xyz;
+
+      // Static LM UV extents
+      float MinU = fd.StaticUVMinMax.x;
+      float MaxU = fd.StaticUVMinMax.y;
+      float MinV = fd.StaticUVMinMax.z;
+      float MaxV = fd.StaticUVMinMax.w;
+
+      // Convert to local surface UV space
+      vec3 local = P - Origin;
+
+      float U = dot(Uaxis, local);
+      float V = dot(Vaxis, local);
+
+      // Normalize into [0..1] range
+      vec2 StaticLightCoords = vec2((U - MinU) / (MaxU - MinU), (V - MinV) / (MaxV - MinV));
+
+      // Bindless handle (or 0)
+      uvec2 handle = fd.TexHandles[0].xy;
+
+      ivec2 size = textureSize(sampler2D(handle), 0);
+      vec2 texelSize = 1.0 / vec2(size);
+      vec4 accum = vec4(0);
+      for (int x = -1; x <= 1; x++)
+      for (int y = -1; y <= 1; y++)
+      {
+         accum += texture(sampler2D(handle), StaticLightCoords + vec2(x,y)*texelSize);
+      }
+      Occlusion = accum / 9.0;
+
+      //LightColor = GetTexel(handle, TMUStaticLightmap, StaticLightCoords);
+      //LightColor = textureLod(sampler2D(handle), StaticLightCoords, 1.0); // mip to blur
+    }
+    //else {
+      vec3 OldBakedLight = GetTexel(GetTexHandleHelper(vDrawID, LightMapIndex), TMULightMap, vLightMapCoords).rgb;
+      #if OPT_GLES
+      OldBakedLight = CombinedLight.bgr;
+      #endif
+      OldBakedLight *= (LightMapIntensity * 255.0 / 127.0);
+      LightColor = vec4(OldBakedLight, 1.0);
+    //}
+/*if (true) {
+FragColor = LightColor;
+return;
+}*/
   }
 #endif
-
+    )";
+    Out << R"(
 #if OPT_DetailTextures
   if ((DrawFlags & DF_DetailTexture) == DF_DetailTexture)
   {
@@ -760,7 +803,7 @@ FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
     vec3 totalLight = vec3(0.0);
     //int contributingLights = 0;
 
-    uvec2 meta = FacetMetaArr[vFacetID];
+    uvec2 meta = FacetMetaArr[vFacetID].LightMeta;
     uint start = meta.x;
     numSurfaceLights = clamp(meta.y, uint(0), uint(MAX_SURFACE_LIGHTS));
     for (uint li = 0u; li < numSurfaceLights; ++li)
@@ -781,8 +824,8 @@ FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
 
       vec3 originVS = vec3(vCoords.x, vCoords.y, vCoords.z);
       vec3 lightPosVS = vec3(InLightPos.x, InLightPos.y, InLightPos.z);
-      if (ShadowForLight(vCoords, lightPosVS) != 0)
-        continue;
+      //if (ShadowForLight(vCoords, lightPosVS) != 0)
+      //  continue;
 
       //float NormalLightRadius  = LightData5[i].x;
       // attenuation that fades out by radius.  worldLightRadius looks better here
@@ -847,12 +890,12 @@ FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
         vec3 ambient = vec3(1.0) - totalLight;
         // Subtractive AO applied only to ambient
         //totalLight = totalLight - (1.0 - AO) * ambient;
-totalLight *= AO * AO * AO * AO * AO * AO;
+        totalLight *= AO * AO * AO * AO * AO * AO;
       }
 #endif
       float lmIntensity = dot(LightColor.rgb, vec3(0.299, 0.587, 0.114));
       totalSpec *= lmIntensity; // attenuate specular by the lightmap
-      LightColor.rgb *= totalLight;
+      LightColor.rgb *= totalLight * Occlusion.rgb;
       
       // lighting debug
       /*if (true) {

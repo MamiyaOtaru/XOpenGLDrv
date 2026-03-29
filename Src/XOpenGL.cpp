@@ -296,6 +296,11 @@ void UXOpenGLRenderDevice::StaticConstructor()
 
 #if UNREAL_TOURNAMENT_OLDUNREAL && !defined(__LINUX_ARM__)
 	UseLightmapAtlas = 1;
+	GAtlasManager.ForceEnable = 1;
+    GAtlasManager.Enabled     = 1;
+
+    // Make sure format matches what you upload (looks like 1 == TEXF_RGBA8 already)
+    GAtlasManager.Format      = TEXF_RGBA8;
 	
 	// stijn: Partial updates of the lightmap atlas absolutely kill performance
 	// on mac We went from 16fps to 90fps on our fps1 benchmark map when we
@@ -2096,7 +2101,6 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 			GL_NEAREST
 		);
 	}*/
-
 	// Unbind
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
