@@ -88,6 +88,12 @@
     <ClCompile Include="BlurPass.cpp">
       <Filter>Src</Filter>
     </ClCompile>
+    <ClCompile Include="Occlusion.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="StbImpl.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Inc\XOpenGL.h">
@@ -118,6 +124,7 @@
     <ClInclude Include="..\Inc\ShaderLoader.h">
       <Filter>Inc</Filter>
     </ClInclude>
+    <ClInclude Include="..\Inc\thirdparty\stb\stb_image_write.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\XOpenGLDrv.int" />

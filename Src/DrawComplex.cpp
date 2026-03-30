@@ -177,12 +177,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	// Compute the facet record pointer ONCE
 	FFacetData* facetPtr = Shader->FacetMetaRing.GetCurrentElementPtr();
 	facetPtr->LightMeta      = glm::uvec2(0, 0);
-	facetPtr->StaticBasisU   = glm::vec4(0);
-	facetPtr->StaticBasisV   = glm::vec4(0);
-	facetPtr->StaticBasisO   = glm::vec4(0);
 	facetPtr->StaticUVMinMax = glm::vec4(0);
-	facetPtr->TexHandles[0]  = 0;
-	facetPtr->TexHandles[1]  = 0;
 
 	// Write light list meta (if BumpMaps enabled)
 	if (BumpMaps)
@@ -210,42 +205,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	if (SI && SI->HasHDLightmap)
 	{
 		const FSurfaceLightmap& LM = SI->HDLightmap;
-		if (LM.TexId != 0 || LM.BindlessHandle != 0)
-		{
-			// World -> View matrix (same one used for vertices)
-			const FCoords& View = Frame->Coords;
-
-			// Transform basis vectors (direction only)
-			FVector Uv = LM.Basis.TangentU.TransformVectorBy(View);
-			FVector Vv = LM.Basis.TangentV.TransformVectorBy(View);
-
-			// Transform origin (position)
-			FVector Ov = LM.Basis.Origin.TransformPointBy(View);
-
-			// Store into facet record
-			facetPtr->StaticBasisU   = glm::vec4(Uv.X, Uv.Y, Uv.Z, 0.0f);
-			facetPtr->StaticBasisV   = glm::vec4(Vv.X, Vv.Y, Vv.Z, 0.0f);
-			facetPtr->StaticBasisO   = glm::vec4(Ov.X, Ov.Y, Ov.Z, 0.0f);
-
-			// world
-			/*facetPtr->StaticBasisU = glm::vec4(LM.Basis.TangentU.X, LM.Basis.TangentU.Y, LM.Basis.TangentU.Z, 0.0f);
-			facetPtr->StaticBasisV = glm::vec4(LM.Basis.TangentV.X, LM.Basis.TangentV.Y, LM.Basis.TangentV.Z, 0.0f);
-			facetPtr->StaticBasisO = glm::vec4(LM.Basis.Origin.X, LM.Basis.Origin.Y, LM.Basis.Origin.Z, 0.0f);*/
-			facetPtr->StaticUVMinMax = glm::vec4(LM.MinU, LM.MaxU, LM.MinV, LM.MaxV);
-			if (UseBindlessTextures)
-			{
-				// single static LM handle in x
-				facetPtr->TexHandles[0] = LM.BindlessHandle;
-				facetPtr->TexHandles[1] = 0;
-			}
-			else
-			{
-				// non-bindless path: shader uses sampler2D, handle unused
-				facetPtr->TexHandles[0] = 0;
-				facetPtr->TexHandles[1] = 0;
-			}
-			DrawFlags |= ShaderDrawFlags::DF_HDLightMap;
-		}
+		facetPtr->StaticUVMinMax = glm::vec4(LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
+		DrawFlags |= ShaderDrawFlags::DF_HDLightMap;
 	}
 	// Advance ONCE per facet
 	Shader->FacetMetaRing.Advance(1);
@@ -382,6 +343,11 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawCallParams->TexHandles[depthIndex] = gbufferFbo->depthBindlessHandle;
 	}
 
+	if (SI && SI->HasHDLightmap)
+	{
+		DrawCallParams->TexHandles[StaticLightmapIndex] = GStaticLightmapAtlasHandle;
+	}
+
 	// Other draw data
 	DrawCallParams->XAxis = glm::vec4(Facet.MapCoords.XAxis.X, Facet.MapCoords.XAxis.Y, Facet.MapCoords.XAxis.Z, Facet.MapCoords.XAxis | Facet.MapCoords.Origin);
 	DrawCallParams->YAxis = glm::vec4(Facet.MapCoords.YAxis.X, Facet.MapCoords.YAxis.Y, Facet.MapCoords.YAxis.Z, Facet.MapCoords.YAxis | Facet.MapCoords.Origin);
@@ -411,6 +377,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	TArray<glm::vec4> PolyVertexNormals;
 	TArray<glm::vec4> PolyVertexTangents;
 	TArray<glm::vec4> PolyVertexBitangents;
+	TArray<glm::vec2> PolyVertexLightmapUVs;
 	int NumPts = 0;
 
 	if (PhongShading && BumpMaps && SI && !isMover) // phong shading only works with "bumpmaps" aka per pixel lighting
@@ -420,6 +387,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		TArray<FVector>& SurfNormals      = SI->VertexNormals;
 		TArray<FVector>& SurfTangents     = SI->Tangents;
 		TArray<FVector>& SurfBitangents   = SI->Bitangents;
+		TArray<FVector>& SurfLightmapUVs  = SI->LightmapUVs;
 
 		INT NumPts = SurfWorldVerts.Num();
 
@@ -431,6 +399,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		PolyVertexTangents.AddZeroed(NumPts);
 		PolyVertexBitangents.Empty();
 		PolyVertexBitangents.AddZeroed(NumPts);
+		PolyVertexLightmapUVs.Empty();
+		PolyVertexLightmapUVs.AddZeroed(NumPts);
 
 		TArray<glm::uint>& TriIdx = SI->TriIdx;
 
@@ -442,10 +412,14 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			FVector Tangent   = SurfTangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
 			FVector Bitangent = SurfBitangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
 
-			PolyVertices(vi)        = glm::vec4(Vert.X, Vert.Y, Vert.Z, 0.0f);
-			PolyVertexNormals(vi)   = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
-			PolyVertexTangents(vi)  = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
-			PolyVertexBitangents(vi)= glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
+			PolyVertices(vi)          = glm::vec4(Vert.X, Vert.Y, Vert.Z, 0.0f);
+			PolyVertexNormals(vi)     = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
+			PolyVertexTangents(vi)    = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
+			PolyVertexBitangents(vi) = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
+			//if (PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num())
+				PolyVertexLightmapUVs(vi) = glm::vec2(SurfLightmapUVs(vi).X, SurfLightmapUVs(vi).Y);
+			//else
+			//	debugf(TEXT("XOpenGL: not enough UVs: %d %d"), PolyVertexLightmapUVs.Num(), SurfLightmapUVs.Num());
 		}
 
 		const INT numNodes = SI->Nodes.Num();
@@ -496,6 +470,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				Out->Tangent    = PolyVertexTangents(ia);
 				Out->Bitangent  = PolyVertexBitangents(ia);
 				Out->FacetID    = facetIDForVerts;
+				Out->LightmapUV = PolyVertexLightmapUVs(ia);
 				Out++;
 				emittedVerts++;
 
@@ -506,6 +481,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				Out->Tangent    = PolyVertexTangents(ib);
 				Out->Bitangent  = PolyVertexBitangents(ib);
 				Out->FacetID    = facetIDForVerts;
+				Out->LightmapUV = PolyVertexLightmapUVs(ib);
 				Out++;
 				emittedVerts++;
 
@@ -516,6 +492,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				Out->Tangent    = PolyVertexTangents(ic);
 				Out->Bitangent  = PolyVertexBitangents(ic);
 				Out->FacetID    = facetIDForVerts;
+				Out->LightmapUV = PolyVertexLightmapUVs(ic);
 				Out++;
 				emittedVerts++;
 			}
@@ -750,7 +727,7 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 
 void UXOpenGLRenderDevice::DrawComplexProgram::CreateInputLayout()
 {
-	for (INT i = 0; i < 6; ++i)
+	for (INT i = 0; i < 7; ++i)
 		glEnableVertexAttribArray(i);
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, Coords));
 	glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, DrawID));
@@ -761,6 +738,7 @@ void UXOpenGLRenderDevice::DrawComplexProgram::CreateInputLayout()
 	// Bitangent
 	glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, Bitangent));
 	glVertexAttribIPointer(5, 1, GL_UNSIGNED_INT, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, FacetID));
+	glVertexAttribPointer(6, 2, GL_FLOAT, GL_FALSE, sizeof(DrawComplexVertex), (GLvoid*)offsetof(DrawComplexVertex, LightmapUV));
 	VertBuffer.SetInputLayoutCreated();
 }
 

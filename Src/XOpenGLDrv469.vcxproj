@@ -413,12 +413,14 @@
     <ClCompile Include="ExternalTextureLoader.cpp" />
     <ClCompile Include="FBO.cpp" />
     <ClCompile Include="glad.cpp" />
+    <ClCompile Include="Occlusion.cpp" />
     <ClCompile Include="PerPixel.cpp" />
     <ClCompile Include="PostProcess.cpp" />
     <ClCompile Include="SetTexture.cpp" />
     <ClCompile Include="ShaderLoader.cpp" />
     <ClCompile Include="ShaderProgram.cpp" />
     <ClCompile Include="SSAOPass.cpp" />
+    <ClCompile Include="StbImpl.cpp" />
     <ClCompile Include="XOpenGL.cpp" />
     <ClCompile Include="XOpenGLDrv.cpp" />
   </ItemGroup>
@@ -428,6 +430,7 @@
     <ClInclude Include="..\Inc\glad.h" />
     <ClInclude Include="..\Inc\ShaderLoader.h" />
     <ClInclude Include="..\Inc\thirdparty\stb\stb_image.h" />
+    <ClInclude Include="..\Inc\thirdparty\stb\stb_image_write.h" />
     <ClInclude Include="..\Inc\thirdparty\tinyddsloader\tinyddsloader.h" />
     <ClInclude Include="..\Inc\XOpenGL.h" />
     <ClInclude Include="..\Inc\XOpenGLDrv.h" />

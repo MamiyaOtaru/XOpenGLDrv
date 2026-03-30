@@ -50,10 +50,12 @@ layout(location = 2) in vec4 Normal;
 layout(location = 3) in vec4 Tangent;
 layout(location = 4) in vec4 Bitangent;
 layout(location = 5) in uint FacetID;
+layout(location = 6) in vec2 StaticLightmapCoords;
 
 out vec3 vCoords;
 out vec2 vTexCoords;
 out vec2 vLightMapCoords;
+out vec2 vStaticLightmapCoords;
 out vec2 vFogMapCoords;
 flat out uint vFacetID;
 out vec3 vNormal; // interpolated per-vertex normal (view-space)
@@ -93,6 +95,7 @@ void main(void)
 {
   // Point Coords
   vCoords = Coords.xyz;
+  vStaticLightmapCoords = StaticLightmapCoords;
 
   // UDot/VDot calculation.
   vec3 MapCoordsXAxis = GetXAxis(DrawID).xyz;
@@ -406,6 +409,7 @@ in vec2 vLightMapCoords;
 in vec2 vFogMapCoords;
 flat in uint vFacetID;
 in vec3 vNormal; // interpolated per-vertex normal (view-space)
+in vec2 vStaticLightmapCoords;
 
 #if OPT_DetailTextures
 in vec2 vDetailTexCoords;
@@ -665,55 +669,48 @@ FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
 #else
   if ((DrawFlags & DF_LightMap) == DF_LightMap) {
     if ((DrawFlags & DF_HDLightMap) == DF_HDLightMap) {
-      // View-space fragment position
-      vec3 P = vCoords.xyz;
-
+      // Fetch facet metadata (atlas rect + light list)
       FacetData fd = FacetMetaArr[vFacetID];
-
-      // Static LM basis
-      vec3 Uaxis  = fd.StaticBasisU.xyz;
-      vec3 Vaxis  = fd.StaticBasisV.xyz;
-      vec3 Origin = fd.StaticBasisO.xyz;
-
-      // Static LM UV extents
+      
+      // Atlas-space clamp rectangle
       float MinU = fd.StaticUVMinMax.x;
       float MaxU = fd.StaticUVMinMax.y;
       float MinV = fd.StaticUVMinMax.z;
       float MaxV = fd.StaticUVMinMax.w;
 
-      // Convert to local surface UV space
-      vec3 local = P - Origin;
+      // Final atlas-space UV from vertex
+      vec2 uv = vStaticLightmapCoords;
 
-      float U = dot(Uaxis, local);
-      float V = dot(Vaxis, local);
-
-      // Normalize into [0..1] range
-      vec2 StaticLightCoords = vec2((U - MinU) / (MaxU - MinU), (V - MinV) / (MaxV - MinV));
-
-      // Bindless handle (or 0)
-      uvec2 handle = fd.TexHandles[0].xy;
-
+      // Texture size for blur kernel
+      uvec2 handle = GetTexHandleHelper(vDrawID, StaticLightmapIndex);
       ivec2 size = textureSize(sampler2D(handle), 0);
       vec2 texelSize = 1.0 / vec2(size);
-      vec4 accum = vec4(0);
+
+      vec4 accum = vec4(0.0);
+
       for (int x = -1; x <= 1; x++)
       for (int y = -1; y <= 1; y++)
       {
-         accum += texture(sampler2D(handle), StaticLightCoords + vec2(x,y)*texelSize);
+        vec2 offsetUV = uv + vec2(x, y) * texelSize;
+
+        // Clamp to atlas rect (prevents sampling padded borders or neighbors)
+        offsetUV.x = clamp(offsetUV.x, MinU, MaxU);
+        offsetUV.y = clamp(offsetUV.y, MinV, MaxV);
+
+        accum += texture(sampler2D(handle), offsetUV);
       }
+
       Occlusion = accum / 9.0;
 
-      //LightColor = GetTexel(handle, TMUStaticLightmap, StaticLightCoords);
-      //LightColor = textureLod(sampler2D(handle), StaticLightCoords, 1.0); // mip to blur
+      //Occlusion = GetTexel(handle, TMUStaticLightmap, StaticLightCoords);
+      //Occlusion = textureLod(sampler2D(handle), StaticLightCoords, 1.0); // mip to blur
     }
-    //else {
-      vec3 OldBakedLight = GetTexel(GetTexHandleHelper(vDrawID, LightMapIndex), TMULightMap, vLightMapCoords).rgb;
-      #if OPT_GLES
-      OldBakedLight = CombinedLight.bgr;
-      #endif
-      OldBakedLight *= (LightMapIntensity * 255.0 / 127.0);
-      LightColor = vec4(OldBakedLight, 1.0);
-    //}
+    vec3 OldBakedLight = GetTexel(GetTexHandleHelper(vDrawID, LightMapIndex), TMULightMap, vLightMapCoords).rgb;
+    #if OPT_GLES
+    OldBakedLight = CombinedLight.bgr;
+    #endif
+    OldBakedLight *= (LightMapIntensity * 255.0 / 127.0);
+    LightColor = vec4(OldBakedLight, 1.0);
 /*if (true) {
 FragColor = LightColor;
 return;

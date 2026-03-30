@@ -1991,7 +1991,9 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 			debugf(TEXT("Failed to load DebugDepth shader"));
 		}
 
-		NewLevelPP();   // sees correct LastLevel
+		NewLevelBSP(); // gathers geometry and adds normals
+		NewLevelPP(); // gathers lights for geometry and preloads textures
+		NewLevelOC(); // loads or generates occlusion map
 	}
 
 	DepthPrepassDone = false;

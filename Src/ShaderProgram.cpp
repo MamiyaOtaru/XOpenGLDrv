@@ -221,12 +221,7 @@ struct FacetData
     uvec2 LightMeta;          // x = startIndex, y = count
 	uvec2 Padding;
 
-    vec4  StaticBasisU;       // TangentU.xyz
-    vec4  StaticBasisV;       // TangentV.xyz
-    vec4  StaticBasisO;       // Origin.xyz
     vec4  StaticUVMinMax;     // MinU, MaxU, MinV, MaxV
-
-    uvec4 TexHandles[1];      // TexHandles.x = bindless handle (or 0)
 };
 layout(std430, binding = )" << GlobalShaderBindingIndices::FacetMetaIndex << R"() readonly buffer FacetMetaBuffer
 {

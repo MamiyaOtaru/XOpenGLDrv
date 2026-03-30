@@ -1396,15 +1396,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 	{
 		glm::uvec2 LightMeta;        // x = startIndex, y = count
 		glm::uvec2 Padding; 
-
-		glm::vec4 StaticBasisU;      // TangentU.xyz
-		glm::vec4 StaticBasisV;      // TangentV.xyz
-		glm::vec4 StaticBasisO;      // Origin.xyz
 		glm::vec4 StaticUVMinMax;    // MinU, MaxU, MinV, MaxV
-
-		glm::uint64 TexHandles[2];   // x = bindless handle (or 0), yzw reserved
 	};
-	static_assert(sizeof(FFacetData) == 96, "FacetData size mismatch");
+	static_assert(sizeof(FFacetData) == 32, "FacetData size mismatch");
 
 	// Base class for shader implementations
     template
@@ -1695,37 +1689,51 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// detect level changes so we can flush the light caches
     ULevel* LastLevel = nullptr;
 
-	// per pixel resources
-	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
-	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
-
-	struct SurfaceBasis
-	{
-		FVector Origin;      // world-space base point of the surface
-		FVector TangentU;    // world-space U direction (normalized)
-		FVector TangentV;    // world-space V direction (normalized)
-		FVector Normal;      // world-space surface normal (normalized)
-	};
+	// common structures
 
 	struct FSurfaceLightmap
 	{
-		// Geometric mapping
-		SurfaceBasis Basis;
-
-		// UV extents in our own map space
-		float MinU;
-		float MaxU;
-		float MinV;
-		float MaxV;
-
-		// Lightmap resolution
-		INT Width;
-		INT Height;
-
-		// GPU resource
-		GLuint TexId;
-		QWORD  BindlessHandle;
+		// Atlas UV rectangle (0..1 in atlas space)
+		float AtlasMinU;
+		float AtlasMaxU;
+		float AtlasMinV;
+		float AtlasMaxV;
 	};
+	// used primarily in the BSP walker
+	struct FNodeInfo
+	{
+		TArray<glm::uint> VertIndices;   // indices into SI.Verts (vertex instances)
+		FVector PlaneNormal;             // true BSP node plane normal
+		float   PlaneW;                  // true BSP node plane W
+		INT TriStart = 0;  // index into SurfaceTriIndices[iSurf]
+		INT TriCount = 0;  // number of indices (multiple of 3)
+	};
+	// Per-surface runtime info accessible to other renderer code.
+	struct FSurfInfo
+	{
+		TArray<FVector> Verts;           // vertex instances (all nodes appended)
+		TArray<FVector> UVs;
+		TArray<FVector> LightmapUVs;
+		TArray<FNodeInfo> Nodes;         // one entry per Surf.Nodes[ni]
+		TArray<FVector> VertexNormals;   // per-instance normals (after smoothing)
+		TArray<FVector> Tangents;
+		TArray<FVector> Bitangents;
+
+		// Per-surface triangulation indices. Stored as triplets of indices into SurfaceVertexPositions[iSurf].
+		// This avoids doing triangulation at draw-time.
+		TArray<glm::uint> TriIdx;
+
+		float   Area;                    // polygon area (computed from VertIndices)
+		FVector SurfaceNormal;           // editor normal (FBspSurf.vNormal)
+		int LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
+
+		bool HasHDLightmap = false;
+		FSurfaceLightmap HDLightmap; // our HD lightmap info
+	};
+
+	// per pixel resources
+	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
+	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
 
 	#define MAX_SURFACE_LIGHTS 95 // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/
 	INT DefaultLightCap = 25;
@@ -1745,47 +1753,35 @@ class UXOpenGLRenderDevice : public URenderDevice
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	void UXOpenGLRenderDevice::InitLightLevelOverrides();
+	void UXOpenGLRenderDevice::NewLevelPP();
+	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
+
+	// occlusion map stuff
+	struct SurfaceBasis
+	{
+		FVector Origin;      // world-space base point of the surface
+		FVector TangentU;    // world-space U direction (normalized)
+		FVector TangentV;    // world-space V direction (normalized)
+		FVector Normal;      // world-space surface normal (normalized)
+	};
+
 	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(UModel* Model, const FBspSurf& Surf);
 	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>* Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model);
 	FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(const TArray<AActor*>* Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model);
-	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level);
-	void UXOpenGLRenderDevice::NewLevelPP();
-	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
+	void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(FSurfInfo& SI, const SurfaceBasis& Basis, float MinU, float MaxU, float MinV, float MaxV, float AtlasMinU, float AtlasMaxU, float AtlasMinV, float AtlasMaxV);
+	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
+	void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, const FString& AtlasMeta);
+	bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
+	void UXOpenGLRenderDevice::NewLevelOC();
+
+	GLuint GStaticLightmapAtlasTex = 0;
+	GLuint64 GStaticLightmapAtlasHandle = 0;
+
 
 	// BSP smoothing stuff
 	INT UXOpenGLRenderDevice::LocalFrameCounter = 0;
 
 	void UXOpenGLRenderDevice::NewLevelBSP();
-
-	struct FNodeInfo
-	{
-		TArray<glm::uint> VertIndices;   // indices into SI.Verts (vertex instances)
-		FVector PlaneNormal;             // true BSP node plane normal
-		float   PlaneW;                  // true BSP node plane W
-		INT TriStart = 0;  // index into SurfaceTriIndices[iSurf]
-		INT TriCount = 0;  // number of indices (multiple of 3)
-	};
-	// Per-surface runtime info accessible to other renderer code.
-	struct FSurfInfo
-	{
-		TArray<FVector> Verts;           // vertex instances (all nodes appended)
-		TArray<FVector> UVs;
-		TArray<FNodeInfo> Nodes;         // one entry per Surf.Nodes[ni]
-		TArray<FVector> VertexNormals;   // per-instance normals (after smoothing)
-		TArray<FVector> Tangents;
-		TArray<FVector> Bitangents;
-
-		// Per-surface triangulation indices. Stored as triplets of indices into SurfaceVertexPositions[iSurf].
-		// This avoids doing triangulation at draw-time.
-		TArray<glm::uint> TriIdx;
-
-		float   Area;                    // polygon area (computed from VertIndices)
-		FVector SurfaceNormal;           // editor normal (FBspSurf.vNormal)
-		int LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
-
-		bool HasHDLightmap = false;
-		FSurfaceLightmap HDLightmap; // our HD lightmap info
-	};
 
 	// Map surface index -> FSurfInfoInternal (built by BuildSmoothVertexNormalsForLevel)
 	TMap<INT, FSurfInfo> SurfaceInfoMap;
@@ -1944,18 +1940,19 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	struct DrawComplexVertex
 	{
-		glm::vec3 Coords;     // 12 bytes
-		glm::uint DrawID;     // 4 bytes  -> offset 12, completes 16-byte block
+		glm::vec3 Coords;     // 12
+		glm::uint DrawID;     // 4  -> 16
 
-		glm::vec4 Normal;     // 16 bytes -> offset 16
-		glm::vec4 Tangent;    // 16 bytes -> offset 32
-		glm::vec4 Bitangent;  // 16 bytes -> offset 48
+		glm::vec4 Normal;     // 16 -> 32
+		glm::vec4 Tangent;    // 16 -> 48
+		glm::vec4 Bitangent;  // 16 -> 64
 
-		glm::uint FacetID;    // 4 bytes  -> offset 64
-		glm::uint Padding0;   // 4 bytes  -> offset 68
+		glm::uint FacetID;    // 4  -> 68
+		glm::uint Padding0;   // 4  -> 72
 
+		glm::vec2 LightmapUV; // 8  -> 80
 	};
-	static_assert(sizeof(DrawComplexVertex) == 72, "Invalid complex buffered vertex size");
+	static_assert(sizeof(DrawComplexVertex) == 80, "Invalid complex buffered vertex size");
 
 	// ============================== DRAWPREPASS ==============================
 

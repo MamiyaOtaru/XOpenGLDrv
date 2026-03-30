@@ -666,4 +666,11 @@ bool FacetInsidePolygon3D(const TArray<FVector>& facetVerts,
     return true;
 }
 
+void UXOpenGLRenderDevice::NewLevelBSP()
+{
+	    
+	// Build smooth vertex normals for phong shading (precompute once per level)
+	BuildSmoothVertexNormalsForLevel(LastLevel);
+    BuildSurfaceTriangulation(LastLevel);
+}
 
