@@ -1394,8 +1394,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// ============================== per surface data ======================
 	struct FFacetData
 	{
-		glm::uvec2 LightMeta;        // x = startIndex, y = count
-		glm::uvec2 Padding; 
+		glm::uvec4 LightMeta;        // x = startIndex, y = countStatic, z = countDynamic
 		glm::vec4 StaticUVMinMax;    // MinU, MaxU, MinV, MaxV
 	};
 	static_assert(sizeof(FFacetData) == 32, "FacetData size mismatch");
@@ -1749,7 +1748,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	void UXOpenGLRenderDevice::GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, TArray<FVector>& OutVerts);
 	void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(ULevel* Frame, INT iSurf, TArray<AActor*>& outLights, int MaxStaticLights);
 	void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(FSceneNode* Frame, INT iSurf, TArray<AActor*>& outLights);
-	void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(FSceneNode* Frame, FSurfaceFacet& Facet, TArray<AActor*>& OutLights, INT MaxLights);
+	void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(FSceneNode* Frame, FSurfaceFacet& Facet, TArray<AActor*>& OutStaticLights, TArray<AActor*>& OutDynamicLights, INT MaxLights);
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	void UXOpenGLRenderDevice::InitLightLevelOverrides();

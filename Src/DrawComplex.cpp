@@ -92,14 +92,17 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	SetProgram(Complex_Prog);
 
 	TArray<glm::uint> facetIndices;
+	int staticCount = 0;
+	int dynamicCount = 0;
 
 	if (BumpMaps && IsSolidBSP) { // do per pixel lighting
 
-		TArray<AActor*> merged;
+		TArray<AActor*> staticList;
+		TArray<AActor*> dynamicList;
 
 		if (facetSurfId == INDEX_NONE || isMover)
 		{
-			ComputeStaticAndDynamicLightsForFacet(Frame, Facet, merged, LevelLightCap);
+			ComputeStaticAndDynamicLightsForFacet(Frame, Facet, staticList, dynamicList, LevelLightCap);
 		}
 		else
 		{
@@ -113,30 +116,34 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			}
 
 			// Dynamic lights (cheap)
-			TArray<AActor*> dynamicList;
 			ComputeDynamicLightsForFacet(Frame, facetSurfId, dynamicList);
 
-			// Combine
-			merged = *SurfaceLightList;   // copy the static list
-			for (INT i = 0; i < dynamicList.Num(); i++)
-				merged.AddItem(dynamicList(i));
+			staticList = *SurfaceLightList;
 		} // end else is static BSP facet with valid key
-
-		// Build index array for this facet (map actors -> indices in LightInfoBuffer)
-		facetIndices.Reserve(merged.Num());
-
-		int NumSurfaceLights = merged.Num();
+		
+		int NumSurfaceLights = staticList.Num() + dynamicList.Num();
 		if (NumSurfaceLights > LevelLightCap)
 			NumSurfaceLights = LevelLightCap;
+		//debugf(TEXT("XOpenGL: lights static dynamic: %d %d"), staticList.Num(), dynamicList.Num());
+		// Build index array for this facet (map actors -> indices in LightInfoBuffer)
+		facetIndices.Reserve(NumSurfaceLights);
 
 		for (INT i = 0; i < NumSurfaceLights; ++i)
 		{
-			AActor* Actor = merged(i);
+			AActor* Actor;
+			if (i < staticList.Num())
+				Actor = staticList(i);
+			else
+				Actor = dynamicList(i - staticList.Num());
 			if (!Actor) continue;
 			GLuint* Found = CurrentLightToIndex.Find(Actor);
 			if (Found)
 			{
 				facetIndices.AddItem(static_cast<glm::uint>(*Found));
+				if (i < staticList.Num())
+					staticCount++;
+				else
+					dynamicCount++;
 			}
 			else
 			{
@@ -176,7 +183,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	GLuint metaIndex = Shader->FacetMetaRing.SubBufferOffset + Shader->FacetMetaRing.NextElemIndex;
 	// Compute the facet record pointer ONCE
 	FFacetData* facetPtr = Shader->FacetMetaRing.GetCurrentElementPtr();
-	facetPtr->LightMeta      = glm::uvec2(0, 0);
+	facetPtr->LightMeta      = glm::uvec4(0, 0, 0, 0);
 	facetPtr->StaticUVMinMax = glm::vec4(0);
 
 	// Write light list meta (if BumpMaps enabled)
@@ -197,7 +204,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 			Shader->FacetIndexRing.Advance(count);
 
-			facetPtr->LightMeta = glm::uvec2(startIndex, count);
+			facetPtr->LightMeta = glm::uvec4(startIndex, staticCount, dynamicCount, 0);
 		}
 	}
 
@@ -416,7 +423,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			PolyVertexNormals(vi)     = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
 			PolyVertexTangents(vi)    = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
 			PolyVertexBitangents(vi) = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
-			//if (PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num())
+			if (PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num())
 				PolyVertexLightmapUVs(vi) = glm::vec2(SurfLightmapUVs(vi).X, SurfLightmapUVs(vi).Y);
 			//else
 			//	debugf(TEXT("XOpenGL: not enough UVs: %d %d"), PolyVertexLightmapUVs.Num(), SurfLightmapUVs.Num());

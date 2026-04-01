@@ -125,6 +125,9 @@
       <Filter>Inc</Filter>
     </ClInclude>
     <ClInclude Include="..\Inc\thirdparty\stb\stb_image_write.h" />
+    <ClInclude Include="..\Inc\thirdparty\stb\stb_dxt.h">
+      <Filter>Inc</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\XOpenGLDrv.int" />

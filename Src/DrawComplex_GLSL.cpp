@@ -707,12 +707,13 @@ FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
     }
     vec3 OldBakedLight = GetTexel(GetTexHandleHelper(vDrawID, LightMapIndex), TMULightMap, vLightMapCoords).rgb;
     #if OPT_GLES
-    OldBakedLight = CombinedLight.bgr;
+    OldBakedLight = OldBakedLight.bgr;
     #endif
     OldBakedLight *= (LightMapIntensity * 255.0 / 127.0);
     LightColor = vec4(OldBakedLight, 1.0);
 /*if (true) {
-FragColor = LightColor;
+//FragColor = Occlusion;
+FragColor = vec4(vStaticLightmapCoords.x,vStaticLightmapCoords.y,0.0,1.0);
 return;
 }*/
   }
@@ -797,12 +798,15 @@ return;
     float rough = DrawDrawComplexParams[vDrawID].Roughness;
 
     //vec3 TotalBumpColor = vec3(0.0);
-    vec3 totalLight = vec3(0.0);
+    vec3 totalStaticLight = vec3(0.0);
+    vec3 totalDynamicLight = vec3(0.0);
     //int contributingLights = 0;
 
-    uvec2 meta = FacetMetaArr[vFacetID].LightMeta;
+    uvec4 meta = FacetMetaArr[vFacetID].LightMeta;
     uint start = meta.x;
-    numSurfaceLights = clamp(meta.y, uint(0), uint(MAX_SURFACE_LIGHTS));
+    uint numStaticLights = meta.y;
+    uint numDynamicLights = meta.z;
+    numSurfaceLights = clamp(numStaticLights + numDynamicLights, uint(0), uint(MAX_SURFACE_LIGHTS));
     for (uint li = 0u; li < numSurfaceLights; ++li)
     {
       uint i = FacetIndicesArr[start + li];
@@ -856,8 +860,13 @@ return;
       V = TangentViewDir;
 
       float diff = max(dot(N, L), 0.0);
-
-      totalLight += rawColor * diff * attenuation;
+      
+      if (li < numStaticLights) {
+        totalStaticLight += rawColor * diff * attenuation;
+      }
+      else {
+        totalDynamicLight += rawColor * diff * attenuation;
+      }
 
       // --- SPECULAR
       float shininess    = mix(4.0, 64.0, 1.0 - rough);
@@ -878,21 +887,19 @@ return;
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {
+      float lmIntensity = dot(LightColor.rgb * Occlusion.rgb, vec3(0.299, 0.587, 0.114));
+      totalSpec *= lmIntensity; // attenuate specular by the lightmap
+
+      vec3 totalLight = totalStaticLight * Occlusion.rgb + totalDynamicLight;
       totalLight = clamp(totalLight, 0.0, 1.0);
 #if OPT_Multipass
       if ((DrawFlags & DF_Multipass) == DF_Multipass) {
         // Sample SSAO (0 = dark, 1 = no occlusion)
         float AO = GetTexel(GetTexHandleHelper(vDrawID, PostProcessIndex), TMUPostProcessMap, screenUV).r;
-        // Compute ambient = inverse of direct light (per channel)
-        vec3 ambient = vec3(1.0) - totalLight;
-        // Subtractive AO applied only to ambient
-        //totalLight = totalLight - (1.0 - AO) * ambient;
         totalLight *= AO * AO * AO * AO * AO * AO;
       }
 #endif
-      float lmIntensity = dot(LightColor.rgb, vec3(0.299, 0.587, 0.114));
-      totalSpec *= lmIntensity; // attenuate specular by the lightmap
-      LightColor.rgb *= totalLight * Occlusion.rgb;
+      LightColor.rgb *= totalLight;
       
       // lighting debug
       /*if (true) {

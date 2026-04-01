@@ -114,6 +114,7 @@ struct RankedLight
 {
     AActor* Light;
     float   Score;
+    bool    IsStatic;
 };
 
 INT Compare(const RankedLight& A, const RankedLight& B)
@@ -449,10 +450,12 @@ void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(
 void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 	FSceneNode* Frame,
     FSurfaceFacet& Facet,
-    TArray<AActor*>& OutLights,
+    TArray<AActor*>& OutStaticLights,
+    TArray<AActor*>& OutDynamicLights,
 	INT MaxLights)
 {
-	OutLights.Empty();
+	OutStaticLights.Empty();
+    OutDynamicLights.Empty();
 
 	if (!Frame || !Frame->Level || !Frame->Level->Model)
 		return;
@@ -516,11 +519,17 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 	TArray<RankedLight> Ranked;
     Ranked.Reserve(Level->Actors.Num());
 
-    // Iterate dynamic lights
+    // Iterate lights
     for (INT i = 0; i < Level->Actors.Num(); ++i)
     {
         AActor* A = Level->Actors(i);
-        if (!A || (!IsDynamicLight(A) && !IsStaticLight(A)))
+        if (!A)
+            continue;
+
+        bool isDynamic = IsDynamicLight(A);
+        bool isStatic = IsStaticLight(A);
+
+        if (!isDynamic && !isStatic)
             continue;
 
 		if (A->WorldLightRadius() <= 0.f)
@@ -562,6 +571,7 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
         RankedLight R;
         R.Light = A;
         R.Score = score;
+        R.IsStatic = isStatic;
         Ranked.AddItem(R);
     }
 
@@ -569,7 +579,12 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 
     Count = Min(MaxLights, Ranked.Num());
     for (int i = 0; i < Count; ++i)
-        OutLights.AddItem(Ranked(i).Light);
+    {
+        if (Ranked(i).IsStatic)
+            OutStaticLights.AddItem(Ranked(i).Light);
+        else
+            OutDynamicLights.AddItem(Ranked(i).Light);
+    }
 }
 
 float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface)

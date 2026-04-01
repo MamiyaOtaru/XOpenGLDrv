@@ -648,7 +648,7 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
         const INT DestX = CursorX;
         const INT DestY = CursorY;
 
-        // Copy interior (offset by +1,+1 inside padded region)
+        // Copy interior
         for (INT y = 0; y < LM.Height; ++y)
         {
             FPlane* Dest = &Atlas((DestY + 1 + y) * AtlasWidth + (DestX + 1));
@@ -656,36 +656,32 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
             appMemcpy(Dest, Src, LM.Width * sizeof(FPlane));
         }
 
-        // Duplicate top and bottom rows (RGB(A) from nearest interior)
+        // Duplicate top/bottom rows
         {
-            // Top border row: copy from first interior row (y = 1)
             FPlane* SrcTop = &Atlas((DestY + 1) * AtlasWidth + (DestX + 1));
             FPlane* DstTop = &Atlas((DestY + 0) * AtlasWidth + (DestX + 1));
             appMemcpy(DstTop, SrcTop, LM.Width * sizeof(FPlane));
 
-            // Bottom border row: copy from last interior row (y = LM.Height)
             FPlane* SrcBot = &Atlas((DestY + 1 + LM.Height - 1) * AtlasWidth + (DestX + 1));
             FPlane* DstBot = &Atlas((DestY + 1 + LM.Height) * AtlasWidth + (DestX + 1));
             appMemcpy(DstBot, SrcBot, LM.Width * sizeof(FPlane));
         }
 
-        // Duplicate left and right columns (including borders)
+        // Duplicate left/right columns
         for (INT y = 0; y < LM.Height + 2; ++y)
         {
             INT Ay = DestY + y;
 
-            // Left border: copy from x = 1
             FPlane* SrcL = &Atlas(Ay * AtlasWidth + (DestX + 1));
             FPlane* DstL = &Atlas(Ay * AtlasWidth + (DestX + 0));
             *DstL = *SrcL;
 
-            // Right border: copy from x = LM.Width
             FPlane* SrcR = &Atlas(Ay * AtlasWidth + (DestX + 1 + LM.Width - 1));
             FPlane* DstR = &Atlas(Ay * AtlasWidth + (DestX + 1 + LM.Width));
             *DstR = *SrcR;
         }
 
-        // the *interior* (skip the 1px padding)
+        // Store atlas UVs for interior
         LM.AtlasX = DestX + 1;
         LM.AtlasY = DestY + 1;
 
@@ -694,14 +690,14 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
         LM.AtlasMinV = float(DestY + 1) / AtlasHeight;
         LM.AtlasMaxV = float(DestY + 1 + LM.Height) / AtlasHeight;
 
-        // Store in surface info
         if (FSurfInfo* SI = SurfaceInfoMap.Find(LM.SurfIndex))
         {
             SI->HDLightmap.AtlasMinU = LM.AtlasMinU;
             SI->HDLightmap.AtlasMinV = LM.AtlasMinV;
             SI->HDLightmap.AtlasMaxU = LM.AtlasMaxU;
             SI->HDLightmap.AtlasMaxV = LM.AtlasMaxV;
-            ComputeFinalAtlasUVs(*SI, LM.Basis, LM.MinU, LM.MaxU, LM.MinV, LM.MaxV, LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
+            ComputeFinalAtlasUVs(*SI, LM.Basis, LM.MinU, LM.MaxU, LM.MinV, LM.MaxV,
+                                 LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
         }
 
         CursorX   += PaddedW;

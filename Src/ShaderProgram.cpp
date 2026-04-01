@@ -218,8 +218,7 @@ layout(std140) uniform LightInfo
 	Out << R"(
 struct FacetData
 {
-    uvec2 LightMeta;          // x = startIndex, y = count
-	uvec2 Padding;
+    uvec4 LightMeta;          // x = startIndex, y = count
 
     vec4  StaticUVMinMax;     // MinU, MaxU, MinV, MaxV
 };

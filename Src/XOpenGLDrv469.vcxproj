@@ -429,6 +429,7 @@
     <ClInclude Include="..\Inc\FBO.h" />
     <ClInclude Include="..\Inc\glad.h" />
     <ClInclude Include="..\Inc\ShaderLoader.h" />
+    <ClInclude Include="..\Inc\thirdparty\stb\stb_dxt.h" />
     <ClInclude Include="..\Inc\thirdparty\stb\stb_image.h" />
     <ClInclude Include="..\Inc\thirdparty\stb\stb_image_write.h" />
     <ClInclude Include="..\Inc\thirdparty\tinyddsloader\tinyddsloader.h" />
