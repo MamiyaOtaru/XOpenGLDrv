@@ -489,6 +489,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// Dumb bling
 	BITFIELD PhongShading;
 	BITFIELD Multipass;
+	BITFIELD HDLightMap;
 
 	FLOAT GammaMultiplier;
 	FLOAT GammaMultiplierUED;
@@ -1184,15 +1185,16 @@ class UXOpenGLRenderDevice : public URenderDevice
 			DF_Environment    = 1 << 12,
 			DF_RenderFog      = 1 << 13,
 			DF_AlphaBlended   = 1 << 14,
+			DF_TwoSided		  = 1 << 15,
 
 			// Per-draw call editor state the shader needs to know about
-			DF_Selected       = 1 << 15,
+			DF_Selected       = 1 << 16,
 
 			// Dumb visual stuff
-			DF_PhongShading	  = 1 << 16,
-			DF_ReadDepth	  = 1 << 17,
-			DF_Multipass	  = 1 << 18,
-			DF_HDLightMap	  = 1 << 19,
+			DF_PhongShading	  = 1 << 17,
+			DF_ReadDepth	  = 1 << 18,
+			DF_Multipass	  = 1 << 19,
+			DF_HDLightMap	  = 1 << 20,
 		};
 	};
     
@@ -1230,7 +1232,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 			// Additional renderer features
 			OPT_PhongShading       = 1 << 16,
 			OPT_Multipass          = 1 << 17,
-			OPT_MSAA               = 1 << 18
+			OPT_MSAA               = 1 << 18,
+			OPT_HDLightMap		   = 1 << 19
 		};
 
 
@@ -1697,7 +1700,17 @@ class UXOpenGLRenderDevice : public URenderDevice
 		float AtlasMaxU;
 		float AtlasMinV;
 		float AtlasMaxV;
+
+		// Offset between baked basis origin and actor's default location
+		FVector OriginOffset;
+
+		// Surf extents in basis space (needed to normalize raw U/V into [0,1])
+		float SurfMinU;
+		float SurfMaxU;
+		float SurfMinV;
+		float SurfMaxV;
 	};
+
 	// used primarily in the BSP walker
 	struct FNodeInfo
 	{
@@ -1706,6 +1719,15 @@ class UXOpenGLRenderDevice : public URenderDevice
 		float   PlaneW;                  // true BSP node plane W
 		INT TriStart = 0;  // index into SurfaceTriIndices[iSurf]
 		INT TriCount = 0;  // number of indices (multiple of 3)
+		INT iNode = 0;
+	};
+	// used for reconstructing UV in an incoming facet (clipped and/or mover)
+	struct SurfaceBasis
+	{
+		FVector Origin;      // world-space base point of the surface
+		FVector TangentU;    // world-space U direction (normalized)
+		FVector TangentV;    // world-space V direction (normalized)
+		FVector Normal;      // world-space surface normal (normalized)
 	};
 	// Per-surface runtime info accessible to other renderer code.
 	struct FSurfInfo
@@ -1726,16 +1748,20 @@ class UXOpenGLRenderDevice : public URenderDevice
 		FVector SurfaceNormal;           // editor normal (FBspSurf.vNormal)
 		int LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
 
+		bool IsMover = false;
+		AActor* Owner;
+
 		bool HasHDLightmap = false;
 		FSurfaceLightmap HDLightmap; // our HD lightmap info
+		SurfaceBasis LightmapBasis;
 	};
 
 	// per pixel resources
 	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
 	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
 
-	#define MAX_SURFACE_LIGHTS 95 // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/
-	INT DefaultLightCap = 25;
+	#define MAX_SURFACE_LIGHTS 495
+	INT DefaultLightCap = 25; // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/
     INT LevelLightCap = DefaultLightCap;
 
 	// per-frame mapping from AActor* -> index inside LightInfoBuffer (populated each SetSceneNode)
@@ -1746,8 +1772,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet& Facet);
 	void UXOpenGLRenderDevice::GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, TArray<FVector>& OutVerts);
-	void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(ULevel* Frame, INT iSurf, TArray<AActor*>& outLights, int MaxStaticLights);
-	void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(FSceneNode* Frame, INT iSurf, TArray<AActor*>& outLights);
+	void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(ULevel* Level, INT iSurf, TArray<AActor*>& outLights, int MaxStaticLights);
+	void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(ULevel* Level, INT iSurf, TArray<AActor*>& outLights);
 	void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(FSceneNode* Frame, FSurfaceFacet& Facet, TArray<AActor*>& OutStaticLights, TArray<AActor*>& OutDynamicLights, INT MaxLights);
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface);
@@ -1756,16 +1782,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
 
 	// occlusion map stuff
-	struct SurfaceBasis
-	{
-		FVector Origin;      // world-space base point of the surface
-		FVector TangentU;    // world-space U direction (normalized)
-		FVector TangentV;    // world-space V direction (normalized)
-		FVector Normal;      // world-space surface normal (normalized)
-	};
 
-	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(UModel* Model, const FBspSurf& Surf);
-	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>* Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model);
+	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf);
+	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>& Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model, bool TwoSided);
 	FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(const TArray<AActor*>* Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model);
 	void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(FSurfInfo& SI, const SurfaceBasis& Basis, float MinU, float MaxU, float MinV, float MaxV, float AtlasMinU, float AtlasMaxU, float AtlasMinV, float AtlasMaxV);
 	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
@@ -1784,6 +1803,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	// Map surface index -> FSurfInfoInternal (built by BuildSmoothVertexNormalsForLevel)
 	TMap<INT, FSurfInfo> SurfaceInfoMap;
+
+	void UXOpenGLRenderDevice::DumpSurfInfo(INT iSurf, const FSurfInfo& SI);
+
 
 	// Threshold in degrees for smoothing edges. Normals between faces whose angle
 	// is greater than this will NOT be averaged. Default 45 degrees.

@@ -563,8 +563,8 @@ if (false) {
     float rayZ = fragPosVS.z;
     float diff = rayZ - sceneZ;
     //FragColor = vec4(diff,0.0,0.0,1.0);
-vec3 normalVS = normalize(InFrameCoords * vNormal);
-FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
+    vec3 normalVS = normalize(InFrameCoords * vNormal);
+    FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
     return;
 }
 
@@ -668,6 +668,7 @@ FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
 
 #else
   if ((DrawFlags & DF_LightMap) == DF_LightMap) {
+#if OPT_HDLightMap
     if ((DrawFlags & DF_HDLightMap) == DF_HDLightMap) {
       // Fetch facet metadata (atlas rect + light list)
       FacetData fd = FacetMetaArr[vFacetID];
@@ -700,11 +701,12 @@ FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
         accum += texture(sampler2D(handle), offsetUV);
       }
 
-      Occlusion = accum / 9.0;
+      Occlusion = clamp(accum / 9.0, 0.0, 1.0);
 
       //Occlusion = GetTexel(handle, TMUStaticLightmap, StaticLightCoords);
       //Occlusion = textureLod(sampler2D(handle), StaticLightCoords, 1.0); // mip to blur
     }
+#endif
     vec3 OldBakedLight = GetTexel(GetTexHandleHelper(vDrawID, LightMapIndex), TMULightMap, vLightMapCoords).rgb;
     #if OPT_GLES
     OldBakedLight = OldBakedLight.bgr;
@@ -859,7 +861,11 @@ return;
       vec3 TangentViewDir = normalize(TBNMat * -vCoords.xyz);
       V = TangentViewDir;
 
-      float diff = max(dot(N, L), 0.0);
+      float diff;
+      if ((DrawFlags & DF_TwoSided) == DF_TwoSided)
+        diff = abs(dot(N, L));
+      else
+        diff = max(dot(N, L), 0.0);
       
       if (li < numStaticLights) {
         totalStaticLight += rawColor * diff * attenuation;
@@ -874,10 +880,16 @@ return;
 
       vec3 H = normalize(L + V);
 
-      float spec = pow(max(dot(N, H), 0.0), shininess)
-                     * specStrength
-                     * brightnessFactor
-                     * attenuation;
+      float specDot;
+      if ((DrawFlags & DF_BumpMap) == DF_BumpMap)
+        specDot = abs(dot(N, H));
+      else
+        specDot = max(dot(N, H), 0.0);
+
+      float spec = pow(specDot, shininess)
+                   * specStrength
+                   * brightnessFactor
+                   * attenuation;
 
       vec3 specular = spec * rawColor;   // colored specular, matches UT99 lights
       totalSpec += specular;

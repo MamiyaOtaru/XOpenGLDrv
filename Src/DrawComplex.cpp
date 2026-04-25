@@ -46,6 +46,42 @@ static void SetTextureHelper
 	DrawFlags |= AddDrawFlag;
 }
 
+void UXOpenGLRenderDevice::DumpSurfInfo(INT iSurf, const FSurfInfo& SI)
+{
+	debugf(TEXT("Dumping FSurfInfo for iSurf %d"), iSurf);
+	debugf(TEXT("Verts: %d, UVs: %d, Nodes: %d"), SI.Verts.Num(), SI.UVs.Num(), SI.Nodes.Num());
+
+	for (INT vi = 0; vi < SI.Verts.Num(); ++vi)
+	{
+		const FVector& V = SI.Verts(vi);
+		const FVector& UV = SI.UVs.IsValidIndex(vi) ? SI.UVs(vi) : FVector(0, 0, 0);
+		debugf(TEXT("  Vert %d: Pos=(%f,%f,%f) UV=(%f,%f)"),
+			vi, V.X, V.Y, V.Z, UV.X, UV.Y);
+	}
+
+	for (INT ni = 0; ni < SI.Nodes.Num(); ++ni)
+	{
+		const FNodeInfo& NI = SI.Nodes(ni);
+		debugf(TEXT("  Node %d: PlaneN=(%f,%f,%f) W=%f, NumIndices=%d"),
+			ni, NI.PlaneNormal.X, NI.PlaneNormal.Y, NI.PlaneNormal.Z,
+			NI.PlaneW, NI.VertIndices.Num());
+	}
+
+	// Dump TriIdx if present
+	if (SI.TriIdx.Num() > 0)
+	{
+		FString triStr;
+		for (INT ti = 0; ti < SI.TriIdx.Num(); ++ti)
+		{
+			triStr += FString::Printf(TEXT("%d "), SI.TriIdx(ti));
+		}
+		debugf(TEXT("    TriIdx: %s"), *triStr);
+	}
+
+
+}
+
+
 /*-----------------------------------------------------------------------------
 	RenDev Interface
 -----------------------------------------------------------------------------*/
@@ -68,19 +104,18 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	INT facetSurfId = INDEX_NONE;
 	FSurfInfo* SI = nullptr;
-	bool isMover = false;
 	if (IsSolidBSP)
 	{
 		facetSurfId = GetFacetSurfId(Frame, Facet);
 		if (facetSurfId != INDEX_NONE)
 		{
-			const FBspSurf& Surf = Frame->Level->Model->Surfs(facetSurfId);
-			AActor* Owner = Surf.Actor;
-			isMover = (Owner && Owner->IsA(AMover::StaticClass()));
-
 			SI = SurfaceInfoMap.Find(facetSurfId);
-			if (PhongShading && BumpMaps && !isMover && SI && SI->LastDrawnFrame == LocalFrameCounter)
+			// check if already rendered this surface
+			if (PhongShading && BumpMaps && SI && !SI->IsMover && SI->LastDrawnFrame == LocalFrameCounter)
+			{
+				// already drawn this frame, skip
 				return;
+			}
 			if (SI)
 				SI->LastDrawnFrame = LocalFrameCounter;
 		}
@@ -100,7 +135,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		TArray<AActor*> staticList;
 		TArray<AActor*> dynamicList;
 
-		if (facetSurfId == INDEX_NONE || isMover)
+		if (facetSurfId == INDEX_NONE || SI && SI->IsMover)
 		{
 			ComputeStaticAndDynamicLightsForFacet(Frame, Facet, staticList, dynamicList, LevelLightCap);
 		}
@@ -116,7 +151,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			}
 
 			// Dynamic lights (cheap)
-			ComputeDynamicLightsForFacet(Frame, facetSurfId, dynamicList);
+			ComputeDynamicLightsForFacet(Frame->Level, facetSurfId, dynamicList);
 
 			staticList = *SurfaceLightList;
 		} // end else is static BSP facet with valid key
@@ -208,8 +243,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		}
 	}
 
-	// Write static lightmap params (if present)
-	if (SI && SI->HasHDLightmap)
+	// Write static lightmap params (if present).  Only do mover if we have a Node match
+	if (HDLightMap && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
 	{
 		const FSurfaceLightmap& LM = SI->HDLightmap;
 		facetPtr->StaticUVMinMax = glm::vec4(LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
@@ -226,6 +261,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	// Set Textures
 	SetTextureHelper(this, DiffuseTextureIndex, *Surface.Texture, NextPolyFlags, DrawFlags, ShaderDrawFlags::DF_DiffuseTexture, 0.0, &DrawCallParams->DiffuseUV, Surface.Texture->Texture ? &DrawCallParams->DiffuseInfo : nullptr, DrawCallParams->TexHandles);
+
 	if (!Surface.Texture->Texture)
 		DrawCallParams->DiffuseInfo = glm::vec4(1.f, 0.f, 0.f, 1.f);
 
@@ -330,7 +366,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		}
 	}
 
-	if (BumpMaps && Multipass && IsSolidBSP && !isMover) // only works in per pixel
+	if (BumpMaps && Multipass && IsSolidBSP && (SI && !SI->IsMover)) // only works in per pixel
 	{
 		glActiveTexture(GL_TEXTURE0 + PostProcessIndex);
 		glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
@@ -361,10 +397,10 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	DrawCallParams->ZAxis = glm::vec4(Facet.MapCoords.ZAxis.X, Facet.MapCoords.ZAxis.Y, Facet.MapCoords.ZAxis.Z, 0.0);
 	if (BumpMaps)
 		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
-	if (PhongShading && !isMover && BumpMaps) // phong only works in per pixel lighting mode
+	if (PhongShading && BumpMaps && (SI && !SI->IsMover)) // phong only works in per pixel lighting mode
 		DrawFlags |= ShaderDrawFlags::DF_PhongShading;
 	bool safeToReadDepth = !(Surface.PolyFlags & PF_Occlude);
-	if (safeToReadDepth && !IsSolidBSP)// && IsDepthFadeFX(Surface.Texture->Texture))
+	if (safeToReadDepth && !IsSolidBSP && !(Surface.PolyFlags & PF_Unlit))// && IsDepthFadeFX(Surface.Texture->Texture)) // don't fade out "non solid" that is really just unlit
 	{
 		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
 		PrepareDepthTexture();
@@ -387,7 +423,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	TArray<glm::vec2> PolyVertexLightmapUVs;
 	int NumPts = 0;
 
-	if (PhongShading && BumpMaps && SI && !isMover) // phong shading only works with "bumpmaps" aka per pixel lighting
+	// something in here is causing weirdness on movers when phong is on, though it should not trigger if it is a mover. ah, regular stuff under glowy bits zfights with phong on
+	if (PhongShading && BumpMaps && SI && !SI->IsMover) // phong shading only works with "bumpmaps" aka per pixel lighting
 	{
 		// Per-surface precomputed normals (if available) and world-space verts for matching
 		TArray<FVector>& SurfWorldVerts   = SI->Verts;
@@ -422,7 +459,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			PolyVertices(vi)          = glm::vec4(Vert.X, Vert.Y, Vert.Z, 0.0f);
 			PolyVertexNormals(vi)     = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
 			PolyVertexTangents(vi)    = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
-			PolyVertexBitangents(vi) = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
+			PolyVertexBitangents(vi)  = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
 			if (PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num())
 				PolyVertexLightmapUVs(vi) = glm::vec2(SurfLightmapUVs(vi).X, SurfLightmapUVs(vi).Y);
 			//else
@@ -454,7 +491,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				if (neededVerts >= Shader->VertexBufferSize)
 				{
 					debugf(TEXT("DrawComplexSurface facet too big (facet has %d vertices - need to buffer %d points - Vertex Buffer Size is %d)!"),
-						   NumPts, neededVerts, Shader->VertexBufferSize);
+						NumPts, neededVerts, Shader->VertexBufferSize);
 					continue;
 				}
 
@@ -471,46 +508,48 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				const INT ic = TriIdx(ti + 2);
 
 				// ---- Vertex 0 ----
-				Out->Coords     = PolyVertices(ia);
-				Out->DrawID     = DrawID;
-				Out->Normal     = PolyVertexNormals(ia);
-				Out->Tangent    = PolyVertexTangents(ia);
-				Out->Bitangent  = PolyVertexBitangents(ia);
-				Out->FacetID    = facetIDForVerts;
+				Out->Coords = PolyVertices(ia);
+				Out->DrawID = DrawID;
+				Out->Normal = PolyVertexNormals(ia);
+				Out->Tangent = PolyVertexTangents(ia);
+				Out->Bitangent = PolyVertexBitangents(ia);
+				Out->FacetID = facetIDForVerts;
 				Out->LightmapUV = PolyVertexLightmapUVs(ia);
 				Out++;
 				emittedVerts++;
 
 				// ---- Vertex 1 ----
-				Out->Coords     = PolyVertices(ib);
-				Out->DrawID     = DrawID;
-				Out->Normal     = PolyVertexNormals(ib);
-				Out->Tangent    = PolyVertexTangents(ib);
-				Out->Bitangent  = PolyVertexBitangents(ib);
-				Out->FacetID    = facetIDForVerts;
+				Out->Coords = PolyVertices(ib);
+				Out->DrawID = DrawID;
+				Out->Normal = PolyVertexNormals(ib);
+				Out->Tangent = PolyVertexTangents(ib);
+				Out->Bitangent = PolyVertexBitangents(ib);
+				Out->FacetID = facetIDForVerts;
 				Out->LightmapUV = PolyVertexLightmapUVs(ib);
 				Out++;
 				emittedVerts++;
 
 				// ---- Vertex 2 ----
-				Out->Coords     = PolyVertices(ic);
-				Out->DrawID     = DrawID;
-				Out->Normal     = PolyVertexNormals(ic);
-				Out->Tangent    = PolyVertexTangents(ic);
-				Out->Bitangent  = PolyVertexBitangents(ic);
-				Out->FacetID    = facetIDForVerts;
+				Out->Coords = PolyVertices(ic);
+				Out->DrawID = DrawID;
+				Out->Normal = PolyVertexNormals(ic);
+				Out->Tangent = PolyVertexTangents(ic);
+				Out->Bitangent = PolyVertexBitangents(ic);
+				Out->FacetID = facetIDForVerts;
 				Out->LightmapUV = PolyVertexLightmapUVs(ic);
 				Out++;
 				emittedVerts++;
 			}
 
-			FacetVertexCount          += emittedVerts;
+			FacetVertexCount += emittedVerts;
 			Shader->VertBuffer.Advance(emittedVerts);
-		}
+		} // end loop through Nodes
 	} // end if SI (with normal data)
-	else if (PhongShading && BumpMaps)
+	else if (SI && (HDLightMap || (PhongShading && BumpMaps)))
 	{
-		//debugf(TEXT("Facet: no cached surf for =%d"), facetSurfId);
+		const SurfaceBasis& Basis = SI->LightmapBasis;
+
+		//debugf(TEXT("Facet: iSurf %d"), facetSurfId);
 		// 
 		// No smoothing data available: compute polygon normal from facet.MapCoords.ZAxis (already provided in DrawCallParams)
 		// Flat fallback TBN from DrawCallParams axes
@@ -531,7 +570,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 		glm::vec4 fallbackN = glm::vec4(N, 0.0f);
 		glm::vec4 fallbackT = glm::vec4(T, 0.0f);
-		glm::vec4 fallbackB = glm::vec4(T, 0.0f);
+		glm::vec4 fallbackB = glm::vec4(B, 0.0f);
 
 		for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
 		{
@@ -545,16 +584,52 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			PolyVertexTangents.AddZeroed(NumPts);
 			PolyVertexBitangents.Empty();
 			PolyVertexBitangents.AddZeroed(NumPts);
+			PolyVertexLightmapUVs.Empty();
+			PolyVertexLightmapUVs.AddZeroed(NumPts);
 
 			// assign same flat TBN to all verts
 			for (INT vi = 0; vi < NumPts; ++vi) 
 			{
 				const FVector& Pvs = Poly->Pts[vi]->Point;
+				// Reproject into HD lightmap UV space
 				PolyVertices(vi)         = glm::vec3(Pvs.X, Pvs.Y, Pvs.Z);
 				PolyVertexNormals(vi)    = fallbackN;
 				PolyVertexTangents(vi)   = fallbackT;
 				PolyVertexBitangents(vi) = fallbackB;
-			}
+
+				if (HDLightMap)
+				{
+					FVector Origin;
+					if (SI->IsMover)
+					{
+						// Adjust origin for current mover position
+						Origin = SI->Owner->Location + SI->HDLightmap.OriginOffset;
+					}
+					else
+					{
+						Origin = SI->LightmapBasis.Origin;
+					}
+					// Project into surf basis relative to adjusted origin
+					FVector WorldPos = Pvs.TransformPointBy(Frame->Uncoords);
+					FVector Local = WorldPos - Origin;
+					float U = (Basis.TangentU | Local);
+					float V = (Basis.TangentV | Local);
+
+					// Normalize into [0,1] for this surf
+					float uNorm = (U - SI->HDLightmap.SurfMinU) / (SI->HDLightmap.SurfMaxU - SI->HDLightmap.SurfMinU);
+					float vNorm = (V - SI->HDLightmap.SurfMinV) / (SI->HDLightmap.SurfMaxV - SI->HDLightmap.SurfMinV);
+
+					// Clamp to avoid bleed if mover goes outside baked extents
+					uNorm = Clamp(uNorm, 0.0f, 1.0f);
+					vNorm = Clamp(vNorm, 0.0f, 1.0f);
+
+					// Remap into atlas space
+					float uAtlas = SI->HDLightmap.AtlasMinU + uNorm * (SI->HDLightmap.AtlasMaxU - SI->HDLightmap.AtlasMinU);
+					float vAtlas = SI->HDLightmap.AtlasMinV + vNorm * (SI->HDLightmap.AtlasMaxV - SI->HDLightmap.AtlasMinV);
+
+					PolyVertexLightmapUVs(vi) = glm::vec2(uAtlas, vAtlas);
+				} // end if hd lightmap
+			} // end loop verts
 
 			if (!Shader->VertBuffer.CanBuffer((NumPts - 2) * 3))
 			{
@@ -587,6 +662,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				Out->Bitangent  = PolyVertexBitangents(0);
 
 				Out->FacetID  = facetIDForVerts;
+				Out->LightmapUV = PolyVertexLightmapUVs(0);
 				Out++;
 
 				// ---- Vertex 1 ----
@@ -598,6 +674,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				Out->Bitangent  = PolyVertexBitangents(i + 1);
 
 				Out->FacetID  = facetIDForVerts;
+				Out->LightmapUV = PolyVertexLightmapUVs(i + 1);
 				Out++;
 
 				// ---- Vertex 2 ----
@@ -609,6 +686,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				Out->Bitangent  = PolyVertexBitangents(i + 2);
 
 				Out->FacetID  = facetIDForVerts;
+				Out->LightmapUV = PolyVertexLightmapUVs(i + 2);
 				Out++;
 			}
 
@@ -724,6 +802,7 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 		ShaderCompilationOptions::OPT_HeightMaps |
 		ShaderCompilationOptions::OPT_PhongShading |
 		ShaderCompilationOptions::OPT_Multipass |
+		ShaderCompilationOptions::OPT_HDLightMap |
 		ShaderCompilationOptions::OPT_MSAA |
 		ShaderCompilationOptions::OPT_HWLighting |
 		ShaderCompilationOptions::OPT_DistanceFog |

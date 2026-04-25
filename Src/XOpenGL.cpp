@@ -164,6 +164,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	new(GetClass(), TEXT("ParallaxVersion"), RF_Public)UByteProperty(CPP_PROPERTY(ParallaxVersion), TEXT("Options"), CPF_Config, ParallaxVersions);
 	new(GetClass(), TEXT("PhongShading"), RF_Public)UBoolProperty(CPP_PROPERTY(PhongShading), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("Multipass"), RF_Public)UBoolProperty(CPP_PROPERTY(Multipass), TEXT("Options"), CPF_Config);
+	new(GetClass(), TEXT("HDLightMap"), RF_Public)UBoolProperty(CPP_PROPERTY(HDLightMap), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("NoAATiles"), RF_Public)UBoolProperty(CPP_PROPERTY(NoAATiles), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("GenerateMipMaps"), RF_Public)UBoolProperty(CPP_PROPERTY(GenerateMipMaps), TEXT("Options"), CPF_Config);
 
@@ -234,6 +235,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	BumpMaps = 1;
 	PhongShading = 1;
 	Multipass = 1;
+	HDLightMap = 1;
 	GammaMultiplier = 1.75f;
 	GammaMultiplierUED  = 1.75f;
 	ParallaxVersion = Parallax_Disabled;
@@ -457,6 +459,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	debugf(NAME_DevLoad, TEXT("ParallaxVersion %i (%ls)"),ParallaxVersion, ParallaxVersion == Parallax_Basic ? TEXT("Basic") : ParallaxVersion == Parallax_Occlusion ? TEXT("Occlusion") : ParallaxVersion == Parallax_Relief ? TEXT("Relief") : TEXT("Disabled"));
 	debugf(NAME_DevLoad, TEXT("PhongShading %i"), PhongShading);
 	debugf(NAME_DevLoad, TEXT("Multipass %i"), Multipass);
+	debugf(NAME_DevLoad, TEXT("HDLightMap %i"), HDLightMap);
 	debugf(NAME_DevLoad, TEXT("EnvironmentMaps %i"), EnvironmentMaps);
 	debugf(NAME_DevLoad, TEXT("NoAATiles %i"), NoAATiles);
 	debugf(NAME_DevLoad, TEXT("GenerateMipMaps %i"), GenerateMipMaps);

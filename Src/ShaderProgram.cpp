@@ -123,6 +123,7 @@ precision lowp int;
 	Out << "#define DF_Environment " << ShaderDrawFlags::DF_Environment << "u" << END_LINE;
 	Out << "#define DF_RenderFog " << ShaderDrawFlags::DF_RenderFog << "u" << END_LINE;
 	Out << "#define DF_AlphaBlended " << ShaderDrawFlags::DF_AlphaBlended << "u" << END_LINE;
+	Out << "#define DF_TwoSided " << ShaderDrawFlags::DF_TwoSided << "u" << END_LINE;
 	Out << "#define DF_Selected " << ShaderDrawFlags::DF_Selected << "u" << END_LINE;
 
 	// Texture indices into the texhandles array
@@ -968,6 +969,8 @@ void UXOpenGLRenderDevice::ShaderCompilationOptions::SetOptionsForRendererConfig
 		SetOption(OPT_PhongShading);
 	if (RenDev->Multipass)
 		SetOption(OPT_Multipass);
+	if (RenDev->HDLightMap)
+		SetOption(OPT_HDLightMap);
 	if (RenDev->UseAA)
 		SetOption(OPT_MSAA);
 	if (RenDev->SimulateMultiPass)
@@ -1006,6 +1009,7 @@ AddOptionFunc(Result, L ## #x, (OptionsMask & x) ? true : false);
 	ADD_OPTION(OPT_HeightMaps)
 	ADD_OPTION(OPT_PhongShading)
 	ADD_OPTION(OPT_Multipass)
+	ADD_OPTION(OPT_HDLightMap)
 	ADD_OPTION(OPT_MSAA)
 	ADD_OPTION(OPT_EnvironmentMaps)
     ADD_OPTION(OPT_DistanceFog)

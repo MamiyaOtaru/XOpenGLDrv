@@ -14,40 +14,28 @@
 #include "thirdparty/stb/stb_dxt.h"
 
 
-UXOpenGLRenderDevice::SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(UModel* Model, const FBspSurf& Surf)
+UXOpenGLRenderDevice::SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf)
 {
     SurfaceBasis B;
 
-    // Raw axes
-    FVector U = Model->Vectors(Surf.vTextureU);
-    FVector V = Model->Vectors(Surf.vTextureV);
-    FVector N = Model->Vectors(Surf.vNormal);
+    // Always use world-space vectors from Level->Model
+    FVector U = Level->Model->Vectors(Surf.vTextureU);
+    FVector V = Level->Model->Vectors(Surf.vTextureV);
+    FVector N = Level->Model->Vectors(Surf.vNormal);
+    FVector Origin = Level->Model->Points(Surf.pBase);
 
     // Normalize and orthogonalize
-    if (!U.IsNearlyZero())
-        U = U.SafeNormal();
-    else
-        U = FVector(1,0,0);
+    if (!U.IsNearlyZero()) U = U.SafeNormal(); else U = FVector(1, 0, 0);
+    if (!V.IsNearlyZero()) V = V.SafeNormal(); else V = FVector(0, 1, 0);
+    if (!N.IsNearlyZero()) N = N.SafeNormal(); else N = (U ^ V).SafeNormal();
 
-    if (!V.IsNearlyZero())
-        V = V.SafeNormal();
-    else
-        V = FVector(0,1,0);
-
-    if (!N.IsNearlyZero())
-        N = N.SafeNormal();
-    else
-        N = (U ^ V).SafeNormal();
-
-    // Re-orthogonalize V to U if needed
+    // Recompute V to ensure orthogonality
     V = (N ^ U).SafeNormal();
 
     B.TangentU = U;
     B.TangentV = V;
-    B.Normal   = N;
-
-    // Pure geometric origin: pBase in world space
-    B.Origin = Model->Points(Surf.pBase);
+    B.Normal = N;
+    B.Origin = Origin;
 
     return B;
 }
@@ -60,20 +48,21 @@ struct FStaticLightContrib
 
 // build an occlusion map
 FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
-    const TArray<AActor*>* Lights,
+    const TArray<AActor*>& Lights,
     const FVector& WorldPos,
     const SurfaceBasis& Basis,
-    UModel* Model)
+    UModel* Model,
+    bool TwoSided)
 {
     FPlane Shadowed(0,0,0,0);
     FPlane Unshadowed(0,0,0,0);
 
-    if (!Lights || Lights->Num() == 0)
-        return FPlane(1,1,1,1); // fully lit
+    if (Lights.Num() == 0)
+        return FPlane(1,1,1,1); // no obstruction
 
-    for (INT i = 0; i < Lights->Num(); ++i)
+    for (INT i = 0; i < Lights.Num(); ++i)
     {
-        AActor* Light = (*Lights)(i);
+        AActor* Light = Lights(i);
         if (!Light)
             continue;
 
@@ -88,6 +77,8 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
 
         FVector Ldir = L / Dist;
         float NdotL = (Basis.Normal | Ldir);
+        if (TwoSided)
+            NdotL = fabs(NdotL);
         if (NdotL <= 0.f)
             continue;
 
@@ -110,14 +101,46 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         Unshadowed.Z += Color.Z;
 
         // Occlusion test
+        FLOAT mult = 2.5; // 1 is good enough for most everything but cybrosis, veridian, mojo.  grinder (curved hall), deck (2 sided surfs need 6), epicboy (wall behind purple light), orbital, command need more than 2
+        if (TwoSided) mult = 10.0;
         FCheckResult Hit;
+        FVector SamplePos = WorldPos + Basis.Normal * mult;
         UBOOL bUnobstructed = Model->LineCheck(
             Hit, nullptr,
             Light->Location,
-            WorldPos,
+            SamplePos,
             FVector(0,0,0),
             0
         );
+        // try again with light direction.
+        SamplePos = WorldPos + Ldir * mult;
+        bUnobstructed = bUnobstructed || Model->LineCheck(
+            Hit, nullptr,
+            Light->Location,
+            SamplePos,
+            FVector(0, 0, 0),
+            0
+        );
+        if (TwoSided) // need to push other direction too
+        {
+            SamplePos = WorldPos - Basis.Normal * mult;
+            bUnobstructed = bUnobstructed || Model->LineCheck(
+                Hit, nullptr,
+                Light->Location,
+                SamplePos,
+                FVector(0, 0, 0),
+                0
+            );
+            // try again with light direction.
+            SamplePos = WorldPos - Ldir * mult;
+            bUnobstructed = bUnobstructed || Model->LineCheck(
+                Hit, nullptr,
+                Light->Location,
+                SamplePos,
+                FVector(0, 0, 0),
+                0
+            );
+        }
 
         if (bUnobstructed)
         {
@@ -293,14 +316,14 @@ enum class EDDSType
 // ------------------------------------------------------------
 // Helper: Extract a 4×4 RGBA block with edge clamping
 // ------------------------------------------------------------
-void Extract4x4RGBA(BYTE* out, const TArray<BYTE>& src, int bx, int by, int width, int height)
+void Extract4x4RGBA(BYTE* out, const TArray<BYTE>& src, INT bx, INT by, INT width, INT height)
 {
-    for (int y = 0; y < 4; y++)
+    for (INT y = 0; y < 4; y++)
     {
-        int sy = Clamp(by + y, 0, height - 1);
-        for (int x = 0; x < 4; x++)
+        INT sy = Clamp(by + y, 0, height - 1);
+        for (INT x = 0; x < 4; x++)
         {
-            int sx = Clamp(bx + x, 0, width - 1);
+            INT sx = Clamp(bx + x, 0, width - 1);
             memcpy(out + (y*4 + x)*4, &src((sy*width + sx)*4), 4);
         }
     }
@@ -342,7 +365,7 @@ struct DDS_HEADER
 // ------------------------------------------------------------
 // Fill header for BC3 / DXT5
 // ------------------------------------------------------------
-static void FillDDSHeader(DDS_HEADER& H, int width, int height, EDDSType type)
+static void FillDDSHeader(DDS_HEADER& H, INT width, INT height, EDDSType type)
 {
     memset(&H, 0, sizeof(H));
 
@@ -351,10 +374,10 @@ static void FillDDSHeader(DDS_HEADER& H, int width, int height, EDDSType type)
     H.dwHeight = height;
     H.dwWidth  = width;
 
-    int blocksWide  = (width  + 3) / 4;
-    int blocksHigh  = (height + 3) / 4;
+    INT blocksWide  = (width  + 3) / 4;
+    INT blocksHigh  = (height + 3) / 4;
 
-    int blockSize = (type == EDDSType::BC1 ? 8 : 16);
+    INT blockSize = (type == EDDSType::BC1 ? 8 : 16);
     H.dwPitchOrLinearSize = blocksWide * blocksHigh * blockSize;
 
     H.ddspf.dwSize  = 32;
@@ -371,7 +394,7 @@ static void FillDDSHeader(DDS_HEADER& H, int width, int height, EDDSType type)
 // ------------------------------------------------------------
 // Main function: write DDS BC3 atlas
 // ------------------------------------------------------------
-void DumpAtlasToDDS(const TArray<FPlane>& Atlas, int AtlasWidth, int AtlasHeight, const FString& AtlasDDS, EDDSType type)
+void DumpAtlasToDDS(const TArray<FPlane>& Atlas, INT AtlasWidth, INT AtlasHeight, const FString& AtlasDDS, EDDSType type)
 {
     const INT PixelCount = AtlasWidth * AtlasHeight;
 
@@ -409,12 +432,12 @@ void DumpAtlasToDDS(const TArray<FPlane>& Atlas, int AtlasWidth, int AtlasHeight
     BYTE rgbaBlock[64];
     BYTE dxtBlock[16]; // max size
 
-    int stbMode = (type == EDDSType::BC1 ? 0 : 1);
-    int blockSize = (type == EDDSType::BC1 ? 8 : 16);
+    INT stbMode = (type == EDDSType::BC1 ? 0 : 1);
+    INT blockSize = (type == EDDSType::BC1 ? 8 : 16);
 
-    for (int by = 0; by < AtlasHeight; by += 4)
+    for (INT by = 0; by < AtlasHeight; by += 4)
     {
-        for (int bx = 0; bx < AtlasWidth; bx += 4)
+        for (INT bx = 0; bx < AtlasWidth; bx += 4)
         {
             Extract4x4RGBA(rgbaBlock, RGBA, bx, by, AtlasWidth, AtlasHeight);
 
@@ -467,7 +490,7 @@ void DumpAtlasToDisk(
     }
 
     // Write PNG using stb_image_write
-    int ok = stbi_write_png_to_func(
+    INT ok = stbi_write_png_to_func(
         PNGWriteCallback,
         &Ctx,
         AtlasWidth,
@@ -537,7 +560,7 @@ void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(
 
     for (INT i = 0; i < SI.Verts.Num(); i++)
     {
-        const FVector& P = SI.Verts(i);
+        FVector& P = SI.Verts(i);
 
         float U = Basis.TangentU | (P - Basis.Origin);
         float V = Basis.TangentV | (P - Basis.Origin);
@@ -701,6 +724,12 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
             SI->HDLightmap.AtlasMinV = LM.AtlasMinV;
             SI->HDLightmap.AtlasMaxU = LM.AtlasMaxU;
             SI->HDLightmap.AtlasMaxV = LM.AtlasMaxV;
+            SI->HDLightmap.SurfMinU = LM.MinU;
+            SI->HDLightmap.SurfMaxU = LM.MaxU;
+            SI->HDLightmap.SurfMinV = LM.MinV;
+            SI->HDLightmap.SurfMaxV = LM.MaxV;
+            if (SI->IsMover)
+                SI->HDLightmap.OriginOffset = SI->LightmapBasis.Origin - SI->Owner->Location;
             ComputeFinalAtlasUVs(*SI, LM.Basis, LM.MinU, LM.MaxU, LM.MinV, LM.MaxV, LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
         }
 
@@ -743,108 +772,194 @@ INT CDECL Compare(const FPendingLightmap& A, const FPendingLightmap& B)
     return 0;
 }
 
+inline void ToLowerASCII(const char* src, char* dst)
+{
+    while (*src)
+    {
+        char c = *src++;
+        if (c >= 'A' && c <= 'Z')
+            c = c + ('a' - 'A');
+        *dst++ = c;
+    }
+    *dst = 0;
+}
+
+bool IsHighlightTexture(const UTexture* Tex)
+{
+    if (!Tex)
+        return false;
+
+    const char* RawName = TCHAR_TO_ANSI(Tex->GetName());
+
+    char LowerName[64];
+    ToLowerASCII(RawName, LowerName);
+
+    // Simple string compare against your highlight list
+    return strcmp(LowerName, "sail1") == 0
+        || strcmp(LowerName, "sail1a") == 0;
+}
+
 void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta)
 {
     UModel* Model = Level->Model;
-
     PendingLightmaps.Empty();
 
-    for (INT iSurf = 0; iSurf < Model->Surfs.Num(); ++iSurf)
+    // Iterate nodes instead of surfs
+    for (INT ni = 0; ni < Model->Nodes.Num(); ++ni)
     {
+        const FBspNode& Node = Model->Nodes(ni);
+        INT iSurf = Node.iSurf;
+        if (iSurf < 0 || iSurf >= Model->Surfs.Num())
+            continue;
+
         FBspSurf& Surf = Model->Surfs(iSurf);
+        AActor* Owner = Surf.Actor;
+        bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
 
-        TArray<AActor*>* Lights = StaticLightsForFacet.Find(iSurf);
-        if (!Lights || Lights->Num() == 0)
-            continue;
+        // Build light list
+        TArray<AActor*> Lights;
 
-        FSurfInfo* SI = SurfaceInfoMap.Find(iSurf);
-        if (!SI || SI->Verts.Num() < 3)
-            continue;
-
-        SurfaceBasis Basis = BuildSurfaceBasis(Model, Surf);
-
-        // --------------------------------------------
-        // Compute extents in OUR UV space:
-        // U = dot(TangentU, P - Origin)
-        // V = dot(TangentV, P - Origin)
-        // --------------------------------------------
-        float minU = FLT_MAX, maxU = -FLT_MAX;
-        float minV = FLT_MAX, maxV = -FLT_MAX;
-
-        for (INT i = 0; i < SI->Verts.Num(); ++i)
+        if (!isMover)
         {
-            const FVector& P = SI->Verts(i);
-            FVector Local = P - Basis.Origin;
+            // Collect dynamic lights for this facet
+            ComputeDynamicLightsForFacet(Level, iSurf, Lights);
 
-            float U = (Basis.TangentU | Local);
-            float V = (Basis.TangentV | Local);
-
-            if (U < minU) minU = U;
-            if (U > maxU) maxU = U;
-            if (V < minV) minV = V;
-            if (V > maxV) maxV = V;
-        }
-
-        float USize = Max(0.001f, maxU - minU);
-        float VSize = Max(0.001f, maxV - minV);
-
-        // --------------------------------------------
-        // Choose resolution based on world-space size
-        // --------------------------------------------
-        const float Density = 0.25f; // texels per unit, tweak as desired
-        INT W = Clamp(appRound(USize * Density), 8, 512);
-        INT H = Clamp(appRound(VSize * Density), 8, 512);
-
-        TArray<FPlane> Pixels;
-        Pixels.AddZeroed(W * H);
-
-        // --------------------------------------------
-        // Bake in OUR UV space
-        // --------------------------------------------
-        for (INT y = 0; y < H; ++y)
-        {
-            for (INT x = 0; x < W; ++x)
+            // Append static lights
+            if (TArray<AActor*>* StaticLightList = StaticLightsForFacet.Find(iSurf))
             {
-                float u = (x + 0.5f) / float(W);
-                float v = (y + 0.5f) / float(H);
-
-                float U = minU + u * USize;
-                float V = minV + v * VSize;
-
-                FVector WorldPos =
-                    Basis.Origin +
-                    Basis.TangentU * U +
-                    Basis.TangentV * V;
-
-                FPlane Color = EvaluateStaticShadowFactor(Lights, WorldPos, Basis, Model);
-                Pixels(y * W + x) = Color;
+                for (INT t = 0; t < StaticLightList->Num(); ++t)
+                {
+                    Lights.AddItem((*StaticLightList)(t));
+                }
             }
         }
+        else
+        {
+            // For movers, collect all lights in the level
+            for (INT ai = 0; ai < Level->Actors.Num(); ++ai)
+            {
+                AActor* A = Level->Actors(ai);
+                if (A && A->IsA(ALight::StaticClass()))
+                    Lights.AddItem(A);
+            }
+        }
+        if (Lights.Num() == 0)
+            continue;
 
-        // No GL upload here — atlas will handle it
-        FSurfaceLightmap LM;
-        appMemzero(&LM, sizeof(LM));
+        // Get or create FSurfInfo for this surf
+        FSurfInfo* SI = SurfaceInfoMap.Find(iSurf);
+        if (!SI)
+            continue;
+        /* {
+            SurfaceInfoMap.Set(iSurf, FSurfInfo());
+            SI = SurfaceInfoMap.Find(iSurf);
 
-        SI->HDLightmap = LM;
-        SI->HasHDLightmap = true;
+            SI->IsMover = isMover;
+            SI->Owner = Owner;
+            SI->Verts.Empty();
 
-        // Prepare for atlas packing
-        FPendingLightmap Pending;
-        Pending.SurfIndex = iSurf;
-        Pending.Width  = W;
-        Pending.Height = H;
-        Pending.Pixels = Pixels;
-        Pending.MinU = minU;
-        Pending.MaxU = maxU;
-        Pending.MinV = minV;
-        Pending.MaxV = maxV;
-        Pending.Basis = Basis;
+            // Collect verts from this node
+            for (INT vi = 0; vi < Node.NumVertices; ++vi)
+            {
+                INT iVert = Node.iVertPool + vi;
+                if (iVert < 0 || iVert >= Model->Verts.Num())
+                    continue;
 
-        PendingLightmaps.AddItem(Pending);
+                const FVert& V = Model->Verts(iVert);
+                const FVector& P = Model->Points(V.pVertex);
+                SI->Verts.AddItem(P);
+            }
+        }*/
+
+        if (SI->Verts.Num() < 3)
+            continue;
+
+        bool TwoSided = (Surf.PolyFlags & PF_TwoSided) != 0;
+
+        // Build basis once per surf
+        if (!SI->HasHDLightmap)
+        {
+            SurfaceBasis Basis = BuildSurfaceBasis(SI, Level, Surf);
+            SI->LightmapBasis = Basis;
+
+            // Compute extents in UV space
+            float minU = FLT_MAX, maxU = -FLT_MAX;
+            float minV = FLT_MAX, maxV = -FLT_MAX;
+            for (INT i = 0; i < SI->Verts.Num(); ++i)
+            {
+                FVector Local = SI->Verts(i) - Basis.Origin;
+                float U = (Basis.TangentU | Local);
+                float V = (Basis.TangentV | Local);
+                minU = Min(minU, U); maxU = Max(maxU, U);
+                minV = Min(minV, V); maxV = Max(maxV, V);
+            }
+
+            float USize = Max(0.001f, maxU - minU);
+            float VSize = Max(0.001f, maxV - minV);
+
+            const float Density = 0.25f;
+            INT W = Clamp(appRound(USize * Density), 8, 512);
+            INT H = Clamp(appRound(VSize * Density), 8, 512);
+
+            TArray<FPlane> Pixels;
+            Pixels.AddZeroed(W * H);
+
+            for (INT y = 0; y < H; ++y)
+            {
+                for (INT x = 0; x < W; ++x)
+                {
+                    float u = (x + 0.5f) / float(W);
+                    float v = (y + 0.5f) / float(H);
+                    float U = minU + u * USize;
+                    float V = minV + v * VSize;
+
+                    FVector WorldPos =
+                        Basis.Origin +
+                        Basis.TangentU * U +
+                        Basis.TangentV * V;
+
+                    FPlane Color = EvaluateStaticShadowFactor(Lights, WorldPos, Basis, Model, TwoSided);
+                    /*if (IsHighlightTexture(Surf.Texture)) {
+                        Color.X = 1;
+                        Color.Y = 0;
+                        Color.Z = 1;
+                        Color.W = 1;
+                    }
+                    else {
+                        Color.X = 0;
+                        Color.Y = 0;
+                        Color.Z = 0;
+                        Color.W = 1;
+                    }*/
+                    Pixels(y * W + x) = Color;
+                }
+            }
+
+            FSurfaceLightmap LM;
+            appMemzero(&LM, sizeof(LM));
+            SI->HDLightmap = LM;
+            SI->HasHDLightmap = true;
+
+            FPendingLightmap Pending;
+            Pending.SurfIndex = iSurf;
+            Pending.Width = W;
+            Pending.Height = H;
+            Pending.Pixels = Pixels;
+            Pending.MinU = minU;
+            Pending.MaxU = maxU;
+            Pending.MinV = minV;
+            Pending.MaxV = maxV;
+            Pending.Basis = Basis;
+
+            PendingLightmaps.AddItem(Pending);
+        }
     }
-    Sort(&PendingLightmaps(0), PendingLightmaps.Num());
 
-    BuildStaticLightmapAtlas(AtlasPNG, AtlasMeta);
+    if (PendingLightmaps.Num() > 0)
+    {
+        Sort(&PendingLightmaps(0), PendingLightmaps.Num());
+        BuildStaticLightmapAtlas(AtlasPNG, AtlasMeta);
+    }
 }
 
 // Simple UE1-style file-exists helper.
@@ -1001,7 +1116,6 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
         glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
     }
 
-    // Apply atlas UVs to surfaces
     // Apply atlas UVs AND reconstruct per-vertex lightmap UVs
     for (INT i = 0; i < Entries.Num(); i++)
     {
@@ -1013,16 +1127,23 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
 
         SI->HasHDLightmap = true;
 
+        // Rebuild the UT planar basis (same as bake-time)
+        FBspSurf& Surf = Level->Model->Surfs(E.SurfIndex);
+        UXOpenGLRenderDevice::SurfaceBasis Basis = BuildSurfaceBasis(SI, Level, Surf);
+        SI->LightmapBasis = Basis;
+
         // Apply atlas rectangle to runtime struct
         FSurfaceLightmap& LM = SI->HDLightmap;
         LM.AtlasMinU = E.AtlasMinU;
         LM.AtlasMaxU = E.AtlasMaxU;
         LM.AtlasMinV = E.AtlasMinV;
         LM.AtlasMaxV = E.AtlasMaxV;
-
-        // Rebuild the UT planar basis (same as bake-time)
-        FBspSurf& Surf = Level->Model->Surfs(E.SurfIndex);
-        UXOpenGLRenderDevice::SurfaceBasis Basis = BuildSurfaceBasis(Level->Model, Surf);
+        LM.SurfMinU = E.MinU;
+        LM.SurfMaxU = E.MaxU;
+        LM.SurfMinV = E.MinV;
+        LM.SurfMaxV = E.MaxV;
+        if (SI->IsMover)
+            LM.OriginOffset = SI->LightmapBasis.Origin - SI->Owner->Location;
 
         // Reconstruct per-vertex lightmap UVs using MinU/MaxU/MinV/MaxV from metadata
         ComputeFinalAtlasUVs(*SI, Basis, E.MinU, E.MaxU, E.MinV, E.MaxV, E.AtlasMinU, E.AtlasMaxU, E.AtlasMinV, E.AtlasMaxV);
@@ -1056,7 +1177,8 @@ void UXOpenGLRenderDevice::NewLevelOC()
 
 
     FString AtlasPNG, AtlasMeta;
-    GetAtlasPathsForLevel(LastLevel->GetLevelInfo()->Title, AtlasPNG, AtlasMeta);
+    GetAtlasPathsForLevel(LastLevel->GetOuter()->GetName(), AtlasPNG, AtlasMeta);
+    //FString liff = LastLevel->GetLevelInfo()->Title;
     if (FileExistsUE1(AtlasPNG) && FileExistsUE1(AtlasMeta))
     {
         if (LoadStaticLightmapAtlas(LastLevel, AtlasPNG, AtlasMeta))

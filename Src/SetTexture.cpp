@@ -993,7 +993,7 @@ DWORD UXOpenGLRenderDevice::GetPolyFlagsAndDrawFlags(DWORD PolyFlags, DWORD& Dra
 	//	PolyFlags &= ~PF_Masked;
 
 	// fast path. If no relevant polyflags have changed since our previous query, then just return the same ShaderOptions as last time
-	const DWORD RelevantPolyFlags = (PF_Modulated | PF_RenderFog | PF_Masked | PF_Straight_AlphaBlend | PF_Premultiplied_AlphaBlend | PF_Unlit | PF_Translucent | PF_Environment);
+	const DWORD RelevantPolyFlags = (PF_Modulated | PF_RenderFog | PF_Masked | PF_Straight_AlphaBlend | PF_Premultiplied_AlphaBlend | PF_Unlit | PF_Translucent | PF_Environment | PF_TwoSided);
 	if ((CachedPolyFlags & RelevantPolyFlags) ^ (PolyFlags & RelevantPolyFlags))
 	{
 		DrawFlags = ShaderDrawFlags::DF_None;
@@ -1015,6 +1015,9 @@ DWORD UXOpenGLRenderDevice::GetPolyFlagsAndDrawFlags(DWORD PolyFlags, DWORD& Dra
 
 		if (PolyFlags & PF_Environment)
 			DrawFlags |= ShaderDrawFlags::DF_Environment;
+
+		if (PolyFlags & PF_TwoSided)
+			DrawFlags |= ShaderDrawFlags::DF_TwoSided;
 
 		CachedPolyFlags = PolyFlags;
 		CachedDrawFlags = DrawFlags;

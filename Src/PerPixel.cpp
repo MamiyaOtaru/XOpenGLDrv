@@ -285,6 +285,9 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         return;
 	}
 
+    FBspSurf bspSurf = Level->Model->Surfs(iSurf);
+    bool twoSided = (bspSurf.PolyFlags & PF_TwoSided);
+
     TArray<RankedLight> Ranked;
     Ranked.Reserve(Level->Actors.Num());
 
@@ -362,7 +365,10 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         float brightnessFactor = Max(lum, brightness);
 
 		FVector LightDir = (LightPos - closest).SafeNormal();
-        float lambert = Max(0.f, FacetNormal | LightDir);
+        float dot = FacetNormal | LightDir;
+        if (twoSided && dot < 0.f)
+            dot = -dot;
+        float lambert = Max(0.f, dot);
 
         float score = attenuation * brightnessFactor * lambert;
 
@@ -370,7 +376,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         R.Light = L;
         R.Score = score;
         Ranked.AddItem(R);
-    }
+    } // end iterate static lights
 
 	Sort(&Ranked(0), Ranked.Num());
 
@@ -382,16 +388,14 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 }
 
 void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(
-	FSceneNode* Frame,
+    ULevel* Level,
     INT iSurf,
     TArray<AActor*>& OutLights)
 {
 	OutLights.Empty();
 
-	if (!Frame || !Frame->Level || !Frame->Level->Model || iSurf < 0 || iSurf >= Frame->Level->Model->Surfs.Num())
+	if (!Level || !Level->Model || iSurf < 0 || iSurf >= Level->Model->Surfs.Num())
 		return;
-
-	ULevel* Level = Frame->Level;
 
 	// Try cached verts
     TArray<FVector> Verts;
@@ -469,8 +473,20 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 	FSavedPoly* P = Facet.Polys;
 	bool haveNormal = false;
 
+    bool twoSided = false;
 	for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
 	{
+        INT iNode = Facet.Polys->iNode;
+        if (iNode >= 0 && iNode < Level->Model->Nodes.Num())
+        {
+            const FBspNode& Node = Level->Model->Nodes(iNode);
+            if (Node.iSurf >= 0 && Node.iSurf < Level->Model->Surfs.Num())
+            {
+                const FBspSurf& Surf = Level->Model->Surfs(Node.iSurf);
+                twoSided = (Surf.PolyFlags & PF_TwoSided) != 0;
+            }
+        }
+
 		// Normal extraction: try to find a non-degenerate triangle
 		if (!haveNormal && Poly->NumPts >= 3)
 		{
@@ -534,11 +550,6 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 
 		if (A->WorldLightRadius() <= 0.f)
 			continue;
-
-		/*if (true) {
-			OutLights.AddItem(A);
-			continue;
-		}*/
 		
 		const FVector LightWorld = A->Location;
 
@@ -564,7 +575,10 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
         float brightnessFactor = Max(lum, brightness);
 
 		FVector LightDir = (LightWorld - CentroidWorld).SafeNormal();
-		float lambert = Max(0.f, FacetNormalWorld | LightDir);
+        float dot = FacetNormalWorld | LightDir;
+        if (twoSided && dot < 0.f)
+            dot = -dot;
+        float lambert = Max(0.f, dot);
 
 		float score = attenuation * brightnessFactor;
 
@@ -657,32 +671,43 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     };
 
     // some built in values, can be overridden by config file
+    Add(TEXT("hydro bases"), 165);
+    Add(TEXT("coret"), 135);
     Add(TEXT("zeto"), 95);
-    Add(TEXT("orbital station #12"), 75);
+    Add(TEXT("southside leadworks"), 95);
     Add(TEXT("grit"), 75);
+    Add(TEXT("orbital station #12"), 75);
+    Add(TEXT("cybrosis"), 65);
     Add(TEXT("morpheus"), 65);
     Add(TEXT("darji outpost #16-a"), 65);
+    Add(TEXT("epic boy"), 65);
     Add(TEXT("ratchet"), 60);
     Add(TEXT("lament ]["), 55);
+    Add(TEXT("stalwart xl"), 55);
+    Add(TEXT("command"), 55);
 	Add(TEXT("pressure"), 50);
     Add(TEXT("viridian"), 50);
 	Add(TEXT("closer"), 45);
+    Add(TEXT("heavy metal grinder"), 45);
+    Add(TEXT("morbias"), 45);
     Add(TEXT("metal dream"), 45);
     Add(TEXT("wolf's bay"), 45);
     Add(TEXT("shrapnel ]["), 45);
-    Add(TEXT("hydro bases"), 40);
+    Add(TEXT("stalwart"), 45);
+    Add(TEXT("dreary outpost"), 45);
     Add(TEXT("the pit of agony"), 35);
-    Add(TEXT("heavy metal grinder"), 35);
     Add(TEXT("healing pod ]["), 35);
     Add(TEXT("itv oblivion"), 35);
     Add(TEXT("ocean floor \"station 5\""), 35);
     Add(TEXT("mazon fortress"), 35);
     Add(TEXT("guardia fortress"), 35);
-    Add(TEXT("dreary outpost"), 35);
     Add(TEXT("facing worlds special edition"), 35);
     Add(TEXT("nucleus power plant"), 35);
     Add(TEXT("noxion base"), 35);
+    Add(TEXT("lava giant"), 35);
+    Add(TEXT("city domination"), 35);
     Add(TEXT("ghardhen"), 35);
+    Add(TEXT("tomb of sesmar"), 35);
 
     const TCHAR* IniFile = TEXT("XOpenGLDrv.ini");
     const TCHAR* Section = TEXT("XOpenGLDrv.LevelLightCaps");
@@ -740,7 +765,7 @@ void UXOpenGLRenderDevice::NewLevelPP()
 	    // set number of lights for this level
 	    FStringNoInit LevelName = LastLevel->GetLevelInfo()->Title;
 	    FString Lower = LevelName.Locs();
-	    //debugf(TEXT("new level %s"), Lower);
+	    debugf(TEXT("new level %s"), Lower);
 	    LevelLightCap = GetLevelLightCap(Lower);
 
         // build lightlist map
@@ -756,7 +781,7 @@ void UXOpenGLRenderDevice::NewLevelPP()
 			AActor* Owner = Surf.Actor;
 			bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
             if (isMover)
-                continue;
+               continue;
 
             // Build static light list
             TArray<AActor*> StaticList;

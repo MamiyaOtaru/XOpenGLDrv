@@ -22,10 +22,23 @@
 // Notes:
 // - Uses quantized keys to group identical/near-identical positions.
 // - If triangulation/earclip fails, SurfaceTriIndices might be empty and consumers fall back to per-facet handling.
+
+inline UBOOL VectorsEqual(const FVector& A, const FVector& B, float Tolerance = .01)
+{
+	return (fabs(A.X - B.X) < Tolerance &&
+		fabs(A.Y - B.Y) < Tolerance &&
+		fabs(A.Z - B.Z) < Tolerance);
+}
+
+bool VectorsEquivalent(const FVector& A, const FVector& B, float Tolerance = KINDA_SMALL_NUMBER)
+{
+	return (A - B).SizeSquared() < Tolerance * Tolerance ||
+		(A + B).SizeSquared() < Tolerance * Tolerance; // allow flipped axis
+}
+
 void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 {
 	SurfaceInfoMap.Empty();
-
 	if (!Level || !Level->Model)
 		return;
 
@@ -33,89 +46,85 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 	const float dotThreshold = cosf(SmoothNormalAngleThresholdDegrees * DegToRad);
 
 	struct PosRef { INT iSurf; INT LocalIndex; };
-
 	// map quantized position key -> list of references into surfaces
 	TMap<SQWORD, TArray<PosRef>> PosMap;
 
-	// Build per-surface vertex lists, normals and areas and polygons
-	for (INT iSurf = 0; iSurf < Level->Model->Surfs.Num(); ++iSurf)
+
+	// --- Unified path: iterate all BSP nodes ---
+	for (INT ni = 0; ni < Level->Model->Nodes.Num(); ++ni)
 	{
+		const FBspNode& Node = Level->Model->Nodes(ni);
+		INT iSurf = Node.iSurf;
+		if (iSurf < 0 || iSurf >= Level->Model->Surfs.Num())
+			continue;
+
 		const FBspSurf& Surf = Level->Model->Surfs(iSurf);
 		AActor* Owner = Surf.Actor;
 		bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
-		if (isMover)
-			continue;
-		SurfaceInfoMap.Set(iSurf, FSurfInfo());
-		FSurfInfo& SI = *SurfaceInfoMap.Find(iSurf);
 
-		// stable surface normal
-		SI.SurfaceNormal = Level->Model->Vectors(Surf.vNormal);
-		if (!SI.SurfaceNormal.IsNearlyZero())
-			SI.SurfaceNormal = SI.SurfaceNormal.SafeNormal();
-		else
-			SI.SurfaceNormal = FVector(0,0,1);
-
-		SI.Nodes.Empty();
-		SI.Nodes.AddZeroed(Surf.Nodes.Num());
-
-		// gather vertices in same order as GetWorldspaceSurfaceVerts()
-		for (INT ni = 0; ni < Surf.Nodes.Num(); ++ni)
+		// Get or create FSurfInfo
+		FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
+		if (!pSI)
 		{
-			INT iNode = Surf.Nodes(ni);
-			if (iNode < 0 || iNode >= Level->Model->Nodes.Num())
+			SurfaceInfoMap.Set(iSurf, FSurfInfo());
+			pSI = SurfaceInfoMap.Find(iSurf);
+
+			pSI->SurfaceNormal = Level->Model->Vectors(Surf.vNormal).SafeNormal();
+			pSI->IsMover = isMover;
+			pSI->Owner = Owner;
+		}
+
+		FSurfInfo& SI = *pSI;
+
+		// Build FNodeInfo for this node
+		FNodeInfo NI;
+		NI.iNode = ni;
+		NI.PlaneNormal = FVector(Node.Plane.X, Node.Plane.Y, Node.Plane.Z).SafeNormal();
+		NI.PlaneW = Node.Plane.W;
+		NI.VertIndices.AddZeroed(Node.NumVertices);
+
+		for (INT vi = 0; vi < Node.NumVertices; ++vi)
+		{
+			INT iVert = Node.iVertPool + vi;
+			if (iVert < 0 || iVert >= Level->Model->Verts.Num())
 				continue;
-			const FBspNode& Node = Level->Model->Nodes(iNode);
 
-			FNodeInfo& NI = SI.Nodes(ni);
+			const FVert& V = Level->Model->Verts(iVert);
+			const FVector& P = Level->Model->Points(V.pVertex);
 
-			// store true BSP plane
-			NI.PlaneNormal = FVector(Node.Plane.X, Node.Plane.Y, Node.Plane.Z);
-			if (!NI.PlaneNormal.IsNearlyZero())
-				NI.PlaneNormal = NI.PlaneNormal.SafeNormal();
-			else
-				NI.PlaneNormal = FVector(0,0,1);
-			NI.PlaneW      = Node.Plane.W;
+			SI.Verts.AddItem(P);
 
-			// build polygon vertex indices
-			NI.VertIndices.AddZeroed(Node.NumVertices);
-			for (INT vi = 0; vi < Node.NumVertices; ++vi)
+			// Compute UVs from surf basis
+			FVector Base = Level->Model->Points(Surf.pBase);
+			FVector UVec = Level->Model->Vectors(Surf.vTextureU);
+			FVector VVec = Level->Model->Vectors(Surf.vTextureV);
+
+			float UU = ((P - Base) | UVec) + Surf.PanU;
+			float VV = ((P - Base) | VVec) + Surf.PanV;
+
+			FTextureInfo Info;
+			if (Surf.Texture)
 			{
-				INT iVert = Node.iVertPool + vi;
-				const FVert& V = Level->Model->Verts(iVert);
-				const FVector& P = Level->Model->Points(V.pVertex);
-
-				SI.Verts.AddItem(P);
-                
-				// the raw BSP UVs, which are not what ends up being used in the shader
-				FBspSurf S = Level->Model->Surfs(iSurf);
-				FVector Base = Level->Model->Points(S.pBase);
-				FVector UVec = Level->Model->Vectors(S.vTextureU);
-				FVector VVec = Level->Model->Vectors(S.vTextureV);
-				float PanU = S.PanU;
-				float PanV = S.PanV;
-				float UU = (P - Base) | UVec;
-				float VV = (P - Base) | VVec;
-				UU += PanU;
-				VV += PanV;
-				// Apply material transforms exactly like shader
-				FTextureInfo Info;
-				if (S.Texture) {
-					S.Texture->Lock(Info, appSeconds(), 0, Viewport->RenDev);
-					// Now Info.UScale, Info.VScale, Info.Pan, etc. are filled in
-					float UMult = Info.UScale;
-					float VMult = Info.VScale;
-					float UPan = Info.Pan.X;
-					float VPan = Info.Pan.Y;
-					// Apply material transforms
-					UU = (UU - UPan) * UMult;
-					VV = (VV - VPan) * VMult;
-				}
-				//VV *= -1.f; // invert V to match shader convention
-                SI.UVs.AddItem(FVector(UU, VV, 0));
-
-				NI.VertIndices(vi) = SI.Verts.Num() - 1;
+				Surf.Texture->Lock(Info, appSeconds(), 0, Viewport->RenDev);
+				UU = (UU - Info.Pan.X) * Info.UScale;
+				VV = (VV - Info.Pan.Y) * Info.VScale;
 			}
-		} // end loop through nodes
+
+			SI.UVs.AddItem(FVector(UU, VV, 0));
+			NI.VertIndices(vi) = SI.Verts.Num() - 1;
+		}
+
+		SI.Nodes.AddItem(NI);
+	} // end loop through nodes
+
+	// After node iteration has populated SurfaceInfoMap...
+	for (INT iSurf = 0; iSurf < Level->Model->Surfs.Num(); ++iSurf)
+	{
+		FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
+		if (!pSI)
+			continue;
+
+		FSurfInfo& SI = *pSI;
 
 		SI.VertexNormals.AddZeroed(SI.Verts.Num()); // initialize non-deduped per-vertex normals
 
@@ -547,7 +556,7 @@ bool FacetInsidePolygon(
 
     const FVector Aref = polyVerts(0);
 
-    const double eps = 1;
+    const double eps = .25;
 
     auto pointInPoly2D = [&](const FVector& P)->bool
 	{

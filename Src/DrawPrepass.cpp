@@ -41,10 +41,7 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
 
     INT FacetVertexCount = 0;
 
-    TArray<FVector>& SurfWorldVerts = SI.Verts;
-	TArray<FVector>& SurfNormals    = SI.VertexNormals;
-
-	INT NumPts = SurfWorldVerts.Num();
+	INT NumPts = SI.Verts.Num();
 
     TArray<glm::vec3> PolyVertices;
 	PolyVertices.AddZeroed(NumPts);
@@ -56,8 +53,8 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
 	// Build per-vertex data for this node polygon
 	for (INT vi = 0; vi < NumPts; ++vi)
 	{
-		FVector Vert = SurfWorldVerts(vi).TransformPointBy(Frame->Coords);
-        FVector Normal = SurfNormals(vi).TransformVectorBy(Frame->Coords);
+        FVector Vert = SI.Verts(vi).TransformPointBy(Frame->Coords);
+        FVector Normal = SI.VertexNormals(vi).TransformVectorBy(Frame->Coords);;
 
 		PolyVertices(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
         PolyVertexNormals(vi) = glm::vec3(Normal.X, Normal.Y, Normal.Z);
