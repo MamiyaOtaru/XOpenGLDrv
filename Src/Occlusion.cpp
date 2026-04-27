@@ -46,9 +46,232 @@ struct FStaticLightContrib
     FPlane Unshadowed;   // sum_i atten_i * color_i
 };
 
+INT GetHitSurfIndex(UModel* Model, const FCheckResult& Hit)
+{
+    // BSP hits come through the model primitive; Item is the node index.
+    if (!Hit.Primitive)
+        return INDEX_NONE;
+
+    INT NodeIndex = Hit.Item;
+    if (NodeIndex < 0 || NodeIndex >= Model->Nodes.Num())
+        return INDEX_NONE;
+
+    const FBspNode& Node = Model->Nodes(NodeIndex);
+    return Node.iSurf;
+}
+
+// this version produces some halos around pillars, but can be used to brute force out of huge cut BSPs like KGalleon's sails
+/*bool BSPVisibilityRay(
+    UModel* Model,
+    INT OriginNode,
+    INT OriginSurf,
+    const FVector& Start,
+    const FVector& End
+)
+{
+    FLOAT skipMagnitude = 8.0;
+    FVector Dir = (End - Start).SafeNormal();
+    FVector CurrentStart = Start;
+
+    FCheckResult Hit;
+    FCheckResult PointHit;
+
+    bool bLastWasTranslucent = false;
+    INT LastTranslucentSurf = INDEX_NONE;
+
+    while (true)
+    {
+        // If the next step would overshoot the light, clamp and return unobstructed
+        float distToEnd = (End - CurrentStart) | Dir; // projection along ray
+        if (distToEnd <= 0.0f)
+            return true; // we've reached/passed the light
+
+        UBOOL hit = !Model->LineCheck(
+            Hit, nullptr,
+            End,
+            CurrentStart,
+            FVector(0, 0, 0),
+            0
+        );
+
+        if (!hit)
+            return true; // fully unobstructed
+
+        Model->PointCheck(
+            PointHit, nullptr,
+            CurrentStart,
+            FVector(0, 0, 0),
+            0
+        );
+
+        INT NodeIndex = Hit.Item;
+
+        // Skip originating node
+        if (NodeIndex == OriginNode)
+        {
+            CurrentStart = Hit.Location + Dir * skipMagnitude;
+            continue;
+        }
+
+        // Validate node index
+        if (NodeIndex >= 1 && NodeIndex < Model->Nodes.Num())
+        {
+            const FBspNode& Node = Model->Nodes(NodeIndex);
+            INT HitSurf = Node.iSurf;
+
+            // Skip nodes that do not block visibility
+            if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg)) // && Node.iZone[0] != Node.iZone[1])
+            {
+                // Mark that we just hit a translucent surface
+                bLastWasTranslucent = true;
+                LastTranslucentSurf = HitSurf;
+                CurrentStart = Hit.Location + Dir * skipMagnitude;
+                continue;
+            }
+
+            // Skip originating surface
+            if (HitSurf == OriginSurf)
+            {
+                CurrentStart = Hit.Location + Dir * skipMagnitude;
+                continue;
+            }
+
+            // Skip translucent / masked / invisible / non-solid
+            if (HitSurf >= 0 && HitSurf < Model->Surfs.Num())
+            {
+                const FBspSurf& Surf = Model->Surfs(HitSurf);
+                DWORD PF = Surf.PolyFlags;
+
+                if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
+                    PF_Masked | PF_AlphaTexture | PF_Portal))
+                {
+                    // Mark that we just hit a translucent surface
+                    bLastWasTranslucent = true;
+                    LastTranslucentSurf = HitSurf;
+
+                    CurrentStart = Hit.Location + Dir * skipMagnitude;
+                    continue;
+                }
+            }
+            else
+            {
+                // Internal node with no surface
+                CurrentStart = Hit.Location + Dir * skipMagnitude;
+                continue;
+            }
+        }
+        else// if (bLastWasTranslucent) // skip invalid node if we just hit a translucent surface, to allow rays that pass through thin walls/windows/etc.  But allow a ray that STARTS in a wall to be considered a hit
+        {
+            //INT NodeIndex2 = PointHit.Item;
+            //if (NodeIndex2 >= 1 && NodeIndex2 < Model->Nodes.Num())
+            //{
+            //    const FBspNode& PointNode = Model->Nodes(NodeIndex2);
+            //    INT PointHitSurf = PointNode.iSurf;
+            //    int moo = PointHitSurf;
+            //}
+            // Invalid node index: skip
+            CurrentStart = Hit.Location + Dir * skipMagnitude;
+            continue;
+        }
+
+        // Solid hit: occluded
+        return false;
+    }
+}*/
+
+bool BSPVisibilityRay(
+    UModel* Model,
+    INT OriginNode,
+    INT OriginSurf,
+    const FVector& SurfacePoint,   // the point being lit
+    const FVector& LightPoint      // the light position
+)
+{
+    const FLOAT skipMagnitude = 8.0f;
+
+    // Ray goes from light -> surface
+    FVector RayDir = (SurfacePoint - LightPoint).SafeNormal();
+    FVector RayPos = LightPoint;
+
+    FCheckResult Hit;
+
+    while (true)
+    {
+        // If we've reached/passed the surface, it's unobstructed
+        float distToSurface = (SurfacePoint - RayPos) | RayDir;
+        if (distToSurface <= 0.0f)
+            return true;
+
+        // Trace from light toward the surface
+        UBOOL hit = !Model->LineCheck(
+            Hit, nullptr,
+            SurfacePoint,
+            RayPos,
+            FVector(0,0,0),
+            0
+        );
+
+        if (!hit)
+            return true; // nothing between light and surface
+
+        INT NodeIndex = Hit.Item;
+
+        if (NodeIndex == OriginNode)
+            return true; // hit the node being tested: consider this unoccluded
+
+        // Validate node index
+        if (NodeIndex >= 1 && NodeIndex < Model->Nodes.Num())
+        {
+            const FBspNode& Node = Model->Nodes(NodeIndex);
+            INT HitSurf = Node.iSurf;
+
+            if (HitSurf == OriginSurf)
+                return true; // hit the surface being tested: consider this unoccluded
+
+            // Skip nodes that do not block visibility
+            if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg)) // && Node.iZone[0] != Node.iZone[1])
+            {
+                RayPos = Hit.Location + RayDir * skipMagnitude;
+                continue;
+            }
+
+            // Skip translucent / masked / invisible / non-solid
+            if (HitSurf >= 0 && HitSurf < Model->Surfs.Num())
+            {
+                const FBspSurf& Surf = Model->Surfs(HitSurf);
+                DWORD PF = Surf.PolyFlags;
+
+                if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
+                          PF_Masked | PF_AlphaTexture | PF_Portal))
+                {
+                    RayPos = Hit.Location + RayDir * skipMagnitude;
+                    continue;
+                }
+            }
+
+            if ((Hit.Location - SurfacePoint).Size() <= skipMagnitude) // optional: * some amount when needed for certain maps
+            {
+                return true; // hit very close to the surface being tested: consider this unoccluded to allow for numerical imprecision
+            }
+        }
+        else
+        {
+            // Invalid node index: skip
+            RayPos = Hit.Location + RayDir * skipMagnitude;
+            continue;
+        }
+        
+        // If we hit a real surface that is NOT the one being tested: occluded
+        return false;
+    }
+}
+
+
 // build an occlusion map
 FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     const TArray<AActor*>& Lights,
+    INT iNode,
+    INT iSurf,
     const FVector& WorldPos,
     const SurfaceBasis& Basis,
     UModel* Model,
@@ -101,46 +324,12 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         Unshadowed.Z += Color.Z;
 
         // Occlusion test
-        FLOAT mult = 2.5; // 1 is good enough for most everything but cybrosis, veridian, mojo.  grinder (curved hall), deck (2 sided surfs need 6), epicboy (wall behind purple light), orbital, command need more than 2
-        if (TwoSided) mult = 10.0;
-        FCheckResult Hit;
-        FVector SamplePos = WorldPos + Basis.Normal * mult;
-        UBOOL bUnobstructed = Model->LineCheck(
-            Hit, nullptr,
-            Light->Location,
-            SamplePos,
-            FVector(0,0,0),
-            0
-        );
-        // try again with light direction.
-        SamplePos = WorldPos + Ldir * mult;
-        bUnobstructed = bUnobstructed || Model->LineCheck(
-            Hit, nullptr,
-            Light->Location,
-            SamplePos,
-            FVector(0, 0, 0),
-            0
-        );
-        if (TwoSided) // need to push other direction too
-        {
-            SamplePos = WorldPos - Basis.Normal * mult;
-            bUnobstructed = bUnobstructed || Model->LineCheck(
-                Hit, nullptr,
-                Light->Location,
-                SamplePos,
-                FVector(0, 0, 0),
-                0
-            );
-            // try again with light direction.
-            SamplePos = WorldPos - Ldir * mult;
-            bUnobstructed = bUnobstructed || Model->LineCheck(
-                Hit, nullptr,
-                Light->Location,
-                SamplePos,
-                FVector(0, 0, 0),
-                0
-            );
-        }
+        float mult = (TwoSided ? 2.0f : 2.0f); // was 10 for two sided but the loop should work fine without such a large offset
+
+        // Start slightly off the surface toward the light
+        FVector SamplePos = WorldPos +Basis.Normal * mult;
+
+        bool bUnobstructed = BSPVisibilityRay(Model, iNode, iSurf, SamplePos, Light->Location);
 
         if (bUnobstructed)
         {
@@ -898,7 +1087,7 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
             float VSize = Max(0.001f, maxV - minV);
 
             const float Density = 0.25f;
-            INT W = Clamp(appRound(USize * Density), 8, 512);
+            INT W = Clamp(appRound(USize * Density), 8, 512); // 512
             INT H = Clamp(appRound(VSize * Density), 8, 512);
 
             TArray<FPlane> Pixels;
@@ -918,7 +1107,7 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
                         Basis.TangentU * U +
                         Basis.TangentV * V;
 
-                    FPlane Color = EvaluateStaticShadowFactor(Lights, WorldPos, Basis, Model, TwoSided);
+                    FPlane Color = EvaluateStaticShadowFactor(Lights, ni, iSurf, WorldPos, Basis, Model, TwoSided);
                     /*if (IsHighlightTexture(Surf.Texture)) {
                         Color.X = 1;
                         Color.Y = 0;

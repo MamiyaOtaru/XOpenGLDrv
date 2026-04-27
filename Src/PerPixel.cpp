@@ -680,11 +680,13 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     Add(TEXT("cybrosis"), 65);
     Add(TEXT("morpheus"), 65);
     Add(TEXT("darji outpost #16-a"), 65);
+    Add(TEXT("hall of giants"), 65);
     Add(TEXT("epic boy"), 65);
     Add(TEXT("ratchet"), 60);
     Add(TEXT("lament ]["), 55);
     Add(TEXT("stalwart xl"), 55);
     Add(TEXT("command"), 55);
+    Add(TEXT("tomb of sesmar"), 55);
 	Add(TEXT("pressure"), 50);
     Add(TEXT("viridian"), 50);
 	Add(TEXT("closer"), 45);
@@ -697,17 +699,18 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     Add(TEXT("dreary outpost"), 45);
     Add(TEXT("the pit of agony"), 35);
     Add(TEXT("healing pod ]["), 35);
+    Add(TEXT("liandri"), 35);
     Add(TEXT("itv oblivion"), 35);
     Add(TEXT("ocean floor \"station 5\""), 35);
     Add(TEXT("mazon fortress"), 35);
     Add(TEXT("guardia fortress"), 35);
     Add(TEXT("facing worlds special edition"), 35);
+    Add(TEXT("facing worlds"), 35);
     Add(TEXT("nucleus power plant"), 35);
     Add(TEXT("noxion base"), 35);
     Add(TEXT("lava giant"), 35);
     Add(TEXT("city domination"), 35);
     Add(TEXT("ghardhen"), 35);
-    Add(TEXT("tomb of sesmar"), 35);
 
     const TCHAR* IniFile = TEXT("XOpenGLDrv.ini");
     const TCHAR* Section = TEXT("XOpenGLDrv.LevelLightCaps");
