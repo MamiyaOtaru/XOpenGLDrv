@@ -3,6 +3,11 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 
+#include <thread>
+#include <mutex>
+#include <vector>
+#include <queue>
+
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
 
@@ -13,6 +18,8 @@
 #define STB_DXT_IMPLEMENTATION
 #include "thirdparty/stb/stb_dxt.h"
 
+std::mutex queueMutex;
+std::mutex resultMutex;
 
 UXOpenGLRenderDevice::SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf)
 {
@@ -181,7 +188,6 @@ INT GetHitSurfIndex(UModel* Model, const FCheckResult& Hit)
 
 bool BSPVisibilityRay(
     UModel* Model,
-    INT OriginNode,
     INT OriginSurf,
     const FVector& SurfacePoint,   // the point being lit
     const FVector& LightPoint      // the light position
@@ -215,9 +221,6 @@ bool BSPVisibilityRay(
             return true; // nothing between light and surface
 
         INT NodeIndex = Hit.Item;
-
-        if (NodeIndex == OriginNode)
-            return true; // hit the node being tested: consider this unoccluded
 
         // Validate node index
         if (NodeIndex >= 1 && NodeIndex < Model->Nodes.Num())
@@ -270,7 +273,6 @@ bool BSPVisibilityRay(
 // build an occlusion map
 FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     const TArray<AActor*>& Lights,
-    INT iNode,
     INT iSurf,
     const FVector& WorldPos,
     const SurfaceBasis& Basis,
@@ -329,7 +331,7 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         // Start slightly off the surface toward the light
         FVector SamplePos = WorldPos +Basis.Normal * mult;
 
-        bool bUnobstructed = BSPVisibilityRay(Model, iNode, iSurf, SamplePos, Light->Location);
+        bool bUnobstructed = BSPVisibilityRay(Model, iSurf, SamplePos, Light->Location);
 
         if (bUnobstructed)
         {
@@ -956,8 +958,14 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
 
 INT CDECL Compare(const FPendingLightmap& A, const FPendingLightmap& B)
 {
-    if (A.Height < B.Height) return +1;  // B first
-    if (A.Height > B.Height) return -1;  // A first
+    // Primary: height descending
+    if (A.Height < B.Height) return +1;   // B first
+    if (A.Height > B.Height) return -1;   // A first
+
+    // Secondary: surf index ascending
+    if (A.SurfIndex < B.SurfIndex) return -1;  // A first
+    if (A.SurfIndex > B.SurfIndex) return +1;  // B first
+
     return 0;
 }
 
@@ -988,161 +996,198 @@ bool IsHighlightTexture(const UTexture* Tex)
         || strcmp(LowerName, "sail1a") == 0;
 }
 
+void UXOpenGLRenderDevice::ProcessNodeSurface(int si, ULevel* Level)
+{
+    UModel* Model = Level->Model;
+
+    INT iSurf = si;
+    if (iSurf < 0 || iSurf >= Model->Surfs.Num())
+        return;
+
+    FBspSurf& Surf = Model->Surfs(iSurf);
+    AActor* Owner = Surf.Actor;
+    bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
+
+    // Build light list
+    TArray<AActor*> Lights;
+
+    if (!isMover)
+    {
+        // Collect dynamic lights for this facet
+        ComputeDynamicLightsForFacet(Level, iSurf, Lights);
+
+        // Append static lights
+        if (TArray<AActor*>* StaticLightList = StaticLightsForFacet.Find(iSurf))
+        {
+            for (INT t = 0; t < StaticLightList->Num(); ++t)
+            {
+                Lights.AddItem((*StaticLightList)(t));
+            }
+        }
+    }
+    else
+    {
+        // For movers, collect all lights in the level
+        for (INT ai = 0; ai < Level->Actors.Num(); ++ai)
+        {
+            AActor* A = Level->Actors(ai);
+            if (A && A->IsA(ALight::StaticClass()))
+                Lights.AddItem(A);
+        }
+    }
+    if (Lights.Num() == 0)
+        return;
+
+    // Get or create FSurfInfo for this surf
+    FSurfInfo* SI = SurfaceInfoMap.Find(iSurf);
+    if (!SI)
+        return;
+    /* {
+        SurfaceInfoMap.Set(iSurf, FSurfInfo());
+        SI = SurfaceInfoMap.Find(iSurf);
+
+        SI->IsMover = isMover;
+        SI->Owner = Owner;
+        SI->Verts.Empty();
+
+        // Collect verts from this node
+        for (INT vi = 0; vi < Node.NumVertices; ++vi)
+        {
+            INT iVert = Node.iVertPool + vi;
+            if (iVert < 0 || iVert >= Model->Verts.Num())
+                continue;
+
+            const FVert& V = Model->Verts(iVert);
+            const FVector& P = Model->Points(V.pVertex);
+            SI->Verts.AddItem(P);
+        }
+    }*/
+
+    if (SI->Verts.Num() < 3)
+        return;
+
+    bool TwoSided = (Surf.PolyFlags & PF_TwoSided) != 0;
+
+    // Build basis once per surf
+    if (!SI->HasHDLightmap)
+    {
+        SurfaceBasis Basis = BuildSurfaceBasis(SI, Level, Surf);
+        SI->LightmapBasis = Basis;
+
+        // Compute extents in UV space
+        float minU = FLT_MAX, maxU = -FLT_MAX;
+        float minV = FLT_MAX, maxV = -FLT_MAX;
+        for (INT i = 0; i < SI->Verts.Num(); ++i)
+        {
+            FVector Local = SI->Verts(i) - Basis.Origin;
+            float U = (Basis.TangentU | Local);
+            float V = (Basis.TangentV | Local);
+            minU = Min(minU, U); maxU = Max(maxU, U);
+            minV = Min(minV, V); maxV = Max(maxV, V);
+        }
+
+        float USize = Max(0.001f, maxU - minU);
+        float VSize = Max(0.001f, maxV - minV);
+
+        const float Density = 0.25f;
+        INT W = Clamp(appRound(USize * Density), 8, 512); // 512
+        INT H = Clamp(appRound(VSize * Density), 8, 512);
+
+        TArray<FPlane> Pixels;
+        Pixels.AddZeroed(W * H);
+
+        for (INT y = 0; y < H; ++y)
+        {
+            for (INT x = 0; x < W; ++x)
+            {
+                float u = (x + 0.5f) / float(W);
+                float v = (y + 0.5f) / float(H);
+                float U = minU + u * USize;
+                float V = minV + v * VSize;
+
+                FVector WorldPos =
+                    Basis.Origin +
+                    Basis.TangentU * U +
+                    Basis.TangentV * V;
+
+                FPlane Color = EvaluateStaticShadowFactor(Lights, iSurf, WorldPos, Basis, Model, TwoSided);
+                /*if (IsHighlightTexture(Surf.Texture)) {
+                    Color.X = 1;
+                    Color.Y = 0;
+                    Color.Z = 1;
+                    Color.W = 1;
+                }
+                else {
+                    Color.X = 0;
+                    Color.Y = 0;
+                    Color.Z = 0;
+                    Color.W = 1;
+                }*/
+                Pixels(y * W + x) = Color;
+            }
+        }
+
+        FSurfaceLightmap LM;
+        appMemzero(&LM, sizeof(LM));
+        SI->HDLightmap = LM;
+        SI->HasHDLightmap = true;
+
+        FPendingLightmap Pending;
+        Pending.SurfIndex = iSurf;
+        Pending.Width = W;
+        Pending.Height = H;
+        Pending.Pixels = Pixels;
+        Pending.MinU = minU;
+        Pending.MaxU = maxU;
+        Pending.MinV = minV;
+        Pending.MaxV = maxV;
+        Pending.Basis = Basis;
+
+        PendingLightmaps.AddItem(Pending);
+    }
+}
+
+void UXOpenGLRenderDevice::WorkerThread(std::queue<int>& nodeQueue, ULevel* Level)
+{
+    while (true)
+    {
+        int si = -1;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            if (nodeQueue.empty())
+                break;
+            si = nodeQueue.front();
+            nodeQueue.pop();
+        }
+        ProcessNodeSurface(si, Level);
+    }
+}
+
 void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta)
 {
     UModel* Model = Level->Model;
     PendingLightmaps.Empty();
 
-    // Iterate nodes instead of surfs
+    TUnorderedSet<int> UniqueSurfaces;
+
     for (INT ni = 0; ni < Model->Nodes.Num(); ++ni)
     {
-        const FBspNode& Node = Model->Nodes(ni);
-        INT iSurf = Node.iSurf;
-        if (iSurf < 0 || iSurf >= Model->Surfs.Num())
-            continue;
-
-        FBspSurf& Surf = Model->Surfs(iSurf);
-        AActor* Owner = Surf.Actor;
-        bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
-
-        // Build light list
-        TArray<AActor*> Lights;
-
-        if (!isMover)
-        {
-            // Collect dynamic lights for this facet
-            ComputeDynamicLightsForFacet(Level, iSurf, Lights);
-
-            // Append static lights
-            if (TArray<AActor*>* StaticLightList = StaticLightsForFacet.Find(iSurf))
-            {
-                for (INT t = 0; t < StaticLightList->Num(); ++t)
-                {
-                    Lights.AddItem((*StaticLightList)(t));
-                }
-            }
-        }
-        else
-        {
-            // For movers, collect all lights in the level
-            for (INT ai = 0; ai < Level->Actors.Num(); ++ai)
-            {
-                AActor* A = Level->Actors(ai);
-                if (A && A->IsA(ALight::StaticClass()))
-                    Lights.AddItem(A);
-            }
-        }
-        if (Lights.Num() == 0)
-            continue;
-
-        // Get or create FSurfInfo for this surf
-        FSurfInfo* SI = SurfaceInfoMap.Find(iSurf);
-        if (!SI)
-            continue;
-        /* {
-            SurfaceInfoMap.Set(iSurf, FSurfInfo());
-            SI = SurfaceInfoMap.Find(iSurf);
-
-            SI->IsMover = isMover;
-            SI->Owner = Owner;
-            SI->Verts.Empty();
-
-            // Collect verts from this node
-            for (INT vi = 0; vi < Node.NumVertices; ++vi)
-            {
-                INT iVert = Node.iVertPool + vi;
-                if (iVert < 0 || iVert >= Model->Verts.Num())
-                    continue;
-
-                const FVert& V = Model->Verts(iVert);
-                const FVector& P = Model->Points(V.pVertex);
-                SI->Verts.AddItem(P);
-            }
-        }*/
-
-        if (SI->Verts.Num() < 3)
-            continue;
-
-        bool TwoSided = (Surf.PolyFlags & PF_TwoSided) != 0;
-
-        // Build basis once per surf
-        if (!SI->HasHDLightmap)
-        {
-            SurfaceBasis Basis = BuildSurfaceBasis(SI, Level, Surf);
-            SI->LightmapBasis = Basis;
-
-            // Compute extents in UV space
-            float minU = FLT_MAX, maxU = -FLT_MAX;
-            float minV = FLT_MAX, maxV = -FLT_MAX;
-            for (INT i = 0; i < SI->Verts.Num(); ++i)
-            {
-                FVector Local = SI->Verts(i) - Basis.Origin;
-                float U = (Basis.TangentU | Local);
-                float V = (Basis.TangentV | Local);
-                minU = Min(minU, U); maxU = Max(maxU, U);
-                minV = Min(minV, V); maxV = Max(maxV, V);
-            }
-
-            float USize = Max(0.001f, maxU - minU);
-            float VSize = Max(0.001f, maxV - minV);
-
-            const float Density = 0.25f;
-            INT W = Clamp(appRound(USize * Density), 8, 512); // 512
-            INT H = Clamp(appRound(VSize * Density), 8, 512);
-
-            TArray<FPlane> Pixels;
-            Pixels.AddZeroed(W * H);
-
-            for (INT y = 0; y < H; ++y)
-            {
-                for (INT x = 0; x < W; ++x)
-                {
-                    float u = (x + 0.5f) / float(W);
-                    float v = (y + 0.5f) / float(H);
-                    float U = minU + u * USize;
-                    float V = minV + v * VSize;
-
-                    FVector WorldPos =
-                        Basis.Origin +
-                        Basis.TangentU * U +
-                        Basis.TangentV * V;
-
-                    FPlane Color = EvaluateStaticShadowFactor(Lights, ni, iSurf, WorldPos, Basis, Model, TwoSided);
-                    /*if (IsHighlightTexture(Surf.Texture)) {
-                        Color.X = 1;
-                        Color.Y = 0;
-                        Color.Z = 1;
-                        Color.W = 1;
-                    }
-                    else {
-                        Color.X = 0;
-                        Color.Y = 0;
-                        Color.Z = 0;
-                        Color.W = 1;
-                    }*/
-                    Pixels(y * W + x) = Color;
-                }
-            }
-
-            FSurfaceLightmap LM;
-            appMemzero(&LM, sizeof(LM));
-            SI->HDLightmap = LM;
-            SI->HasHDLightmap = true;
-
-            FPendingLightmap Pending;
-            Pending.SurfIndex = iSurf;
-            Pending.Width = W;
-            Pending.Height = H;
-            Pending.Pixels = Pixels;
-            Pending.MinU = minU;
-            Pending.MaxU = maxU;
-            Pending.MinV = minV;
-            Pending.MaxV = maxV;
-            Pending.Basis = Basis;
-
-            PendingLightmaps.AddItem(Pending);
-        }
+        INT iSurf = Model->Nodes(ni).iSurf;
+        if (iSurf >= 0 && iSurf < Model->Surfs.Num())
+            UniqueSurfaces.Set(iSurf);
     }
+
+    std::queue<int> surfQueue;
+    for (int surf = 0; surf < UniqueSurfaces.Num(); ++surf)
+        surfQueue.push(surf);
+
+    const int numThreads = std::thread::hardware_concurrency();
+    std::vector<std::thread> threads;
+    for (int i = 0; i < numThreads; ++i)
+        threads.emplace_back(&UXOpenGLRenderDevice::WorkerThread, this, std::ref(surfQueue), Level);
+
+    for (auto& t : threads)
+        t.join();
 
     if (PendingLightmaps.Num() > 0)
     {

@@ -16,6 +16,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
+// multithreading support for occlusion map generation
+#include <queue>
 
 #ifdef _MSC_VER
 #pragma warning(disable: 4351)
@@ -1784,9 +1786,11 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// occlusion map stuff
 
 	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf);
-	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>& Lights, INT iNode, INT iSurf, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model, bool TwoSided);
+	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>& Lights, INT iSurf, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model, bool TwoSided);
 	FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(const TArray<AActor*>* Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model);
 	void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(FSurfInfo& SI, const SurfaceBasis& Basis, float MinU, float MaxU, float MinV, float MaxV, float AtlasMinU, float AtlasMaxU, float AtlasMinV, float AtlasMaxV);
+    void UXOpenGLRenderDevice::ProcessNodeSurface(int ni, ULevel* Level); // build occlusion map for one surface (called from WorkerThread)
+	void UXOpenGLRenderDevice::WorkerThread(std::queue<int>& nodeQueue, ULevel* Level);
 	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
 	void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, const FString& AtlasMeta);
 	bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
