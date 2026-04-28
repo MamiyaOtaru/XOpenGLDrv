@@ -68,9 +68,8 @@ INT GetHitSurfIndex(UModel* Model, const FCheckResult& Hit)
 }
 
 // this version produces some halos around pillars, but can be used to brute force out of huge cut BSPs like KGalleon's sails
-/*bool BSPVisibilityRay(
+bool BSPVisibilityRay(
     UModel* Model,
-    INT OriginNode,
     INT OriginSurf,
     const FVector& Start,
     const FVector& End
@@ -112,13 +111,6 @@ INT GetHitSurfIndex(UModel* Model, const FCheckResult& Hit)
         );
 
         INT NodeIndex = Hit.Item;
-
-        // Skip originating node
-        if (NodeIndex == OriginNode)
-        {
-            CurrentStart = Hit.Location + Dir * skipMagnitude;
-            continue;
-        }
 
         // Validate node index
         if (NodeIndex >= 1 && NodeIndex < Model->Nodes.Num())
@@ -167,7 +159,7 @@ INT GetHitSurfIndex(UModel* Model, const FCheckResult& Hit)
                 continue;
             }
         }
-        else// if (bLastWasTranslucent) // skip invalid node if we just hit a translucent surface, to allow rays that pass through thin walls/windows/etc.  But allow a ray that STARTS in a wall to be considered a hit
+        else if (bLastWasTranslucent) // skip invalid node if we just hit a translucent surface, to allow rays that pass through thin walls/windows/etc.  But allow a ray that STARTS in a wall to be considered a hit
         {
             //INT NodeIndex2 = PointHit.Item;
             //if (NodeIndex2 >= 1 && NodeIndex2 < Model->Nodes.Num())
@@ -184,9 +176,9 @@ INT GetHitSurfIndex(UModel* Model, const FCheckResult& Hit)
         // Solid hit: occluded
         return false;
     }
-}*/
+}
 
-bool BSPVisibilityRay(
+/*bool BSPVisibilityRay(
     UModel* Model,
     INT OriginSurf,
     const FVector& SurfacePoint,   // the point being lit
@@ -200,6 +192,8 @@ bool BSPVisibilityRay(
     FVector RayPos = LightPoint;
 
     FCheckResult Hit;
+
+    bool bLastWasTranslucent = false;
 
     while (true)
     {
@@ -234,6 +228,7 @@ bool BSPVisibilityRay(
             // Skip nodes that do not block visibility
             if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg)) // && Node.iZone[0] != Node.iZone[1])
             {
+                bLastWasTranslucent = true;
                 RayPos = Hit.Location + RayDir * skipMagnitude;
                 continue;
             }
@@ -247,6 +242,7 @@ bool BSPVisibilityRay(
                 if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
                           PF_Masked | PF_AlphaTexture | PF_Portal))
                 {
+                    bLastWasTranslucent = true;
                     RayPos = Hit.Location + RayDir * skipMagnitude;
                     continue;
                 }
@@ -257,7 +253,7 @@ bool BSPVisibilityRay(
                 return true; // hit very close to the surface being tested: consider this unoccluded to allow for numerical imprecision
             }
         }
-        else
+        else if (bLastWasTranslucent) 
         {
             // Invalid node index: skip
             RayPos = Hit.Location + RayDir * skipMagnitude;
@@ -267,7 +263,7 @@ bool BSPVisibilityRay(
         // If we hit a real surface that is NOT the one being tested: occluded
         return false;
     }
-}
+}*/
 
 
 // build an occlusion map
@@ -1143,7 +1139,10 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int si, ULevel* Level)
         Pending.MaxV = maxV;
         Pending.Basis = Basis;
 
-        PendingLightmaps.AddItem(Pending);
+        {
+            std::lock_guard<std::mutex> lock(resultMutex);
+            PendingLightmaps.AddItem(Pending);
+        }
     }
 }
 

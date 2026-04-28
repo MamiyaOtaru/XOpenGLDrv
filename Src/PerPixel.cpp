@@ -678,6 +678,7 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     Add(TEXT("grit"), 75);
     Add(TEXT("orbital station #12"), 75);
     Add(TEXT("cybrosis"), 65);
+    Add(TEXT("heavy metal grinder"), 65);
     Add(TEXT("morpheus"), 65);
     Add(TEXT("darji outpost #16-a"), 65);
     Add(TEXT("hall of giants"), 65);
@@ -690,7 +691,6 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
 	Add(TEXT("pressure"), 50);
     Add(TEXT("viridian"), 50);
 	Add(TEXT("closer"), 45);
-    Add(TEXT("heavy metal grinder"), 45);
     Add(TEXT("morbias"), 45);
     Add(TEXT("metal dream"), 45);
     Add(TEXT("wolf's bay"), 45);

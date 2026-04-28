@@ -1784,7 +1784,6 @@ class UXOpenGLRenderDevice : public URenderDevice
 	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
 
 	// occlusion map stuff
-
 	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf);
 	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>& Lights, INT iSurf, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model, bool TwoSided);
 	FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(const TArray<AActor*>* Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model);
