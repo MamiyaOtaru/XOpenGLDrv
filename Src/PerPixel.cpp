@@ -291,12 +291,17 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
     TArray<RankedLight> Ranked;
     Ranked.Reserve(Level->Actors.Num());
 
+    AActor* DummyLight = nullptr; // keep one light to ensure each surface has at least one, so the shader doesn't draw a surface with none as fullbright6
+
 	// Iterate static lights
     for (INT i = 0; i < Level->Actors.Num(); ++i)
     {
         AActor* L = Level->Actors(i);
         if (!L || !IsStaticLight(L))
             continue;
+
+        if (!DummyLight)
+            DummyLight = L;
 
         float Radius = L->WorldLightRadius();
         if (Radius <= 0.f)
@@ -372,12 +377,23 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 
         float score = attenuation * brightnessFactor * lambert;
 
-        RankedLight R;
-        R.Light = L;
-        R.Score = score;
-        Ranked.AddItem(R);
+        if (score > 0)
+        {
+            RankedLight R;
+            R.Light = L;
+            R.Score = score;
+            Ranked.AddItem(R);
+        }
     } // end iterate static lights
-
+    // If no lights contributed, insert a dummy so BSP is not fullbright
+    if (Ranked.Num() == 0)
+    {
+        RankedLight R;
+        R.Light = DummyLight;
+        R.Score = 0.0f;
+        R.IsStatic = true;
+        Ranked.AddItem(R);
+    }
 	Sort(&Ranked(0), Ranked.Num());
 
     int Count = Min(MaxStaticLights, Ranked.Num());
@@ -535,6 +551,8 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 	TArray<RankedLight> Ranked;
     Ranked.Reserve(Level->Actors.Num());
 
+    AActor* DummyLight = nullptr; // keep one light to ensure each surface has at least one, so the shader doesn't draw a surface with none as fullbright6
+
     // Iterate lights
     for (INT i = 0; i < Level->Actors.Num(); ++i)
     {
@@ -547,6 +565,9 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 
         if (!isDynamic && !isStatic)
             continue;
+
+        if (!DummyLight && isStatic)
+            DummyLight = A;
 
 		if (A->WorldLightRadius() <= 0.f)
 			continue;
@@ -582,13 +603,24 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 
 		float score = attenuation * brightnessFactor;
 
+        if (score > 0)
+        {
+            RankedLight R;
+            R.Light = A;
+            R.Score = score;
+            R.IsStatic = isStatic;
+            Ranked.AddItem(R);
+        }
+    }
+    // If no lights contributed, insert a dummy so BSP is not fullbright
+    if (Ranked.Num() == 0)
+    {
         RankedLight R;
-        R.Light = A;
-        R.Score = score;
-        R.IsStatic = isStatic;
+        R.Light = DummyLight;
+        R.Score = 0.0f;
+        R.IsStatic = true;
         Ranked.AddItem(R);
     }
-
 	Sort(&Ranked(0), Ranked.Num());
 
     Count = Min(MaxLights, Ranked.Num());
@@ -671,46 +703,102 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     };
 
     // some built in values, can be overridden by config file
-    Add(TEXT("hydro bases"), 165);
-    Add(TEXT("coret"), 135);
-    Add(TEXT("zeto"), 95);
-    Add(TEXT("southside leadworks"), 95);
-    Add(TEXT("grit"), 75);
-    Add(TEXT("orbital station #12"), 75);
-    Add(TEXT("cybrosis"), 65);
-    Add(TEXT("heavy metal grinder"), 65);
-    Add(TEXT("morpheus"), 65);
-    Add(TEXT("darji outpost #16-a"), 65);
-    Add(TEXT("hall of giants"), 65);
-    Add(TEXT("epic boy"), 65);
-    Add(TEXT("ratchet"), 60);
-    Add(TEXT("lament ]["), 55);
-    Add(TEXT("stalwart xl"), 55);
-    Add(TEXT("command"), 55);
-    Add(TEXT("tomb of sesmar"), 55);
-	Add(TEXT("pressure"), 50);
-    Add(TEXT("viridian"), 50);
-	Add(TEXT("closer"), 45);
-    Add(TEXT("morbias"), 45);
-    Add(TEXT("metal dream"), 45);
-    Add(TEXT("wolf's bay"), 45);
-    Add(TEXT("shrapnel ]["), 45);
-    Add(TEXT("stalwart"), 45);
-    Add(TEXT("dreary outpost"), 45);
-    Add(TEXT("the pit of agony"), 35);
-    Add(TEXT("healing pod ]["), 35);
-    Add(TEXT("liandri"), 35);
-    Add(TEXT("itv oblivion"), 35);
-    Add(TEXT("ocean floor \"station 5\""), 35);
-    Add(TEXT("mazon fortress"), 35);
-    Add(TEXT("guardia fortress"), 35);
-    Add(TEXT("facing worlds special edition"), 35);
-    Add(TEXT("facing worlds"), 35);
-    Add(TEXT("nucleus power plant"), 35);
-    Add(TEXT("noxion base"), 35);
-    Add(TEXT("lava giant"), 35);
-    Add(TEXT("city domination"), 35);
-    Add(TEXT("ghardhen"), 35);
+    // Defaults: 55 unless explicitly listed below.
+
+    Add(TEXT("AS-Frigate"), 25);
+    Add(TEXT("AS-Guardia"), 35);                 // "guardia fortress"
+    Add(TEXT("AS-HiSpeed"), 75);                // "high speed"
+    Add(TEXT("AS-Mazon"), 35);                  // "mazon fortress"
+    Add(TEXT("AS-OceanFloor"), 35);             // "ocean floor \"station 5\""
+    Add(TEXT("AS-Overlord"), 25);
+    Add(TEXT("AS-Rook"), 25);
+    Add(TEXT("AS-Tutorial"), 25);
+
+    Add(TEXT("Autoplay"), 25);
+    Add(TEXT("CityIntro"), 25);
+
+    Add(TEXT("CTF-Beatitude"), 25);
+    Add(TEXT("CTF-Command"), 55);               // "command"
+    Add(TEXT("CTF-Coret"), 135);                // "coret"
+    Add(TEXT("CTF-Cybrosis]["), 65);            // "cybrosis"
+    Add(TEXT("CTF-Darji16"), 65);               // "darji outpost #16-a"
+    Add(TEXT("CTF-Dreary"), 45);                // "dreary outpost"
+    Add(TEXT("CTF-EpicBoy"), 65);               // "epic boy"
+    Add(TEXT("CTF-EternalCave"), 25);
+    Add(TEXT("CTF-Face"), 35);                  // "facing worlds"
+    Add(TEXT("CTF-Face]["), 35);                // "facing worlds"
+    Add(TEXT("CTF-Face-SE"), 35);               // "facing worlds special edition"
+    Add(TEXT("CTF-Gauntlet"), 25);
+    Add(TEXT("CTF-HallOfGiants"), 65);          // "hall of giants"
+    Add(TEXT("CTF-High"), 25);
+    Add(TEXT("CTF-Hydro16"), 165);              // "hydro bases"
+    Add(TEXT("CTF-Kosov"), 25);
+    Add(TEXT("CTF-LavaGiant"), 35);             // "lava giant"
+    Add(TEXT("CTF-Niven"), 25);
+    Add(TEXT("CTF-November"), 25);
+    Add(TEXT("CTF-Noxion16"), 35);              // "noxion base"
+    Add(TEXT("CTF-Nucleus"), 35);               // "nucleus power plant"
+    Add(TEXT("CTF-Orbital"), 75);               // "orbital station #12"
+    Add(TEXT("CTF-Ratchet"), 60);               // "ratchet"
+    Add(TEXT("CTF-Tutorial"), 25);
+
+    Add(TEXT("DM-Agony"), 45);                  // "the pit of agony"
+    Add(TEXT("DM-ArcaneTemple"), 25);
+    Add(TEXT("DM-Barricade"), 25);
+    Add(TEXT("DM-Bishop"), 25);
+    Add(TEXT("DM-Closer"), 45);                 // "closer"
+    Add(TEXT("DM-Codex"), 25);
+    Add(TEXT("DM-Codex.edit"), 25);
+    Add(TEXT("DM-Conveyor"), 25);
+    Add(TEXT("DM-Crane"), 85);                  // "crane"
+    Add(TEXT("DM-Curse]["), 25);
+    Add(TEXT("DM-Cybrosis]["), 65);             // "cybrosis"
+    Add(TEXT("DM-Deck[ReduX]"), 25);
+    Add(TEXT("DM-Deck16]["), 25);
+    Add(TEXT("DM-Fetid"), 25);
+    Add(TEXT("DM-Fractal"), 25);
+    Add(TEXT("DM-Gothic"), 25);
+    Add(TEXT("DM-Grinder"), 65);                // "heavy metal grinder"
+    Add(TEXT("DM-Grit-TOURNEY"), 75);           // "grit"
+    Add(TEXT("DM-HealPod]["), 35);              // "healing pod ]["
+    Add(TEXT("DM-HyperBlast"), 25);
+    Add(TEXT("DM-KGalleon"), 25);
+    Add(TEXT("DM-Liandri"), 35);                // "liandri"
+    Add(TEXT("DM-Mojo]["), 25);
+    Add(TEXT("DM-Morbias]["), 45);              // "morbias"
+    Add(TEXT("DM-Morpheus"), 65);               // "morpheus"
+    Add(TEXT("DM-Oblivion"), 35);               // "itv oblivion"
+    Add(TEXT("DM-Peak"), 25);
+    Add(TEXT("DM-Phobos"), 25);
+    Add(TEXT("DM-Phobos.edit"), 25);
+    Add(TEXT("DM-Pressure"), 50);               // "pressure"
+    Add(TEXT("DM-Pyramid"), 25);
+    Add(TEXT("DM-Shrapnel]["), 45);             // "shrapnel ]["
+    Add(TEXT("DM-SpaceNoxx"), 25);
+    Add(TEXT("DM-Stalwart"), 45);               // "stalwart"
+    Add(TEXT("DM-StalwartXL"), 55);             // "stalwart xl"
+    Add(TEXT("DM-Tempest"), 35);                // "tempest"
+    Add(TEXT("DM-Turbine"), 25);
+    Add(TEXT("DM-Tutorial"), 25);
+    Add(TEXT("DM-Viridian-TOURNEY"), 50);       // "viridian"
+    Add(TEXT("DM-Zeto"), 95);                   // "zeto"
+
+    Add(TEXT("DOM-Bullet"), 25);
+    Add(TEXT("DOM-Cidom"), 35);                 // "city domination"
+    Add(TEXT("DOM-Cinder"), 25);
+    Add(TEXT("DOM-Condemned"), 25);
+    Add(TEXT("DOM-Cryptic"), 25);
+    Add(TEXT("DOM-Cybrosis]["), 65);            // "cybrosis"
+    Add(TEXT("DOM-Gearbolt"), 25);
+    Add(TEXT("DOM-Ghardhen"), 35);              // "ghardhen"
+    Add(TEXT("DOM-Lament"), 55);                // "lament ][" (base version)
+    Add(TEXT("DOM-Lament]["), 55);              // "lament ]["
+    Add(TEXT("DOM-Leadworks"), 95);             // "southside leadworks"
+    Add(TEXT("DOM-MetalDream"), 45);            // "metal dream"
+    Add(TEXT("DOM-Olden"), 25);
+    Add(TEXT("DOM-Sesmar"), 55);                // "tomb of sesmar"
+    Add(TEXT("DOM-Tutorial"), 25);
+    Add(TEXT("DOM-WolfsBay"), 45);              // "wolf's bay"
 
     const TCHAR* IniFile = TEXT("XOpenGLDrv.ini");
     const TCHAR* Section = TEXT("XOpenGLDrv.LevelLightCaps");
@@ -766,10 +854,11 @@ void UXOpenGLRenderDevice::NewLevelPP()
     if (LastLevel && LastLevel->Model && LastLevel->GetLevelInfo())
 	{
 	    // set number of lights for this level
-	    FStringNoInit LevelName = LastLevel->GetLevelInfo()->Title;
-	    FString Lower = LevelName.Locs();
-	    debugf(TEXT("new level %s"), Lower);
-	    LevelLightCap = GetLevelLightCap(Lower);
+        // Get the map filename (package name), lowercase
+        FString MapName = FString(LastLevel->GetOuter()->GetName()).Locs();
+        debugf(TEXT("new level (mapname) %s"), *MapName);
+        // Lookup using filename key
+        LevelLightCap = GetLevelLightCap(MapName);
 
         // build lightlist map
 
@@ -816,7 +905,7 @@ INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle)
 	for (int t = 0; t < LevelOverrides.Num(); ++t)
 	{
 		const auto& Ovr = LevelOverrides(t);
-		if (Lower.InStr(Ovr.Match) != -1)
+        if (Lower == Ovr.Match)
 			Cap = Ovr.Cap;
     }
 

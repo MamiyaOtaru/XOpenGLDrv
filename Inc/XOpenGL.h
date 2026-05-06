@@ -1763,7 +1763,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
 
 	#define MAX_SURFACE_LIGHTS 495
-	INT DefaultLightCap = 25; // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/
+	INT DefaultLightCap = 55; // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/
     INT LevelLightCap = DefaultLightCap;
 
 	// per-frame mapping from AActor* -> index inside LightInfoBuffer (populated each SetSceneNode)

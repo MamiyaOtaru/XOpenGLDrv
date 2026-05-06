@@ -919,7 +919,7 @@ return;
         //FragColor = vec4(LightColor.rgb, 1.0);
         return;
       }*/
-    }
+    } // end if there are lights
   }
 #endif
 
