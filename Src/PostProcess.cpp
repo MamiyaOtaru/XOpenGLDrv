@@ -178,6 +178,7 @@ void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame)
     // -----------------------------
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, gbufferFbo->depthTexID);
+    glGenerateMipmap(GL_TEXTURE_2D); // mipmap for distance independent SSAO speed. Originators make their own in a shader to avoid something or other. Consider
 
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, gbufferFbo->colorTexIDs[0]); // normals

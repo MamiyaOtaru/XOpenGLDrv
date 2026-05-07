@@ -1799,13 +1799,14 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		glEnable(GL_CULL_FACE);
 		glCullFace(GL_BACK);
 
+		// Only draw BSP surfaces that were visible last frame
+		INT TargetFrame = LocalFrameCounter - 1;
+
 		for (INT iSurf = 0; iSurf < LastLevel->Model->Surfs.Num(); ++iSurf)
 		{
 			FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
-			if (!pSI)
-				continue;
-
-			UXOpenGLRenderDevice::DrawPrepassSurface(Frame, *pSI);
+			if (pSI && pSI->LastDrawnFrame == TargetFrame)
+				UXOpenGLRenderDevice::DrawPrepassSurface(Frame, *pSI);
 		}
 
 		auto Shader = static_cast<DrawPrepassProgram*>(Shaders[Prepass_Prog]);

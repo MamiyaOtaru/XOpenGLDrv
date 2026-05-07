@@ -2109,7 +2109,6 @@ class UXOpenGLRenderDevice : public URenderDevice
 	public:
 		DrawPrepassProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
 		void CreateInputLayout();
-		void BuildCommonSpecializations();
 		void MapBuffers();
 		void UnmapBuffers();
 	    void Flush(bool Rotate);

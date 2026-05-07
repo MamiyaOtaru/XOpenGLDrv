@@ -784,7 +784,7 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     Add(TEXT("DM-Zeto"), 95);                   // "zeto"
 
     Add(TEXT("DOM-Bullet"), 25);
-    Add(TEXT("DOM-Cidom"), 35);                 // "city domination"
+    Add(TEXT("DOM-Cidom"), 65);                 // "city domination"
     Add(TEXT("DOM-Cinder"), 25);
     Add(TEXT("DOM-Condemned"), 25);
     Add(TEXT("DOM-Cryptic"), 25);

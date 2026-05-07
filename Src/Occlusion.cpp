@@ -1355,7 +1355,7 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int si, ULevel* Level)
         float VSize = Max(0.001f, maxV - minV);
 
         const float Density = 0.25f;
-        INT W = Clamp(appRound(USize * Density), 8, 512); // 512
+        INT W = Clamp(appRound(USize * Density), 8, 512); // 512.  Kosov needs 256
         INT H = Clamp(appRound(VSize * Density), 8, 512);
 
         TArray<FPlane> Pixels;

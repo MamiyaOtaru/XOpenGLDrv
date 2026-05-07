@@ -54,7 +54,7 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
 	for (INT vi = 0; vi < NumPts; ++vi)
 	{
         FVector Vert = SI.Verts(vi).TransformPointBy(Frame->Coords);
-        FVector Normal = SI.VertexNormals(vi).TransformVectorBy(Frame->Coords);;
+        FVector Normal = SI.VertexNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
 
 		PolyVertices(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
         PolyVertexNormals(vi) = glm::vec3(Normal.X, Normal.Y, Normal.Z);
@@ -192,10 +192,10 @@ void UXOpenGLRenderDevice::DrawPrepassProgram::Flush(bool Rotate)
     if (HavePendingData)
     {
         VertBuffer.BufferData(false);
-        //DrawBuffer.Draw(DrawMode, RenDev);
-                glDrawArrays(GL_TRIANGLES,
-                     VertBuffer.SubBufferOffset,   // or 0 to start
-                     VertBuffer.NextElemIndex);    // total verts written
+        DrawBuffer.Draw(DrawMode, RenDev);
+        //        glDrawArrays(GL_TRIANGLES,
+        //             VertBuffer.SubBufferOffset,   // or 0 to start
+        //             VertBuffer.NextElemIndex);    // total verts written
 
     }
 
