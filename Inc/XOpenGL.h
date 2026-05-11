@@ -1791,7 +1791,7 @@ class UXOpenGLRenderDevice : public URenderDevice
     void UXOpenGLRenderDevice::ProcessNodeSurface(int ni, ULevel* Level); // build occlusion map for one surface (called from WorkerThread)
 	void UXOpenGLRenderDevice::WorkerThread(std::queue<int>& nodeQueue, ULevel* Level);
 	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
-	void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, const FString& AtlasMeta);
+	void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, const FString& AtlasMeta, INT AtlasW, INT AtlasH);
 	bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
 	void UXOpenGLRenderDevice::NewLevelOC();
 

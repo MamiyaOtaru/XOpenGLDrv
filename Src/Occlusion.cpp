@@ -19,7 +19,6 @@
 #include "thirdparty/stb/stb_dxt.h"
 
 std::mutex queueMutex;
-std::mutex resultMutex;
 
 UXOpenGLRenderDevice::SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf)
 {
@@ -1031,68 +1030,13 @@ void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(
     }
 }
 
-void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, const FString& AtlasMeta)
+void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, const FString& AtlasMeta, INT AtlasWidth, INT AtlasHeight)
 {
     if (PendingLightmaps.Num() == 0)
         return;
 
-    // Compute total pixel count and max padded LM width
-    INT TotalPixels = 0;
-    INT MaxLMWidth  = 0;
-    for (INT i = 0; i < PendingLightmaps.Num(); ++i)
-    {
-        FPendingLightmap& LM = PendingLightmaps(i);
-
-        INT PaddedW = LM.Width  + 2;
-        INT PaddedH = LM.Height + 2;
-
-        TotalPixels += PaddedW * PaddedH;
-        MaxLMWidth  = Max(MaxLMWidth, PaddedW);
-    }
-
-    // Compute an "ideal" square-ish size from total pixels
-    float IdealSizeF = appSqrt((FLOAT)TotalPixels);
-    INT   IdealSize  = 1;
-    while (IdealSize < (INT)IdealSizeF)
-        IdealSize <<= 1;
-
-    // Choose atlas width:
-    const INT MinAtlasWidth = 256;
-
-    INT AtlasWidth = IdealSize;
-    AtlasWidth = Max(AtlasWidth, MaxLMWidth);
-    AtlasWidth = Max(AtlasWidth, MinAtlasWidth);
-
-    // Dry-run packer to get needed height
-    INT SimCursorX   = 0;
-    INT SimCursorY   = 0;
-    INT SimRowHeight = 0;
-
-    for (INT i = 0; i < PendingLightmaps.Num(); ++i)
-    {
-        FPendingLightmap& LM = PendingLightmaps(i);
-
-        const INT PaddedW = LM.Width  + 2;
-        const INT PaddedH = LM.Height + 2;
-
-        if (SimCursorX + PaddedW > AtlasWidth)
-        {
-            SimCursorX   = 0;
-            SimCursorY  += SimRowHeight;
-            SimRowHeight = 0;
-        }
-
-        SimRowHeight = Max(SimRowHeight, PaddedH);
-        SimCursorX   += PaddedW;
-    }
-
-    INT AtlasHeight = SimCursorY + SimRowHeight;
-
-    // Round height up to next multiple of 16
-    AtlasHeight = ((AtlasHeight + 15) / 16) * 16;
-
-    debugf(TEXT("XOpenGL: Atlas dims = %dx%d (TotalPixels=%d, MaxLMWidth=%d)"),
-           AtlasWidth, AtlasHeight, TotalPixels, MaxLMWidth);
+    debugf(TEXT("XOpenGL: Atlas dims = %dx%d "),
+           AtlasWidth, AtlasHeight);
 
     // Allocate atlas buffer (RGBA16F)
     TArray<FPlane> Atlas;
@@ -1106,6 +1050,8 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
     for (INT i = 0; i < PendingLightmaps.Num(); ++i)
     {
         FPendingLightmap& LM = PendingLightmaps(i);
+        if (LM.Width <= 0 || LM.Height <= 0 || LM.Pixels.Num() < LM.Width * LM.Height)
+            continue;
 
         const INT PaddedW = LM.Width  + 2;
         const INT PaddedH = LM.Height + 2;
@@ -1261,13 +1207,22 @@ bool IsHighlightTexture(const UTexture* Tex)
         || strcmp(LowerName, "sail1a") == 0;
 }
 
-void UXOpenGLRenderDevice::ProcessNodeSurface(int si, ULevel* Level)
+void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
 {
     UModel* Model = Level->Model;
 
-    INT iSurf = si;
-    if (iSurf < 0 || iSurf >= Model->Surfs.Num())
+    if (plm < 0 || plm >= PendingLightmaps.Num())
         return;
+
+    FPendingLightmap& Pending = PendingLightmaps(plm);
+    int iSurf = Pending.SurfIndex;
+    int W = Pending.Width;
+    int H = Pending.Height;
+    float minU = Pending.MinU;
+    float maxU = Pending.MaxU;
+    float minV = Pending.MinV;
+    float maxV = Pending.MaxV;
+    const SurfaceBasis& Basis = Pending.Basis;
 
     FBspSurf& Surf = Model->Surfs(iSurf);
     AActor* Owner = Surf.Actor;
@@ -1301,12 +1256,22 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int si, ULevel* Level)
         }
     }
     if (Lights.Num() == 0)
+    {
+        // none of these returns should happen (would have prevented being added to PendingLightmaps
+        // but just in case, set width and height to 0 so atlas assembly ignores them
+        Pending.Width = 0;
+        Pending.Height = 0;
         return;
+    }
 
     // Get or create FSurfInfo for this surf
     FSurfInfo* SI = SurfaceInfoMap.Find(iSurf);
     if (!SI)
+    {
+        Pending.Width = 0;
+        Pending.Height = 0;
         return;
+    }
     /* {
         SurfaceInfoMap.Set(iSurf, FSurfInfo());
         SI = SurfaceInfoMap.Find(iSurf);
@@ -1329,34 +1294,19 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int si, ULevel* Level)
     }*/
 
     if (SI->Verts.Num() < 3)
+    {
+        Pending.Width = 0;
+        Pending.Height = 0;
         return;
+    }
 
     bool TwoSided = (Surf.PolyFlags & PF_TwoSided) != 0;
 
     // Build basis once per surf
     if (!SI->HasHDLightmap)
     {
-        SurfaceBasis Basis = BuildSurfaceBasis(SI, Level, Surf);
-        SI->LightmapBasis = Basis;
-
-        // Compute extents in UV space
-        float minU = FLT_MAX, maxU = -FLT_MAX;
-        float minV = FLT_MAX, maxV = -FLT_MAX;
-        for (INT i = 0; i < SI->Verts.Num(); ++i)
-        {
-            FVector Local = SI->Verts(i) - Basis.Origin;
-            float U = (Basis.TangentU | Local);
-            float V = (Basis.TangentV | Local);
-            minU = Min(minU, U); maxU = Max(maxU, U);
-            minV = Min(minV, V); maxV = Max(maxV, V);
-        }
-
         float USize = Max(0.001f, maxU - minU);
         float VSize = Max(0.001f, maxV - minV);
-
-        const float Density = 0.25f;
-        INT W = Clamp(appRound(USize * Density), 8, 512); // 512.  Kosov needs 256
-        INT H = Clamp(appRound(VSize * Density), 8, 512);
 
         TArray<FPlane> Pixels;
         Pixels.AddZeroed(W * H);
@@ -1397,21 +1347,10 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int si, ULevel* Level)
         SI->HDLightmap = LM;
         SI->HasHDLightmap = true;
 
-        FPendingLightmap Pending;
-        Pending.SurfIndex = iSurf;
-        Pending.Width = W;
-        Pending.Height = H;
         Pending.Pixels = Pixels;
-        Pending.MinU = minU;
-        Pending.MaxU = maxU;
-        Pending.MinV = minV;
-        Pending.MaxV = maxV;
-        Pending.Basis = Basis;
-
-        {
-            std::lock_guard<std::mutex> lock(resultMutex);
-            PendingLightmaps.AddItem(Pending);
-        }
+    }
+    else {
+        return;
     }
 }
 
@@ -1419,16 +1358,81 @@ void UXOpenGLRenderDevice::WorkerThread(std::queue<int>& nodeQueue, ULevel* Leve
 {
     while (true)
     {
-        int si = -1;
+        int plm = -1;
         {
             std::lock_guard<std::mutex> lock(queueMutex);
             if (nodeQueue.empty())
                 break;
-            si = nodeQueue.front();
+            plm = nodeQueue.front();
             nodeQueue.pop();
         }
-        ProcessNodeSurface(si, Level);
+        ProcessNodeSurface(plm, Level);
     }
+}
+
+void DryRunAtlas(INT& OutW, INT& OutH)
+{
+    if (PendingLightmaps.Num() == 0)
+        return;
+
+    // Compute total pixel count and max padded LM width
+    INT TotalPixels = 0;
+    INT MaxLMWidth  = 0;
+    for (INT i = 0; i < PendingLightmaps.Num(); ++i)
+    {
+        FPendingLightmap& LM = PendingLightmaps(i);
+        if (LM.Width <= 0 || LM.Height <= 0)
+            continue;
+
+        INT PaddedW = LM.Width  + 2;
+        INT PaddedH = LM.Height + 2;
+
+        TotalPixels += PaddedW * PaddedH;
+        MaxLMWidth  = Max(MaxLMWidth, PaddedW);
+    }
+
+    // Compute an "ideal" square-ish size from total pixels
+    float IdealSizeF = appSqrt((FLOAT)TotalPixels);
+    INT   IdealSize  = 1;
+    while (IdealSize < (INT)IdealSizeF)
+        IdealSize <<= 1;
+
+    // Choose atlas width:
+    const INT MinAtlasWidth = 256;
+
+    OutW = IdealSize;
+    OutW = Max(OutW, MaxLMWidth);
+    OutW = Max(OutW, MinAtlasWidth);
+
+    // Dry-run packer to get needed height
+    INT SimCursorX   = 0;
+    INT SimCursorY   = 0;
+    INT SimRowHeight = 0;
+
+    for (INT i = 0; i < PendingLightmaps.Num(); ++i)
+    {
+        FPendingLightmap& LM = PendingLightmaps(i);
+        if (LM.Width <= 0 || LM.Height <= 0)
+            continue;
+
+        const INT PaddedW = LM.Width  + 2;
+        const INT PaddedH = LM.Height + 2;
+
+        if (SimCursorX + PaddedW > OutW)
+        {
+            SimCursorX   = 0;
+            SimCursorY  += SimRowHeight;
+            SimRowHeight = 0;
+        }
+
+        SimRowHeight = Max(SimRowHeight, PaddedH);
+        SimCursorX   += PaddedW;
+    }
+
+    OutH = SimCursorY + SimRowHeight;
+
+    // Round height up to next multiple of 16
+    OutH = ((OutH + 15) / 16) * 16;
 }
 
 void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta)
@@ -1445,9 +1449,80 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
             UniqueSurfaces.Set(iSurf);
     }
 
+    PendingLightmaps.Empty();
+
+    int MaxClamp = 512;
+    for (TUnorderedSet<int>::TIterator It(UniqueSurfaces); It; ++It)
+    {
+        int surf = It.Key();
+        FBspSurf& Surf = Model->Surfs(surf);
+        FSurfInfo* SI = SurfaceInfoMap.Find(surf);
+        if (!SI || SI->Verts.Num() < 3 || SI->TriIdx.Num() <= 0)
+            continue;
+
+        // Build basis
+        SurfaceBasis Basis = BuildSurfaceBasis(SI, Level, Surf);
+
+        // Compute UV extents
+        float minU = FLT_MAX, maxU = -FLT_MAX;
+        float minV = FLT_MAX, maxV = -FLT_MAX;
+
+        for (INT i = 0; i < SI->Verts.Num(); ++i)
+        {
+            FVector Local = SI->Verts(i) - Basis.Origin;
+            float U = (Basis.TangentU | Local);
+            float V = (Basis.TangentV | Local);
+            minU = Min(minU, U); maxU = Max(maxU, U);
+            minV = Min(minV, V); maxV = Max(maxV, V);
+        }
+
+        float USize = Max(0.001f, maxU - minU);
+        float VSize = Max(0.001f, maxV - minV);
+
+        const float Density = 0.25f;
+
+        INT W = Clamp(appRound(USize * Density), 8, MaxClamp);
+        INT H = Clamp(appRound(VSize * Density), 8, MaxClamp);
+
+        FPendingLightmap LM;
+        LM.SurfIndex = surf;
+        LM.MinU = minU;
+        LM.MaxU = maxU;
+        LM.MinV = minV;
+        LM.MaxV = maxV;
+        LM.Width = W;
+        LM.Height = H;
+        LM.Basis = Basis;
+
+        PendingLightmaps.AddItem(LM);
+    }
+
+    Sort(&PendingLightmaps(0), PendingLightmaps.Num());
+    INT AtlasW, AtlasH;
+    while (true)
+    {
+        // Dry run
+        DryRunAtlas(AtlasW, AtlasH);
+
+        if (AtlasW <= 8192 && (INT64)AtlasW * AtlasH <= 43260000) // slightly more than the largest success I have seen (8192x5280)
+            break;
+
+        MaxClamp /= 2;
+        if (MaxClamp < 8)
+            break; // boned
+
+        // Apply clamp
+        for (INT i = 0; i < PendingLightmaps.Num(); ++i)
+        {
+            FPendingLightmap& LM = PendingLightmaps(i);
+            LM.Width  = Clamp(LM.Width,  8, MaxClamp);
+            LM.Height = Clamp(LM.Height, 8, MaxClamp);
+        }
+    }
+
     std::queue<int> surfQueue;
-    for (int surf = 0; surf < UniqueSurfaces.Num(); ++surf)
-        surfQueue.push(surf);
+    for (INT plm = 0; plm < PendingLightmaps.Num(); ++plm)
+        surfQueue.push(plm);
 
     const int numThreads = std::thread::hardware_concurrency();
     std::vector<std::thread> threads;
@@ -1459,8 +1534,7 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
 
     if (PendingLightmaps.Num() > 0)
     {
-        Sort(&PendingLightmaps(0), PendingLightmaps.Num());
-        BuildStaticLightmapAtlas(AtlasPNG, AtlasMeta);
+        BuildStaticLightmapAtlas(AtlasPNG, AtlasMeta, AtlasW, AtlasH);
     }
 }
 
