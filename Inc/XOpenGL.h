@@ -18,6 +18,7 @@
 #include <glm/gtc/matrix_inverse.hpp>
 // multithreading support for occlusion map generation
 #include <queue>
+#include <atomic>
 
 #ifdef _MSC_VER
 #pragma warning(disable: 4351)
@@ -108,7 +109,7 @@
 #define DRAWGOURAUDPOLY_SIZE 1024
 #define NUMBUFFERS 8
 
-# define MAX_LIGHTS 2048 // maxes out at 512 if UBO
+# define MAX_LIGHTS 8192 // maxes out at 512 if UBO
 
 // necessary defines for GLES (f.e. when building with glad). Only needed to build. Do NOT use these functions for ES. Check if maybe existing some day.
 
@@ -1582,7 +1583,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		BufferObject<VertexType>                    VertBuffer;
 
 		GLuint                                  FacetIndexRingSize = 65536; // elements per sub-buffer (tunable)
-		GLuint                                  FacetMetaRingSize  = DRAWCOMPLEX_SIZE; // entries per sub-buffer (tunable)
+		GLuint                                  FacetMetaRingSize  = DRAWCOMPLEX_SIZE*2; // entries per sub-buffer (tunable)
 		// Ring buffers for per-facet index lists (uses same NUMBUFFERS sub-buffer rotation mechanism)
 		BufferObject<glm::uint>                 FacetIndexRing;    // holds uint indices into LightInfoBuffer
 		BufferObject<FFacetData>				FacetMetaRing;     // holds (start,count) per drawID
@@ -1695,6 +1696,36 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	// common structures
 
+	// asynchronous loading of occlusion map + status
+	enum class EOcclusionState
+	{
+		Idle,
+		Building,
+		Assembling,
+		Ready,
+		Failed
+	};
+	std::atomic<EOcclusionState> GOcclusionState{ EOcclusionState::Idle };
+	FString StatusMessage = TEXT("");        // empty = no overlay
+	std::atomic<int> ProgressDone {0};
+	int ProgressTotal = 0;
+	// thread safety
+	std::atomic<ULevel*> GFrameLevel{nullptr};
+	std::atomic<int>     GOcclusionInBSP{0};
+	// rendering of progress
+	float OrthoMat[16];
+	void UXOpenGLRenderDevice::UpdateOrtho();
+	void UXOpenGLRenderDevice::DrawSolidRect(float x, float y, float w, float h, const FPlane& color);
+	void UXOpenGLRenderDevice::DrawProgressBar();
+	UTexture* OverlayWhite = nullptr;
+	GLuint ProgressVAO = 0;
+	GLuint ProgressVBO = 0;
+	GLuint ProgressProg = 0;
+
+	GLint uOrtho = -1;
+	GLint uColor = -1;
+	GLint uPos = -1;
+
 	struct FSurfaceLightmap
 	{
 		// Atlas UV rectangle (0..1 in atlas space)
@@ -1762,8 +1793,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
 	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
 
-	#define MAX_SURFACE_LIGHTS 495
-	INT DefaultLightCap = 55; // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/
+	#define MAX_SURFACE_LIGHTS 2048
+	// Just taking all that touch a surface now (they should be there) fine now that we don't pad out the array with junk so most surfaces can have one or two or some other small number
+	INT DefaultLightCap = 2000; // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/ 
     INT LevelLightCap = DefaultLightCap;
 
 	// per-frame mapping from AActor* -> index inside LightInfoBuffer (populated each SetSceneNode)
@@ -1791,6 +1823,8 @@ class UXOpenGLRenderDevice : public URenderDevice
     void UXOpenGLRenderDevice::ProcessNodeSurface(int ni, ULevel* Level); // build occlusion map for one surface (called from WorkerThread)
 	void UXOpenGLRenderDevice::WorkerThread(std::queue<int>& nodeQueue, ULevel* Level);
 	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
+	void UXOpenGLRenderDevice::BuildingPoll();
+	void UXOpenGLRenderDevice::AssemblingPoll();
 	void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, const FString& AtlasMeta, INT AtlasW, INT AtlasH);
 	bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
 	void UXOpenGLRenderDevice::NewLevelOC();

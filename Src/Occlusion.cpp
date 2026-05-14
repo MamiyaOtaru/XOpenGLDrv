@@ -3,11 +3,6 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 
-#include <thread>
-#include <mutex>
-#include <vector>
-#include <queue>
-
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
 
@@ -18,7 +13,43 @@
 #define STB_DXT_IMPLEMENTATION
 #include "thirdparty/stb/stb_dxt.h"
 
-std::mutex queueMutex;
+#include <thread>
+#include <mutex>
+#include <vector>
+#include <algorithm>   // std::shuffle
+#include <random>      // std::mt19937, std::random_device
+
+std::thread AtlasThread;
+std::atomic<bool> AtlasFinished{false};
+TArray<FPlane> Atlas;
+FString AtlasPNG = TEXT("");
+FString AtlasMeta = TEXT("");
+INT AtlasW, AtlasH;
+
+struct FOcclusionJob
+{
+    UXOpenGLRenderDevice* Owner = nullptr;
+
+	std::atomic<bool> bAbort{false};
+	ULevel* LevelAtStart = nullptr;
+
+	std::queue<int> PendingSurfaces;
+	std::mutex      QueueMutex;
+
+	std::vector<std::thread> Threads;
+    std::atomic<int> ActiveWorkers{0};
+
+    FOcclusionJob::~FOcclusionJob()
+    {
+        StopAndJoin();
+    }
+    void Start(UXOpenGLRenderDevice* InOwner, ULevel* Level);
+	void StartThreads(int NumThreads);
+    void WorkerLoop();
+	void StopAndJoin();
+    bool IsRunning() const { return ActiveWorkers.load(std::memory_order_acquire) > 0; }
+};
+FOcclusionJob OcclusionJob;
 
 UXOpenGLRenderDevice::SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf)
 {
@@ -1039,7 +1070,6 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
            AtlasWidth, AtlasHeight);
 
     // Allocate atlas buffer (RGBA16F)
-    TArray<FPlane> Atlas;
     Atlas.AddZeroed(AtlasWidth * AtlasHeight);
 
     // Real row-by-row packer (using padded sizes)
@@ -1139,28 +1169,6 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
         RowHeight  = Max(RowHeight, PaddedH);
     }
 
-    // Upload to GL
-    glGenTextures(1, &GStaticLightmapAtlasTex);
-    glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F,
-                 AtlasWidth, AtlasHeight,
-                 0, GL_RGBA, GL_FLOAT,
-                 Atlas.GetData());
-
-    glGenerateMipmap(GL_TEXTURE_2D);
-
-    if (UseBindlessTextures)
-    {
-        GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
-        glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
-    }
-
     DumpAtlasToDisk(Atlas, AtlasWidth, AtlasHeight, AtlasPNG);
     //DumpAtlasToDDS(Atlas, AtlasWidth, AtlasHeight, AtlasPNG, EDDSType::BC1);
     DumpAtlasMetadata(PendingLightmaps, AtlasMeta);
@@ -1207,6 +1215,7 @@ bool IsHighlightTexture(const UTexture* Tex)
         || strcmp(LowerName, "sail1a") == 0;
 }
 
+// get shadow factor for a single surface point by point by testing visibility to each light and accumulating contribution
 void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
 {
     UModel* Model = Level->Model;
@@ -1223,6 +1232,7 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
     float minV = Pending.MinV;
     float maxV = Pending.MaxV;
     const SurfaceBasis& Basis = Pending.Basis;
+
 
     FBspSurf& Surf = Model->Surfs(iSurf);
     AActor* Owner = Surf.Actor;
@@ -1313,6 +1323,54 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
 
         for (INT y = 0; y < H; ++y)
         {
+            // We’ll loop here until it’s safe to process this row
+            for (;;)
+            {
+                ULevel* FrameLevel = GFrameLevel.load(std::memory_order_acquire);
+
+                // Case 1: engine is between frames: pause on this row
+                if (FrameLevel == nullptr)
+                {
+                    if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
+                        return;
+
+                    std::this_thread::yield();
+                    continue; // stay on the same y, don’t enter BSP, don’t touch the level - continue goes back to the for (;;)
+                }
+
+                // Case 2: level changed: abort this surface/job
+                if (FrameLevel != Level)
+                {
+                    return;
+                }
+
+                // Tentatively enter the danger zone for this row
+                GOcclusionInBSP.fetch_add(1, std::memory_order_acquire);
+
+                // Re-check after increment to catch races with Unlock/level change
+                FrameLevel = GFrameLevel.load(std::memory_order_acquire);
+
+                // Still the same level: we’re good, break out and do the row
+                if (FrameLevel == Level)
+                    break;
+
+                // Not the same anymore: back out of the danger zone
+                GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
+
+                // If it’s nullptr now, we just slipped between frames: pause and retry this row
+                if (FrameLevel == nullptr)
+                {
+                    if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
+                        return;
+
+                    std::this_thread::yield();
+                    continue; // retry same y
+                }
+
+                // Otherwise it was a different non-null level: abort
+                return;
+            }
+
             for (INT x = 0; x < W; ++x)
             {
                 float u = (x + 0.5f) / float(W);
@@ -1340,6 +1398,8 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
                 }*/
                 Pixels(y * W + x) = Color;
             }
+            // exit danger zone for row, allow unlock to proceed if waiting
+            GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
         }
 
         FSurfaceLightmap LM;
@@ -1354,19 +1414,99 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
     }
 }
 
-void UXOpenGLRenderDevice::WorkerThread(std::queue<int>& nodeQueue, ULevel* Level)
+void FOcclusionJob::Start(UXOpenGLRenderDevice* InOwner, ULevel* Level)
 {
-    while (true)
+    Owner = InOwner;
+    LevelAtStart = Level;
+    bAbort.store(false, std::memory_order_relaxed);
+}
+
+void FOcclusionJob::StartThreads(int NumThreads)
+{
+    // join any previous threads if needed (or ensure StopAndJoin was called)
+    Threads.clear();
+    Threads.reserve(NumThreads);
+
+    ActiveWorkers.store(NumThreads, std::memory_order_relaxed);
+
+    for (int i = 0; i < NumThreads; ++i)
     {
+        Threads.emplace_back([this]()
+        {
+            WorkerLoop();
+        });
+    }
+}
+
+void FOcclusionJob::WorkerLoop()
+{
+    // will decrement active threadcount when this function returns, no matter from where
+    struct FWorkerGuard
+    {
+        std::atomic<int>& Counter;
+        ~FWorkerGuard() { Counter.fetch_sub(1, std::memory_order_relaxed); }
+    } Guard{ ActiveWorkers };
+
+    for (;;)
+    {
+        // Allow shutdown at any time
+        if (bAbort.load(std::memory_order_relaxed))
+            return;
+
+        // Wait for a safe frame window
+        ULevel* FrameLevel = Owner->GFrameLevel.load(std::memory_order_acquire);
+
+        if (FrameLevel == nullptr)
+        {
+            // Between frames - pause
+            std::this_thread::yield();
+            continue;
+        }
+
+        if (FrameLevel != LevelAtStart)
+        {
+            // Level changed - job is no longer valid
+            return;
+        }
+
+        // Pull next surface index
         int plm = -1;
         {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            if (nodeQueue.empty())
-                break;
-            plm = nodeQueue.front();
-            nodeQueue.pop();
+            std::lock_guard<std::mutex> lock(QueueMutex);
+            if (PendingSurfaces.empty()) {
+                return;
+            }
+
+            plm = PendingSurfaces.front();
+            PendingSurfaces.pop();
         }
-        ProcessNodeSurface(plm, Level);
+
+        // Process the surface safely
+        Owner->ProcessNodeSurface(plm, LevelAtStart);
+
+        Owner->ProgressDone.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void FOcclusionJob::StopAndJoin()
+{
+    // Tell workers to exit
+    bAbort.store(true, std::memory_order_relaxed);
+
+    // Join all threads
+    for (auto& T : Threads)
+    {
+        if (T.joinable())
+            T.join();
+    }
+
+    Threads.clear();
+
+    // Clear queue
+    {
+        std::lock_guard<std::mutex> lock(QueueMutex);
+        while (!PendingSurfaces.empty())
+            PendingSurfaces.pop();
     }
 }
 
@@ -1435,8 +1575,10 @@ void DryRunAtlas(INT& OutW, INT& OutH)
     OutH = ((OutH + 15) / 16) * 16;
 }
 
-void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta)
+void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNGIncoming, const FString& AtlasMetaIncoming)
 {
+    AtlasPNG = AtlasPNGIncoming;
+    AtlasMeta = AtlasMetaIncoming;
     UModel* Model = Level->Model;
     PendingLightmaps.Empty();
 
@@ -1498,7 +1640,6 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
     }
 
     Sort(&PendingLightmaps(0), PendingLightmaps.Num());
-    INT AtlasW, AtlasH;
     while (true)
     {
         // Dry run
@@ -1515,27 +1656,120 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
         for (INT i = 0; i < PendingLightmaps.Num(); ++i)
         {
             FPendingLightmap& LM = PendingLightmaps(i);
-            LM.Width  = Clamp(LM.Width,  8, MaxClamp);
+            LM.Width = Clamp(LM.Width, 8, MaxClamp);
             LM.Height = Clamp(LM.Height, 8, MaxClamp);
         }
     }
 
-    std::queue<int> surfQueue;
-    for (INT plm = 0; plm < PendingLightmaps.Num(); ++plm)
-        surfQueue.push(plm);
-
-    const int numThreads = std::thread::hardware_concurrency();
-    std::vector<std::thread> threads;
-    for (int i = 0; i < numThreads; ++i)
-        threads.emplace_back(&UXOpenGLRenderDevice::WorkerThread, this, std::ref(surfQueue), Level);
-
-    for (auto& t : threads)
-        t.join();
-
-    if (PendingLightmaps.Num() > 0)
+    // Fill the job’s shared queue
     {
-        BuildStaticLightmapAtlas(AtlasPNG, AtlasMeta, AtlasW, AtlasH);
+        std::lock_guard<std::mutex> lock(OcclusionJob.QueueMutex);
+        while (!OcclusionJob.PendingSurfaces.empty())
+            OcclusionJob.PendingSurfaces.pop();
+
+        // Build a temp vector of indices
+        std::vector<int> temp;
+        temp.reserve(PendingLightmaps.Num());
+        for (INT plm = 0; plm < PendingLightmaps.Num(); ++plm)
+            temp.push_back(plm);
+
+        // Shuffle the vector
+        std::shuffle(temp.begin(), temp.end(),
+                     std::mt19937(std::random_device{}()));
+
+        // Refill queue in shuffled order
+        for (int idx : temp)
+            OcclusionJob.PendingSurfaces.push(idx);
     }
+
+    ProgressTotal = PendingLightmaps.Num();
+    ProgressDone.store(0, std::memory_order_relaxed);
+
+    // Start the job (binds owner + level + resets abort)
+    OcclusionJob.Start(this, Level);
+
+    // Spawn worker threads (they’ll run WorkerLoop())
+    int numThreads = std::thread::hardware_concurrency() - 1; // leave room for the game
+    OcclusionJob.StartThreads(numThreads);
+
+    GOcclusionState = EOcclusionState::Building;
+} // end function BuildPerSurfaceStaticLight
+
+void UXOpenGLRenderDevice::BuildingPoll()
+{
+    if (OcclusionJob.IsRunning())
+    {
+        StatusMessage = FString::Printf(
+            TEXT("Generating occlusion maps… %d / %d\n(This is a one-time process for this level)"),
+            ProgressDone.load(), ProgressTotal
+        );
+    }
+    else
+    {
+        OcclusionJob.StopAndJoin();
+
+        ProgressTotal = 0;
+        if (PendingLightmaps.Num() > 0)
+        {
+            GOcclusionState = EOcclusionState::Assembling;
+            StatusMessage   = TEXT("Assembling Atlas");
+
+            AtlasFinished.store(false, std::memory_order_relaxed);
+
+            const FString PNG  = AtlasPNG;
+            const FString Meta = AtlasMeta;
+            const INT     W    = AtlasW;
+            const INT     H    = AtlasH;
+
+            AtlasThread = std::thread([this, PNG, Meta, W, H]()
+            {
+                BuildStaticLightmapAtlas(PNG, Meta, W, H);
+                AtlasFinished.store(true, std::memory_order_release);
+            });
+        }
+        else
+        {
+            GOcclusionState = EOcclusionState::Failed;
+        }
+    }
+}
+
+void UXOpenGLRenderDevice::AssemblingPoll()
+{
+    if (!AtlasFinished.load())
+    {
+        StatusMessage = TEXT("Assembling Atlas…");
+        return;
+    }
+
+    // Worker is done -> join it once
+    if (AtlasThread.joinable())
+        AtlasThread.join();
+
+    // Now upload the texture
+    glGenTextures(1, &GStaticLightmapAtlasTex);
+    glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F,
+                 AtlasW, AtlasH,
+                 0, GL_RGBA, GL_FLOAT,
+                 Atlas.GetData());
+
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    if (UseBindlessTextures)
+    {
+        GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
+        glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
+    }
+
+    GOcclusionState = EOcclusionState::Ready;
+    StatusMessage   = TEXT("");
 }
 
 // Simple UE1-style file-exists helper.
@@ -1732,6 +1966,17 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
 
 void UXOpenGLRenderDevice::NewLevelOC()
 {
+    // Stop occlusion job
+    OcclusionJob.StopAndJoin();
+    OcclusionJob.bAbort.store(false, std::memory_order_relaxed);
+
+    // Stop any in-flight atlas worker
+    if (AtlasThread.joinable())
+        AtlasThread.join();
+    AtlasFinished.store(false, std::memory_order_relaxed);
+
+    // Now safe to reset state / destroy old atlas / start new build
+    GOcclusionState = EOcclusionState::Idle;
     for (TMap<INT, FSurfInfo>::TIterator It(SurfaceInfoMap); It; ++It)
     {
         FSurfInfo& SI = It.Value();
@@ -1758,10 +2003,16 @@ void UXOpenGLRenderDevice::NewLevelOC()
     if (FileExistsUE1(AtlasPNG) && FileExistsUE1(AtlasMeta))
     {
         if (LoadStaticLightmapAtlas(LastLevel, AtlasPNG, AtlasMeta))
+        {
+            GOcclusionState = EOcclusionState::Ready;
             return; // success
+        }
+        else
+        {
+            GOcclusionState = EOcclusionState::Failed;
+        }
     }
 
-    // nothing to load, or failed.  create
+    // nothing to load, or failed.  create.  or rather, kick off creation on worker threads and return immediately; when they finish we'll wrap up and assemble
     BuildPerSurfaceStaticLight(LastLevel, AtlasPNG, AtlasMeta);
-
 }

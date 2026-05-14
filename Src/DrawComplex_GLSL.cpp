@@ -809,6 +809,7 @@ return;
     uint numStaticLights = meta.y;
     uint numDynamicLights = meta.z;
     numSurfaceLights = clamp(numStaticLights + numDynamicLights, uint(0), uint(MAX_SURFACE_LIGHTS));
+
     for (uint li = 0u; li < numSurfaceLights; ++li)
     {
       uint i = FacetIndicesArr[start + li];

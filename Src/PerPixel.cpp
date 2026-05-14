@@ -880,6 +880,22 @@ void UXOpenGLRenderDevice::NewLevelPP()
             ComputeStaticLightsForFacet(LastLevel, SurfIndex, StaticList, LevelLightCap - 10);
             StaticLightsForFacet.Set(SurfIndex, StaticList);
 
+            // Debug surfaces exceeding threshold
+            /*if (StaticList.Num() > 256)
+            {
+                debugf(TEXT("Surface %d exceeds 256 lights: %d lights, %d nodes"),
+                    SurfIndex,
+                    StaticList.Num(),
+                    Surf.Nodes.Num()
+                );
+
+                // Optional: dump node indices
+                for (INT i = 0; i < Surf.Nodes.Num(); i++)
+                {
+                    debugf(TEXT("    Node[%d] = %d"), i, Surf.Nodes(i));
+                }
+            }*/
+
             // Preload bump/height maps
             FTextureInfo Info;
             if (Surf.Texture) {

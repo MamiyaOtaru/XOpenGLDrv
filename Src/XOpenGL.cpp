@@ -645,6 +645,74 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	// get light level overrides for UT99 (and maybe other games) if needed
 	InitLightLevelOverrides();
 
+	OverlayWhite = new UTexture();
+	OverlayWhite->Init(1, 1);
+	OverlayWhite->Format = TEXF_RGBA8;
+	FColor* Pixel = (FColor*)OverlayWhite->Mips(0).DataArray.GetData();
+	Pixel[0] = FColor(255,255,255,255);
+	// --- Shader sources ---
+    const char* vs = R"(
+#version 330 core
+layout(location = 0) in vec2 aPos;   // pixel-space position
+uniform mat4 uOrtho;
+void main()
+{
+    gl_Position = uOrtho * vec4(aPos, 0.0, 1.0);
+}
+
+    )";
+
+    const char* fs = R"(
+#version 330 core
+uniform vec4 uColor;
+out vec4 FragColor;
+void main()
+{
+    FragColor = uColor;
+}
+    )";
+
+    // --- Compile program ---
+    GLuint v = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(v, 1, &vs, nullptr);
+    glCompileShader(v);
+
+    GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(f, 1, &fs, nullptr);
+    glCompileShader(f);
+
+    ProgressProg = glCreateProgram();
+    glAttachShader(ProgressProg, v);
+    glAttachShader(ProgressProg, f);
+    glLinkProgram(ProgressProg);
+
+    glDeleteShader(v);
+    glDeleteShader(f);
+
+    // --- Get uniforms ---
+    uOrtho = glGetUniformLocation(ProgressProg, "uOrtho");
+    uColor = glGetUniformLocation(ProgressProg, "uColor");
+
+    // --- Create quad VAO/VBO ---
+    float verts[] = {
+        0, 0,
+        1, 0,
+        1, 1,
+        0, 1
+    };
+
+    glGenVertexArrays(1, &ProgressVAO);
+    glGenBuffers(1, &ProgressVBO);
+
+    glBindVertexArray(ProgressVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, ProgressVBO);
+    glBufferData(GL_ARRAY_BUFFER, 8 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)0);
+
+    glBindVertexArray(0);
+
 	NumDevices++;
 	return 1;
 	unguard;
@@ -1639,7 +1707,6 @@ void DrawDebugViewspaceTri()
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
-
 void DrawDebugTriangle()
 {
     static GLuint vao = 0, vbo = 0;
@@ -1977,6 +2044,7 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 
 	// detect level change, clear out the facet->light hashmaps
 	ULevel* level = Viewport->Actor->XLevel;
+	GFrameLevel.store(level, std::memory_order_release);
 
 	// Always update LastLevel first — it always means “current level”
 	bool levelChanged = (level != LastLevel);
@@ -1999,6 +2067,14 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 		NewLevelPP(); // gathers lights for geometry and preloads textures
 		NewLevelOC(); // loads or generates occlusion map
 	}
+	if (GOcclusionState == EOcclusionState::Building)
+	{
+		BuildingPoll();
+	}
+	if (GOcclusionState == EOcclusionState::Assembling)
+	{
+		AssemblingPoll();
+    }
 
 	DepthPrepassDone = false;
 
@@ -2059,6 +2135,129 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 	unguard;
 }
 
+void UXOpenGLRenderDevice::UpdateOrtho()
+{
+    float L = 0.0f, R = float(SceneWidth);
+    float T = 0.0f, B = float(SceneHeight);
+
+    OrthoMat[0]  =  2.0f/(R-L);
+    OrthoMat[1]  =  0.0f;
+    OrthoMat[2]  =  0.0f;
+    OrthoMat[3]  =  0.0f;
+
+    OrthoMat[4]  =  0.0f;
+    OrthoMat[5]  = -2.0f/(B-T);
+    OrthoMat[6]  =  0.0f;
+    OrthoMat[7]  =  0.0f;
+
+    OrthoMat[8]  =  0.0f;
+    OrthoMat[9]  =  0.0f;
+    OrthoMat[10] = -1.0f;
+    OrthoMat[11] =  0.0f;
+
+    OrthoMat[12] = -1.0f;
+    OrthoMat[13] =  1.0f;
+    OrthoMat[14] =  0.0f;
+    OrthoMat[15] =  1.0f;
+}
+
+void UXOpenGLRenderDevice::DrawSolidRect(float x, float y, float w, float h, const FPlane& color)
+{
+    // --- Save state we’re about to touch ---
+    GLint prevProg = 0;
+    GLint prevVAO  = 0;
+    GLint prevArrayBuf = 0;
+
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVAO);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevArrayBuf);
+
+    GLboolean prevBlend = glIsEnabled(GL_BLEND);
+    GLboolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean prevCull  = glIsEnabled(GL_CULL_FACE);
+    GLboolean prevStencil = glIsEnabled(GL_STENCIL_TEST);
+    GLboolean prevScissor = glIsEnabled(GL_SCISSOR_TEST);
+
+    // --- Our rect setup ---
+    float verts[8] =
+    {
+        x,     y,
+        x+w,   y,
+        x+w,   y+h,
+        x,     y+h
+    };
+
+    glUseProgram(ProgressProg);
+
+    glUniformMatrix4fv(uOrtho, 1, GL_FALSE, OrthoMat);
+    glUniform4f(uColor, color.X, color.Y, color.Z, color.W);
+
+    glBindVertexArray(ProgressVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, ProgressVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendEquation(GL_FUNC_ADD);
+
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+    // --- Restore previous state ---
+    glBindBuffer(GL_ARRAY_BUFFER, prevArrayBuf);
+    glBindVertexArray(prevVAO);
+    glUseProgram(prevProg);
+
+    if (prevBlend)   glEnable(GL_BLEND);   else glDisable(GL_BLEND);
+    if (prevDepth)   glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (prevCull)    glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
+    if (prevStencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+    if (prevScissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+}
+
+void UXOpenGLRenderDevice::DrawProgressBar()
+{
+    if (ProgressTotal <= 0)
+        return;
+
+    float progress = float(ProgressDone.load()) / float(ProgressTotal);
+    progress = Clamp(progress, 0.0f, 1.0f);
+
+    UpdateOrtho();
+
+    const float x  = 30.0f;
+    const float y  = 30.0f;
+    const float w  = 500.0f;
+    const float h  = 40.0f;
+    const float pad = 4.0f;
+
+    // Background
+    DrawSolidRect(x, y, w, h, FPlane(0,0,0,0.6f));
+
+    // Border (4 thin rects)
+    DrawSolidRect(x,       y,        w, 1.0f, FPlane(1,1,1,1));
+    DrawSolidRect(x,       y+h-1.0f, w, 1.0f, FPlane(1,1,1,1));
+    DrawSolidRect(x,       y,        1.0f, h, FPlane(1,1,1,1));
+    DrawSolidRect(x+w-1.0f,y,        1.0f, h, FPlane(1,1,1,1));
+
+    // Filled inner bar
+    const float innerW = w - 2.0f*pad;
+    const float innerH = h - 2.0f*pad;
+    const float filled = innerW * progress;
+
+    DrawSolidRect(x+pad, y+pad, filled, innerH, FPlane(0.2f,0.8f,0.2f,1));
+
+	// Reset GL state to something sane for the rest of the frame
+	SetProgram(No_Prog);
+	SceneFbo->Bind();
+	glViewport(0, 0, SceneWidth, SceneHeight);
+}
+
 void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 {
 	guard(UXOpenGLRenderDevice::Unlock);
@@ -2110,6 +2309,10 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 	// Unbind
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+	// --- Draw progress overlay if active ---
+	if (ProgressTotal > 0)
+		DrawProgressBar();
+
 #if !_WIN32
 	if (Blit)
 	{
@@ -2151,6 +2354,15 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 		}
     }
 #endif
+    // Mark that no level is currently safe for BSP work
+    GFrameLevel.store(nullptr, std::memory_order_release);
+
+    // Wait until all workers have left their BSP sections
+    while (GOcclusionInBSP.load(std::memory_order_acquire) > 0)
+    {
+		appSleep(0); // yield without burning CPU
+	}
+	// now return control to the engine (which may change/destroy the level)
 
 	--LockCount;
 

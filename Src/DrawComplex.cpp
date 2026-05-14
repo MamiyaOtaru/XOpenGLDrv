@@ -244,7 +244,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	}
 
 	// Write static lightmap params (if present).  Only do mover if we have a Node match
-	if (HDLightMap && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+	if (HDLightMap && GOcclusionState == EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
 	{
 		const FSurfaceLightmap& LM = SI->HDLightmap;
 		facetPtr->StaticUVMinMax = glm::vec4(LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
@@ -386,7 +386,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawCallParams->TexHandles[depthIndex] = gbufferFbo->depthBindlessHandle;
 	}
 
-	if (SI && SI->HasHDLightmap)
+	if (SI && SI->HasHDLightmap &&GOcclusionState == EOcclusionState::Ready)
 	{
 		DrawCallParams->TexHandles[StaticLightmapIndex] = GStaticLightmapAtlasHandle;
 	}
@@ -460,7 +460,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			PolyVertexNormals(vi)     = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
 			PolyVertexTangents(vi)    = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
 			PolyVertexBitangents(vi)  = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
-			if (PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num())
+			if (GOcclusionState == EOcclusionState::Ready && PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num())
 				PolyVertexLightmapUVs(vi) = glm::vec2(SurfLightmapUVs(vi).X, SurfLightmapUVs(vi).Y);
 			//else
 			//	debugf(TEXT("XOpenGL: not enough UVs: %d %d"), PolyVertexLightmapUVs.Num(), SurfLightmapUVs.Num());
@@ -545,7 +545,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			Shader->VertBuffer.Advance(emittedVerts);
 		} // end loop through Nodes
 	} // end if SI (with normal data)
-	else if (SI && (HDLightMap || (PhongShading && BumpMaps)))
+	else if (SI && ((HDLightMap && GOcclusionState == EOcclusionState::Ready) || (PhongShading && BumpMaps)))
 	{
 		const SurfaceBasis& Basis = SI->LightmapBasis;
 
@@ -597,7 +597,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				PolyVertexTangents(vi)   = fallbackT;
 				PolyVertexBitangents(vi) = fallbackB;
 
-				if (HDLightMap)
+				if (HDLightMap && GOcclusionState == EOcclusionState::Ready)
 				{
 					FVector Origin;
 					if (SI->IsMover)
@@ -793,7 +793,7 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 	FragmentShaderFunc				= &BuildFragmentShader;
 	// Configure facet index/meta ring sizes (elements per sub-buffer)
 	FacetIndexRingSize = 65536; // uint indices per sub-buffer (tune up/down)
-	FacetMetaRingSize  = DRAWCOMPLEX_SIZE; // number of metadata entries per sub-buffer (one per drawID)
+	FacetMetaRingSize  = DRAWCOMPLEX_SIZE*2; // number of metadata entries per sub-buffer (one per drawID)
 	RelevantSpecializationOptions =
 		ShaderCompilationOptions::OPT_DetailTextures |
 		ShaderCompilationOptions::OPT_MacroTextures |
