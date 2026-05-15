@@ -2312,6 +2312,25 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 	// --- Draw progress overlay if active ---
 	if (ProgressTotal > 0)
 		DrawProgressBar();
+	if (StatusMessage.Len() > 0)
+	{
+		ULevel* Level = Viewport && Viewport->Actor ? Viewport->Actor->GetLevel() : nullptr;
+		if (Level)
+		{
+			FLOAT Now = Level->TimeSeconds.GetFloat();
+			if (Now >= NextAllowedMessageTime)
+			{
+				if (StatusMessage != LastSentMessage)
+				{
+					if (Viewport && Viewport->Actor)
+						Viewport->Actor->eventClientMessage(StatusMessage, NAME_None, 0);
+
+					LastSentMessage = StatusMessage;
+				}
+				NextAllowedMessageTime = Now + 3.2f;
+			}
+		}
+	}
 
 #if !_WIN32
 	if (Blit)

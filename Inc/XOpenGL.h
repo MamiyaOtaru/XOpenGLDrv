@@ -1707,9 +1707,18 @@ class UXOpenGLRenderDevice : public URenderDevice
 	};
 	std::atomic<EOcclusionState> GOcclusionState{ EOcclusionState::Idle };
 	FString StatusMessage = TEXT("");        // empty = no overlay
+	FString LastSentMessage = TEXT("");
+	FLOAT NextAllowedMessageTime = 0.0;
 	std::atomic<int> ProgressDone {0};
 	int ProgressTotal = 0;
 	// thread safety
+	// Cooperative BSP access protocol:
+	// - GFrameLevel == nullptr      -> engine between frames, BSP unsafe, workers must pause
+	// - GFrameLevel == Level        -> safe to enter BSP, increment GOcclusionInBSP
+	// - GFrameLevel != nullptr/Level-> level switched, abort this job
+	//
+	// GOcclusionInBSP is a hazard counter used by Unlock() to wait for all workers
+	// to exit BSP before tearing the level down.
 	std::atomic<ULevel*> GFrameLevel{nullptr};
 	std::atomic<int>     GOcclusionInBSP{0};
 	// rendering of progress

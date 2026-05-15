@@ -26,6 +26,38 @@ FString AtlasPNG = TEXT("");
 FString AtlasMeta = TEXT("");
 INT AtlasW, AtlasH;
 
+struct FPendingLightmap
+{
+    INT SurfIndex;
+
+    // Original per-surface LM resolution
+    INT Width;
+    INT Height;
+
+    // CPU-side pixels (RGBA16F stored in FPlane)
+    TArray<FPlane> Pixels;
+
+    // UV extents in surface-local lightmap space
+    float MinU, MaxU;
+    float MinV, MaxV;
+
+    // Geometric basis for reconstructing world positions
+    UXOpenGLRenderDevice::SurfaceBasis Basis;
+
+    // --- Atlas packing results (filled in AFTER packing) ---
+
+    // Pixel-space placement inside the atlas
+    INT AtlasX = 0;
+    INT AtlasY = 0;
+
+    // Normalized UVs inside the atlas (0..1)
+    float AtlasMinU = 0.f;
+    float AtlasMaxU = 0.f;
+    float AtlasMinV = 0.f;
+    float AtlasMaxV = 0.f;
+};
+TArray<FPendingLightmap> PendingLightmaps;
+
 struct FOcclusionJob
 {
     UXOpenGLRenderDevice* Owner = nullptr;
@@ -559,7 +591,7 @@ bool BSPVisibilityRayReverse(
     }
 }
 
-// build an occlusion map
+// build an occlusion map for a given surface
 FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     const TArray<AActor*>& Lights,
     INT iSurf,
@@ -648,7 +680,8 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     return FPlane(r, g, b, a);
 }
 
-// build a baked lightmap
+// UNUSED
+// gather static lighting contributions for a point on a surface, unoccluded but with distance attenuation and NdotL
 FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(
     const TArray<AActor*>* Lights,
     const FVector& WorldPos,
@@ -714,38 +747,6 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(
 
     return Accum;
 }
-
-struct FPendingLightmap
-{
-    INT SurfIndex;
-
-    // Original per-surface LM resolution
-    INT Width;
-    INT Height;
-
-    // CPU-side pixels (RGBA16F stored in FPlane)
-    TArray<FPlane> Pixels;
-
-    // UV extents in surface-local lightmap space
-    float MinU, MaxU;
-    float MinV, MaxV;
-
-    // Geometric basis for reconstructing world positions
-    UXOpenGLRenderDevice::SurfaceBasis Basis;
-
-    // --- Atlas packing results (filled in AFTER packing) ---
-
-    // Pixel-space placement inside the atlas
-    INT AtlasX = 0;
-    INT AtlasY = 0;
-
-    // Normalized UVs inside the atlas (0..1)
-    float AtlasMinU = 0.f;
-    float AtlasMaxU = 0.f;
-    float AtlasMinV = 0.f;
-    float AtlasMaxV = 0.f;
-};
-TArray<FPendingLightmap> PendingLightmaps;
 
 static FString SanitizeFilename(const FString& In)
 {
@@ -995,7 +996,6 @@ void DumpAtlasToDisk(
         debugf(TEXT("XOpenGL: Wrote PNG atlas: %s"), *AtlasPNG);
 }
 
-
 void DumpAtlasMetadata(
     const TArray<FPendingLightmap>& PendingLightmaps,
     const FString& AtlasMeta)
@@ -1070,6 +1070,7 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
            AtlasWidth, AtlasHeight);
 
     // Allocate atlas buffer (RGBA16F)
+    Atlas.Empty();
     Atlas.AddZeroed(AtlasWidth * AtlasHeight);
 
     // Real row-by-row packer (using padded sizes)
@@ -1172,6 +1173,11 @@ void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, con
     DumpAtlasToDisk(Atlas, AtlasWidth, AtlasHeight, AtlasPNG);
     //DumpAtlasToDDS(Atlas, AtlasWidth, AtlasHeight, AtlasPNG, EDDSType::BC1);
     DumpAtlasMetadata(PendingLightmaps, AtlasMeta);
+    
+    // cleanup
+    PendingLightmaps.Empty();  // drops per-lightmap pixel buffers etc.
+    Atlas.Empty();             // releases all FPlane elements
+    Atlas.Shrink();            // returns excess capacity to the allocator
 }
 
 
@@ -1966,6 +1972,8 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
 
 void UXOpenGLRenderDevice::NewLevelOC()
 {
+    NextAllowedMessageTime = 0;
+
     // Stop occlusion job
     OcclusionJob.StopAndJoin();
     OcclusionJob.bAbort.store(false, std::memory_order_relaxed);
