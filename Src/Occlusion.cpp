@@ -34,9 +34,6 @@ struct FPendingLightmap
     INT Width;
     INT Height;
 
-    // CPU-side pixels (RGBA16F stored in FPlane)
-    TArray<FPlane> Pixels;
-
     // UV extents in surface-local lightmap space
     float MinU, MaxU;
     float MinV, MaxV;
@@ -1061,126 +1058,6 @@ void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(
     }
 }
 
-void UXOpenGLRenderDevice::BuildStaticLightmapAtlas(const FString& AtlasPNG, const FString& AtlasMeta, INT AtlasWidth, INT AtlasHeight)
-{
-    if (PendingLightmaps.Num() == 0)
-        return;
-
-    debugf(TEXT("XOpenGL: Atlas dims = %dx%d "),
-           AtlasWidth, AtlasHeight);
-
-    // Allocate atlas buffer (RGBA16F)
-    Atlas.Empty();
-    Atlas.AddZeroed(AtlasWidth * AtlasHeight);
-
-    // Real row-by-row packer (using padded sizes)
-    INT CursorX   = 0;
-    INT CursorY   = 0;
-    INT RowHeight = 0;
-
-    for (INT i = 0; i < PendingLightmaps.Num(); ++i)
-    {
-        FPendingLightmap& LM = PendingLightmaps(i);
-        if (LM.Width <= 0 || LM.Height <= 0 || LM.Pixels.Num() < LM.Width * LM.Height)
-            continue;
-
-        const INT PaddedW = LM.Width  + 2;
-        const INT PaddedH = LM.Height + 2;
-
-        if (CursorX + PaddedW > AtlasWidth)
-        {
-            CursorX   = 0;
-            CursorY  += RowHeight;
-            RowHeight = 0;
-        }
-
-        // With the dry-run height, this should never overflow
-        if (CursorY + PaddedH > AtlasHeight)
-        {
-            debugf(TEXT("XOpenGL: Atlas overflow even after dry-run (BUG)"));
-            break;
-        }
-
-        const INT DestX = CursorX;
-        const INT DestY = CursorY;
-
-        // Copy interior (offset by +1,+1 inside padded region)
-        for (INT y = 0; y < LM.Height; ++y)
-        {
-            FPlane* Dest = &Atlas((DestY + 1 + y) * AtlasWidth + (DestX + 1));
-            FPlane* Src  = &LM.Pixels(y * LM.Width);
-            appMemcpy(Dest, Src, LM.Width * sizeof(FPlane));
-        }
-
-        // Duplicate top and bottom rows (RGB(A) from nearest interior)
-        {
-            // Top border row: copy from first interior row (y = 1)
-            FPlane* SrcTop = &Atlas((DestY + 1) * AtlasWidth + (DestX + 1));
-            FPlane* DstTop = &Atlas((DestY + 0) * AtlasWidth + (DestX + 1));
-            appMemcpy(DstTop, SrcTop, LM.Width * sizeof(FPlane));
-
-            // Bottom border row: copy from last interior row (y = LM.Height)
-            FPlane* SrcBot = &Atlas((DestY + 1 + LM.Height - 1) * AtlasWidth + (DestX + 1));
-            FPlane* DstBot = &Atlas((DestY + 1 + LM.Height) * AtlasWidth + (DestX + 1));
-            appMemcpy(DstBot, SrcBot, LM.Width * sizeof(FPlane));
-        }
-
-        // Duplicate left and right columns (including borders)
-        for (INT y = 0; y < LM.Height + 2; ++y)
-        {
-            INT Ay = DestY + y;
-
-            // Left border: copy from x = 1
-            FPlane* SrcL = &Atlas(Ay * AtlasWidth + (DestX + 1));
-            FPlane* DstL = &Atlas(Ay * AtlasWidth + (DestX + 0));
-            *DstL = *SrcL;
-
-            // Right border: copy from x = LM.Width
-            FPlane* SrcR = &Atlas(Ay * AtlasWidth + (DestX + 1 + LM.Width - 1));
-            FPlane* DstR = &Atlas(Ay * AtlasWidth + (DestX + 1 + LM.Width));
-            *DstR = *SrcR;
-        }
-
-        // the *interior* (skip the 1px padding)
-        LM.AtlasX = DestX + 1;
-        LM.AtlasY = DestY + 1;
-
-        LM.AtlasMinU = float(DestX + 1) / AtlasWidth;
-        LM.AtlasMaxU = float(DestX + 1 + LM.Width) / AtlasWidth;
-        LM.AtlasMinV = float(DestY + 1) / AtlasHeight;
-        LM.AtlasMaxV = float(DestY + 1 + LM.Height) / AtlasHeight;
-
-        // Store in surface info
-        if (FSurfInfo* SI = SurfaceInfoMap.Find(LM.SurfIndex))
-        {
-            SI->HDLightmap.AtlasMinU = LM.AtlasMinU;
-            SI->HDLightmap.AtlasMinV = LM.AtlasMinV;
-            SI->HDLightmap.AtlasMaxU = LM.AtlasMaxU;
-            SI->HDLightmap.AtlasMaxV = LM.AtlasMaxV;
-            SI->HDLightmap.SurfMinU = LM.MinU;
-            SI->HDLightmap.SurfMaxU = LM.MaxU;
-            SI->HDLightmap.SurfMinV = LM.MinV;
-            SI->HDLightmap.SurfMaxV = LM.MaxV;
-            if (SI->IsMover)
-                SI->HDLightmap.OriginOffset = SI->LightmapBasis.Origin - SI->Owner->Location;
-            ComputeFinalAtlasUVs(*SI, LM.Basis, LM.MinU, LM.MaxU, LM.MinV, LM.MaxV, LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
-        }
-
-        CursorX   += PaddedW;
-        RowHeight  = Max(RowHeight, PaddedH);
-    }
-
-    DumpAtlasToDisk(Atlas, AtlasWidth, AtlasHeight, AtlasPNG);
-    //DumpAtlasToDDS(Atlas, AtlasWidth, AtlasHeight, AtlasPNG, EDDSType::BC1);
-    DumpAtlasMetadata(PendingLightmaps, AtlasMeta);
-    
-    // cleanup
-    PendingLightmaps.Empty();  // drops per-lightmap pixel buffers etc.
-    Atlas.Empty();             // releases all FPlane elements
-    Atlas.Shrink();            // returns excess capacity to the allocator
-}
-
-
 INT CDECL Compare(const FPendingLightmap& A, const FPendingLightmap& B)
 {
     // Primary: height descending
@@ -1413,7 +1290,77 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
         SI->HDLightmap = LM;
         SI->HasHDLightmap = true;
 
-        Pending.Pixels = Pixels;
+        // After Pixels has been filled (W x H)
+        INT AtlasWidth  = AtlasW; // class member
+        INT AtlasHeight = AtlasH; // class member
+
+        INT DestX = Pending.AtlasX; // interior (already +1 from dry run)
+        INT DestY = Pending.AtlasY;
+
+        // Copy interior into atlas
+        for (INT y = 0; y < H; ++y)
+        {
+            FPlane* Dest = &Atlas((DestY + y) * AtlasWidth + DestX);
+            FPlane* Src  = &Pixels(y * W);
+            appMemcpy(Dest, Src, W * sizeof(FPlane));
+        }
+
+        // Duplicate top and bottom rows
+        {
+            // Top border row: copy from first interior row
+            FPlane* SrcTop = &Atlas((DestY + 0) * AtlasWidth + DestX);
+            FPlane* DstTop = &Atlas((DestY - 1) * AtlasWidth + DestX);
+            appMemcpy(DstTop, SrcTop, W * sizeof(FPlane));
+
+            // Bottom border row: copy from last interior row
+            FPlane* SrcBot = &Atlas((DestY + H - 1) * AtlasWidth + DestX);
+            FPlane* DstBot = &Atlas((DestY + H) * AtlasWidth + DestX);
+            appMemcpy(DstBot, SrcBot, W * sizeof(FPlane));
+        }
+
+        // Duplicate left and right columns (including borders)
+        for (INT y = -1; y < H + 1; ++y)
+        {
+            INT Ay = DestY + y;
+
+            // Left border: copy from x = 0
+            FPlane* SrcL = &Atlas(Ay * AtlasWidth + DestX);
+            FPlane* DstL = &Atlas(Ay * AtlasWidth + (DestX - 1));
+            *DstL = *SrcL;
+
+            // Right border: copy from x = W-1
+            FPlane* SrcR = &Atlas(Ay * AtlasWidth + (DestX + W - 1));
+            FPlane* DstR = &Atlas(Ay * AtlasWidth + (DestX + W));
+            *DstR = *SrcR;
+        }
+
+        // Done with per-surface pixels
+        Pixels.Empty();
+        Pixels.Shrink();
+
+        Pending.AtlasMinU = float(DestX) / AtlasWidth;
+        Pending.AtlasMaxU = float(DestX + W) / AtlasWidth;
+        Pending.AtlasMinV = float(DestY) / AtlasHeight;
+        Pending.AtlasMaxV = float(DestY + H) / AtlasHeight;
+
+        SI->HDLightmap.AtlasMinU = Pending.AtlasMinU;
+        SI->HDLightmap.AtlasMinV = Pending.AtlasMinV;
+        SI->HDLightmap.AtlasMaxU = Pending.AtlasMaxU;
+        SI->HDLightmap.AtlasMaxV = Pending.AtlasMaxV;
+        SI->HDLightmap.SurfMinU  = Pending.MinU;
+        SI->HDLightmap.SurfMaxU  = Pending.MaxU;
+        SI->HDLightmap.SurfMinV  = Pending.MinV;
+        SI->HDLightmap.SurfMaxV  = Pending.MaxV;
+        if (SI->IsMover)
+            SI->HDLightmap.OriginOffset = SI->LightmapBasis.Origin - SI->Owner->Location;
+
+        ComputeFinalAtlasUVs(*SI,
+                                Pending.Basis,
+                                Pending.MinU, Pending.MaxU,
+                                Pending.MinV, Pending.MaxV,
+                                Pending.AtlasMinU, Pending.AtlasMaxU,
+                                Pending.AtlasMinV, Pending.AtlasMaxV);
+
     }
     else {
         return;
@@ -1571,6 +1518,10 @@ void DryRunAtlas(INT& OutW, INT& OutH)
             SimRowHeight = 0;
         }
 
+        // Store *pixel* placement (interior, skip 1px border)
+        LM.AtlasX = SimCursorX + 1;
+        LM.AtlasY = SimCursorY + 1;
+
         SimRowHeight = Max(SimRowHeight, PaddedH);
         SimCursorX   += PaddedW;
     }
@@ -1586,7 +1537,6 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
     AtlasPNG = AtlasPNGIncoming;
     AtlasMeta = AtlasMetaIncoming;
     UModel* Model = Level->Model;
-    PendingLightmaps.Empty();
 
     TUnorderedSet<int> UniqueSurfaces;
 
@@ -1667,6 +1617,9 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
         }
     }
 
+    Atlas.Empty();
+    Atlas.AddZeroed(AtlasW * AtlasH);
+
     // Fill the job’s shared queue
     {
         std::lock_guard<std::mutex> lock(OcclusionJob.QueueMutex);
@@ -1717,65 +1670,53 @@ void UXOpenGLRenderDevice::BuildingPoll()
         ProgressTotal = 0;
         if (PendingLightmaps.Num() > 0)
         {
-            GOcclusionState = EOcclusionState::Assembling;
             StatusMessage   = TEXT("Assembling Atlas");
 
             AtlasFinished.store(false, std::memory_order_relaxed);
 
             const FString PNG  = AtlasPNG;
             const FString Meta = AtlasMeta;
-            const INT     W    = AtlasW;
-            const INT     H    = AtlasH;
 
-            AtlasThread = std::thread([this, PNG, Meta, W, H]()
+            DumpAtlasToDisk(Atlas, AtlasW, AtlasH, AtlasPNG);
+            //DumpAtlasToDDS(Atlas, AtlasWidth, AtlasHeight, AtlasPNG, EDDSType::BC1);
+            DumpAtlasMetadata(PendingLightmaps, AtlasMeta);
+            AtlasFinished.store(true, std::memory_order_release);
+
+            // Now upload the texture
+            glGenTextures(1, &GStaticLightmapAtlasTex);
+            glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F,
+                         AtlasW, AtlasH,
+                         0, GL_RGBA, GL_FLOAT,
+                         Atlas.GetData());
+
+            glGenerateMipmap(GL_TEXTURE_2D);
+
+            if (UseBindlessTextures)
             {
-                BuildStaticLightmapAtlas(PNG, Meta, W, H);
-                AtlasFinished.store(true, std::memory_order_release);
-            });
+                GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
+                glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
+            }
+
+            GOcclusionState = EOcclusionState::Ready;
+            StatusMessage   = TEXT("");
+
+            // cleanup
+            PendingLightmaps.Empty();  // drops per-lightmap pixel buffers etc.
+            Atlas.Empty();             // releases all FPlane elements
+            Atlas.Shrink();            // returns excess capacity to the allocator
         }
         else
         {
             GOcclusionState = EOcclusionState::Failed;
         }
     }
-}
-
-void UXOpenGLRenderDevice::AssemblingPoll()
-{
-    if (!AtlasFinished.load())
-    {
-        StatusMessage = TEXT("Assembling Atlas…");
-        return;
-    }
-
-    // Worker is done -> join it once
-    if (AtlasThread.joinable())
-        AtlasThread.join();
-
-    // Now upload the texture
-    glGenTextures(1, &GStaticLightmapAtlasTex);
-    glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F,
-                 AtlasW, AtlasH,
-                 0, GL_RGBA, GL_FLOAT,
-                 Atlas.GetData());
-
-    glGenerateMipmap(GL_TEXTURE_2D);
-
-    if (UseBindlessTextures)
-    {
-        GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
-        glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
-    }
-
-    GOcclusionState = EOcclusionState::Ready;
-    StatusMessage   = TEXT("");
 }
 
 // Simple UE1-style file-exists helper.

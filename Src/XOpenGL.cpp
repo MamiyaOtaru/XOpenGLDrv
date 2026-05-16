@@ -186,7 +186,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	// OpenGL 4
 	new(GetClass(), TEXT("UsePersistentBuffers"), RF_Public)UBoolProperty(CPP_PROPERTY(UsePersistentBuffers), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("UseBindlessTextures"), RF_Public)UBoolProperty(CPP_PROPERTY(UseBindlessTextures), TEXT("Options"), CPF_Config);
-	new(GetClass(), TEXT("UseShaderDrawParameters"), RF_Public)UBoolProperty(CPP_PROPERTY(UseShaderDrawParameters), TEXT("Options"), CPF_Config);
+	new(GetClass(), TEXT("UseShaderDrawParameters"), RF_Public)UBoolProperty(CPP_PROPERTY(UseShaderDrawParameters), TEXT("Options"), CPF_Config); // TODO this must be true, don't allow it to be configured off, or if off force bumpmapping/perpixel mapping off
 	
 	// Debug Options
 	new(GetClass(), TEXT("DebugLevel"), RF_Public)UIntProperty(CPP_PROPERTY(DebugLevel), TEXT("DebugOptions"), CPF_Config);
@@ -823,7 +823,7 @@ void UXOpenGLRenderDevice::SelectGLVersion()
 		{
 			if (!IsSupportedGLVersion(4, 6))
 			{
-				debugf(TEXT("XOpenGL: UseShaderDrawParameters is enabled, but this device does not support OpenGL 4.6. We will disable this option"));
+				debugf(TEXT("XOpenGL: UseShaderDrawParameters is enabled, but this device does not support OpenGL 4.6. We will disable this option")); // TODO blow up or disable bump mapping
 				UseShaderDrawParameters = false;
 			}
 			else
@@ -2071,10 +2071,6 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 	{
 		BuildingPoll();
 	}
-	if (GOcclusionState == EOcclusionState::Assembling)
-	{
-		AssemblingPoll();
-    }
 
 	DepthPrepassDone = false;
 
