@@ -176,24 +176,24 @@ void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame)
     // -----------------------------
     // Bind textures
     // -----------------------------
-    glActiveTexture(GL_TEXTURE1);
+    glActiveTexture(GL_TEXTURE20);
     glBindTexture(GL_TEXTURE_2D, gbufferFbo->depthTexID);
     glGenerateMipmap(GL_TEXTURE_2D); // mipmap for distance independent SSAO speed. Originators make their own in a shader to avoid something or other. Consider
 
-    glActiveTexture(GL_TEXTURE2);
+    glActiveTexture(GL_TEXTURE21);
     glBindTexture(GL_TEXTURE_2D, gbufferFbo->colorTexIDs[0]); // normals
 
-    glActiveTexture(GL_TEXTURE14);
+    glActiveTexture(GL_TEXTURE22);
     glBindTexture(GL_TEXTURE_2D, SsaoNoiseTex);
 
     if (Shader->uDepth != -1)
-        glUniform1i(Shader->uDepth, 1);
+        glUniform1i(Shader->uDepth, 20);
 
     if (Shader->uNormal != -1)
-        glUniform1i(Shader->uNormal, 2);
+        glUniform1i(Shader->uNormal, 21);
 
     if (Shader->uNoise != -1)
-        glUniform1i(Shader->uNoise, 14);
+        glUniform1i(Shader->uNoise, 22);
 
     // -----------------------------
     // SSAO parameters
@@ -262,10 +262,10 @@ void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations)
         //
         SsaoBlurFbo->Bind();
 
-        glActiveTexture(GL_TEXTURE1);
+        glActiveTexture(GL_TEXTURE20);
         glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
 
-        Shader->SetInput(1);
+        Shader->SetInput(20);
 
         Shader->SetOffset(1.0f, 0.0f);
 
@@ -277,10 +277,10 @@ void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations)
         //
         SsaoFbo->Bind();
 
-        glActiveTexture(GL_TEXTURE1);
+        glActiveTexture(GL_TEXTURE20);
         glBindTexture(GL_TEXTURE_2D, SsaoBlurFbo->colorTexIDs[0]);
 
-        Shader->SetInput(1);
+        Shader->SetInput(20);
 
         Shader->SetOffset(0.0f, 1.0f);
 

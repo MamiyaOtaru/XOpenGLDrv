@@ -670,6 +670,7 @@ if (false) {
   if ((DrawFlags & DF_LightMap) == DF_LightMap) {
 #if OPT_HDLightMap
     if ((DrawFlags & DF_HDLightMap) == DF_HDLightMap) {
+
       // Fetch facet metadata (atlas rect + light list)
       FacetData fd = FacetMetaArr[vFacetID];
       
@@ -684,7 +685,7 @@ if (false) {
 
       // Texture size for blur kernel
       uvec2 handle = GetTexHandleHelper(vDrawID, StaticLightmapIndex);
-      ivec2 size = textureSize(sampler2D(handle), 0);
+      ivec2 size = GetTexSize(handle, TMUStaticLightmap);
       vec2 texelSize = 1.0 / vec2(size);
 
       vec4 accum = vec4(0.0);
@@ -698,7 +699,7 @@ if (false) {
         offsetUV.x = clamp(offsetUV.x, MinU, MaxU);
         offsetUV.y = clamp(offsetUV.y, MinV, MaxV);
 
-        accum += texture(sampler2D(handle), offsetUV);
+        accum += GetTexel(handle, TMUStaticLightmap, offsetUV);
       }
 
       Occlusion = clamp(accum / 9.0, 0.0, 1.0);

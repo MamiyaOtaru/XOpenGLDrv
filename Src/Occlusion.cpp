@@ -1,4 +1,4 @@
-
+        
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
@@ -134,26 +134,26 @@ enum ERayVisibilityResult
 
 static bool SameSurface(
     const UModel* Model,
-    INT OriginSurf,
-    INT HitSurf,
+    INT OriginSurfIndex,
+    INT HitSurfIndex,
     INT HitNodeIndex)
 {
-    if (OriginSurf == HitSurf)
+    if (OriginSurfIndex == HitSurfIndex)
         return true;
 
-    if (OriginSurf < 0 || HitSurf < 0)
+    if (OriginSurfIndex < 0 || HitSurfIndex < 0)
         return false;
 
-    const FBspSurf& A = Model->Surfs(OriginSurf);
-    const FBspSurf& B = Model->Surfs(HitSurf);
+    const FBspSurf& OriginSurf = Model->Surfs(OriginSurfIndex);
+    const FBspSurf& HitSurf = Model->Surfs(HitSurfIndex);
 
-    //const TCHAR* StartTexture = A.Texture ? A.Texture->GetName() : TEXT("None");
-    //const TCHAR* BackTexture = B.Texture ? B.Texture->GetName() : TEXT("None");
+    //const TCHAR* StartTexture = OriginSurf.Texture ? OriginSurf.Texture->GetName() : TEXT("None");
+    //const TCHAR* BackTexture = HitSurf.Texture ? HitSurf.Texture->GetName() : TEXT("None");
 
     // 1. Texture identity
     //if (appStricmp(StartTexture, BackTexture) != 0)
     //    return false;
-    if (A.Texture != B.Texture)
+    if (OriginSurf.Texture != HitSurf.Texture)
         return false;
 
     return true; // dumb: just checking texture.  good enough
@@ -163,7 +163,7 @@ static bool SameSurface(
     //    (Strongest possible identity test.)
     for (INT i = 0; i < A.Nodes.Num(); ++i)
     {
-        if (A.Nodes(i) == HitNodeIndex)
+        if (OriginSurf.Nodes(i) == HitNodeIndex)
             return true;
     }
 
@@ -172,9 +172,9 @@ static bool SameSurface(
     const FBspNode& HitNode = Model->Nodes(HitNodeIndex);
     const FPlane& HitPlane  = HitNode.Plane;
 
-    for (INT i = 0; i < A.Nodes.Num(); ++i)
+    for (INT i = 0; i < OriginSurf.Nodes.Num(); ++i)
     {
-        INT OriginNodeIndex = A.Nodes(i);
+        INT OriginNodeIndex = OriginSurf.Nodes(i);
         if (OriginNodeIndex >= 0 && OriginNodeIndex < Model->Nodes.Num())
         {
             const FBspNode& OriginNode = Model->Nodes(OriginNodeIndex);
@@ -189,64 +189,66 @@ static bool SameSurface(
 
 static bool BacktraceEmergesFromOrigin(
     UModel* Model,
-    const FVector& Start,
-    const FVector& Escaped,
-    INT OriginSurf)
+    const FVector& Start, // the origin surface (meant to be just outside it with normal offset)
+    const FVector& Escaped, // where we escaped solidity
+    INT OriginSurfIndex)
 {
-    FVector A   = Escaped;               // where we escaped solidity
-    FVector B   = Start;                 // the origin surface (meant to be just outside it with normal offset)
-    FVector Dir = (B - A).SafeNormal();  // backtrace direction
-
     const FLOAT skipMagnitude = 8.0;
 
-    while (true)
-    {
-        FCheckResult Hit;
+    FCheckResult Hit;
 
-        // Bounded backtrace: A -> B only
-        UBOOL bHit = !Model->LineCheck(
-            Hit, nullptr,
-            B,
-            A,
-            FVector(0,0,0),
-            0
-        );
+    // Bounded backtrace: A -> B only
+    UBOOL bHit = !Model->LineCheck(
+        Hit, nullptr,
+        Start,
+        Escaped,
+        FVector(0,0,0),
+        0
+    );
 
-        // If we've effectively reached Start, we’re done
-        if ((Hit.Location - B).Size() <= skipMagnitude * 2)
-            return true;
+    // No more hits in the segment -> nothing between us and origin.  Shouldn't happen we wouldn't *emerge* from the origin if it wasn't there to collide with on a back ray
+    if (!bHit)
+        return true; // treat as emerged through origin
 
-        // No more hits in the segment -> nothing between us and origin.  Shouldn't happen we wouldn't *emerge* from the origin if it wasn't there to collide with on a back ray
-        if (!bHit)
-            return true; // treat as emerged through origin
+    // If we've effectively reached Start, we’re done
+    if ((Hit.Location - Start).Size() <= skipMagnitude * 2)
+        return true;
 
-        INT NodeIndex = Hit.Item;
-        if (NodeIndex < 0 || NodeIndex >= Model->Nodes.Num())
-            return true; // invalid -> assume origin
+    const FBspSurf& OriginSurf = Model->Surfs(OriginSurfIndex);
+    bool isMover = (OriginSurf.Actor && OriginSurf.Actor->IsA(AMover::StaticClass()));
+    if (isMover && (Hit.Location - Start).Size() <= skipMagnitude * 20) // bit more leeway for movers
+        return true;
 
-        FBspNode& Node = Model->Nodes(NodeIndex);
-        // Skip non-vis-blocking / non-CSG.  Could iterate to the next, but unlikely to be one or we would have hit it and started backtracing then
-        if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg))
-            return true;
+    INT NodeIndex = Hit.Item;
+    if (NodeIndex < 0 || NodeIndex >= Model->Nodes.Num())
+        return true; // invalid -> assume origin
 
-        // Now we have a real CSG surface
-        INT SurfIndex = Node.iSurf;
-        if (SurfIndex < 0 || SurfIndex >= Model->Surfs.Num())
-            return true; // malformed -> assume origin
+    FBspNode& Node = Model->Nodes(NodeIndex);
+    // Skip non-vis-blocking / non-CSG.  Could iterate to the next, but unlikely to be one or we would have hit it and started backtracing then
+    if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg | NF_IsNew))
+        return true;
 
-        const FBspSurf& Surf = Model->Surfs(SurfIndex);
-        DWORD PF = Surf.PolyFlags;
+    // Now we have a real CSG surface
+    INT SurfIndex = Node.iSurf;
+    if (SurfIndex < 0 || SurfIndex >= Model->Surfs.Num())
+        return true; // malformed -> assume origin
 
-        if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
-                  PF_Masked | PF_AlphaTexture | PF_Portal))
-            return true;
+    const FBspSurf& HitSurf = Model->Surfs(SurfIndex);
+    //bool hitMover = (HitSurf.Actor && HitSurf.Actor->IsA(AMover::StaticClass()));
+    //if (hitMover)
+    //    return true; // treat movers as non-blocking for emergence.  Could be more precise and check if it's the same mover or something, but this is just a backcheck to prevent false occlusion when we should have emerged, so better to be lenient and avoid false occlusion
 
-        // Compare to origin.  Currently only by texture but could try to get more exact with iSurfs and planes
-        if (SameSurface(Model, OriginSurf, SurfIndex, NodeIndex))
-            return true; // emerged through origin
+    DWORD PF = HitSurf.PolyFlags;
 
-        return false; // hit a different real CSG surface -> occluded
-    }
+    if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
+                PF_Masked | PF_AlphaTexture | PF_Portal | PF_Modulated | PF_None))
+        return true;
+
+    // Compare to origin.  Currently only by texture but could try to get more exact with iSurfs and planes
+    if (SameSurface(Model, OriginSurfIndex, SurfIndex, NodeIndex))
+        return true; // emerged through origin
+
+    return false; // hit a different real CSG surface -> occluded
 }
 
 
@@ -273,7 +275,7 @@ static bool EmergedFromTransparent(
     FBspNode& Node = Model->Nodes(NodeIndex);
 
     // 1. NodeFlags check (non-vis-blocking / non-CSG)
-    if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg))
+    if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg | NF_IsNew))
         return true;
 
     // 2. PolyFlags check (transparent / masked / invisible / portal)
@@ -302,6 +304,7 @@ bool BSPVisibilityRay(
     FLOAT skipMagnitude = 8.0;
 
     const FBspSurf& StartSurf = Model->Surfs(OriginSurf);
+    bool isMover = (StartSurf.Actor && StartSurf.Actor->IsA(AMover::StaticClass()));
 
     FVector Dir          = (End - Start).SafeNormal();
     FVector CurrentStart = Start;
@@ -342,8 +345,7 @@ bool BSPVisibilityRay(
                     break;
                 }
             }
-
-            if (bLastTranslucent)
+            else if (bLastTranslucent)
             {
                 if (!EmergedFromTransparent(Model, Start, CurrentStart))
                 {
@@ -360,7 +362,7 @@ bool BSPVisibilityRay(
         
         INT NodeIndex = Hit.Item;
         // NodeIndex == 0 means "inside a surface" -> keep tunneling if we are still waiting to emerge from origin or we went into glass
-        bool bInsideSurface = (NodeIndex == 0);
+        bool bInsideSurface = (NodeIndex == 0 || NodeIndex >= Model->Nodes.Num());
         bool bTransSurf = false;
         bool bNonVisNode = false;
         bool bSameSurface = false;
@@ -378,10 +380,8 @@ bool BSPVisibilityRay(
                     break;
                 }
             }
-            bEscapedOrigin = true;
-
             // if we were inside glass, verify we emerged from glass
-            if (bLastTranslucent)
+            else if (bLastTranslucent)
             {
                 if (!EmergedFromTransparent(Model, Start, CurrentStart))
                 {
@@ -390,10 +390,11 @@ bool BSPVisibilityRay(
                 }
                 bLastTranslucent = false;
             }
+            bEscapedOrigin = true;
 
             // classify non-vis-blocking
             FBspNode& Node = Model->Nodes(NodeIndex);
-            bNonVisNode = (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg)) != 0;
+            bNonVisNode = (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg | NF_IsNew)) != 0;
 
             // classify transparency
             INT HitSurf = Node.iSurf;
@@ -403,7 +404,12 @@ bool BSPVisibilityRay(
                 DWORD PF = Surf.PolyFlags;
                 bTransSurf = (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
                                     PF_Masked | PF_AlphaTexture | PF_Portal)) != 0;
-                bSameSurface = SameSurface(Model, OriginSurf, HitSurf, NodeIndex);
+                bSameSurface = isMover && Surf.Actor == StartSurf.Actor;
+                bSameSurface |= SameSurface(Model, OriginSurf, HitSurf, NodeIndex);
+            }
+            else
+            {
+                bInsideSurface = true; // malformed surf index -> treat as inside surface to be safe
             }
         }
 
@@ -595,7 +601,8 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     const FVector& WorldPos,
     const SurfaceBasis& Basis,
     UModel* Model,
-    bool TwoSided)
+    bool TwoSided,
+    bool isMover)
 {
     FPlane Shadowed(0,0,0,0);
     FPlane Unshadowed(0,0,0,0);
@@ -644,7 +651,11 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         Unshadowed.Z += Color.Z;
 
         // Occlusion test
-        float mult = (TwoSided ? 10.0f : 2.0f); // was 10 for two sided but the loop should work fine without such a large offset
+        float mult = 2.0f;
+        if (TwoSided)
+            mult = 10.0f;
+        if (isMover)
+            mult = 40.0f;
 
         // Start slightly off the surface toward the light
         FVector SamplePos = WorldPos + Basis.Normal * mult;
@@ -1266,7 +1277,7 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
                     Basis.TangentU * U +
                     Basis.TangentV * V;
 
-                FPlane Color = EvaluateStaticShadowFactor(Lights, iSurf, WorldPos, Basis, Model, TwoSided);
+                FPlane Color = EvaluateStaticShadowFactor(Lights, iSurf, WorldPos, Basis, Model, TwoSided, isMover);
                 /*if (IsHighlightTexture(Surf.Texture)) {
                     Color.X = 1;
                     Color.Y = 0;
@@ -1698,7 +1709,7 @@ void UXOpenGLRenderDevice::BuildingPoll()
 
             glGenerateMipmap(GL_TEXTURE_2D);
 
-            if (UseBindlessTextures)
+            if (UsingBindlessTextures)
             {
                 GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
                 glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
@@ -1867,7 +1878,7 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
     stbi_image_free(Pixels);
 
     // Bindless handle
-    if (UseBindlessTextures)
+    if (UsingBindlessTextures)
     {
         GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
         glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);

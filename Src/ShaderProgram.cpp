@@ -312,6 +312,18 @@ vec4 GetTexel(uvec2 BindlessTexHandle, sampler2D BoundSampler, vec2 TexCoords)
   return texture(BoundSampler, TexCoords);
 }
 #endif
+
+#if OPT_BindlessTextures
+ivec2 GetTexSize(uvec2 BindlessTexHandle, sampler2D BoundSampler)
+{
+    return textureSize(sampler2D(BindlessTexHandle), 0);
+}
+#else
+ivec2 GetTexSize(uvec2 BindlessTexHandle, sampler2D BoundSampler)
+{
+    return textureSize(BoundSampler, 0);
+}
+#endif
 )";
 
 	if (ShaderType == GL_FRAGMENT_SHADER)

@@ -383,12 +383,39 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	{
 		PreparePrepassDepthTexture();
 		INT depthIndex = PrepassDepthIndex;
-		DrawCallParams->TexHandles[depthIndex] = gbufferFbo->depthBindlessHandle;
+
+		if (UsingBindlessTextures)
+		{
+			// Use the 64-bit bindless handle
+			DrawCallParams->TexHandles[depthIndex] = gbufferFbo->depthBindlessHandle;
+		}
+		else
+		{
+			// Classic TMU binding path
+			glActiveTexture(GL_TEXTURE0 + depthIndex);
+
+			GLenum target = (gbufferFbo->samples > 1)
+				? GL_TEXTURE_2D_MULTISAMPLE
+				: GL_TEXTURE_2D;
+
+			glBindTexture(target, gbufferFbo->depthTexID);
+
+			if (gbufferFbo->depthSampler)
+				glBindSampler(depthIndex, gbufferFbo->depthSampler);
+		}
 	}
 
-	if (SI && SI->HasHDLightmap &&GOcclusionState == EOcclusionState::Ready)
+	if (SI && SI->HasHDLightmap && GOcclusionState == EOcclusionState::Ready)
 	{
-		DrawCallParams->TexHandles[StaticLightmapIndex] = GStaticLightmapAtlasHandle;
+		if (UsingBindlessTextures)
+		{
+			DrawCallParams->TexHandles[StaticLightmapIndex] = GStaticLightmapAtlasHandle;
+		}
+		else
+		{
+			glActiveTexture(GL_TEXTURE0 + StaticLightmapIndex);
+			glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
+		}
 	}
 
 	// Other draw data

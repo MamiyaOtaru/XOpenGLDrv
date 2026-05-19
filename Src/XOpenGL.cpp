@@ -576,6 +576,30 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 #if UNREAL_OLDUNREAL || UNREAL_TOURNAMENT_OLDUNREAL
     // Doing after extensions have been checked.
 	UsingPersistentBuffers = UsePersistentBuffers ? true : false;
+    // Per-pixel lighting requires SSBO (persistent buffers).
+    if (!UsingPersistentBuffers)
+    {
+        if (BumpMaps)
+            debugf(TEXT("XOpenGL: Disabling BumpMaps (requires SSBO)"));
+        if (PhongShading)
+            debugf(TEXT("XOpenGL: Disabling PhongShading (requires SSBO)"));
+        if (Multipass)
+            debugf(TEXT("XOpenGL: Disabling Multipass (requires SSBO)"));
+        if (HDLightMap)
+            debugf(TEXT("XOpenGL: Disabling HDLightMap (requires SSBO)"));
+
+        BumpMaps     = 0;
+        PhongShading = 0;
+        Multipass    = 0;
+        HDLightMap   = 0;
+
+        // Grey them out in the config UI
+        FindField<UBoolProperty>(GetClass(), TEXT("BumpMaps"))    ->PropertyFlags |= CPF_EditConst;
+        FindField<UBoolProperty>(GetClass(), TEXT("PhongShading"))->PropertyFlags |= CPF_EditConst;
+        FindField<UBoolProperty>(GetClass(), TEXT("Multipass"))   ->PropertyFlags |= CPF_EditConst;
+        FindField<UBoolProperty>(GetClass(), TEXT("HDLightMap"))  ->PropertyFlags |= CPF_EditConst;
+    }
+
 	UsingShaderDrawParameters = UseShaderDrawParameters ? true : false;
 
 	if (OpenGLVersion == GL_ES)
