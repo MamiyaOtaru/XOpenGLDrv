@@ -476,7 +476,8 @@ vec2 ViewToUV(vec3 viewPos) {
     return uv;
 }
 
-float ShadowForLight(vec3 fragPosVS, vec3 lightPosVS)
+// to continue to use this will need to tweak GetDepthTexel to handle AA (or rather lack of it from prepass), like a new GetPrepassDepthTexel
+/*float ShadowForLight(vec3 fragPosVS, vec3 lightPosVS)
 {
     const float bias = 5.0;
     const int   maxSteps = 48;
@@ -526,9 +527,7 @@ float ShadowForLight(vec3 fragPosVS, vec3 lightPosVS)
     }
 
     return 0.0;
-}
-
-
+}*/
     )";
     Out << R"(
 void main(void)
@@ -545,28 +544,6 @@ void main(void)
 
   vec4 TotalColor = vec4(1.0);
   vec2 texCoords = vTexCoords;
-
-if (false) {
-    vec3 fragPosVS = vCoords; // your view-space position
-
-    // Project that *same* point to UV
-    vec2 uv = ViewToUV(fragPosVS);
-
-    // Sample depth at that UV
-    float depth = GetDepthTexel(GetTexHandleHelper(vDrawID, PrepassDepthIndex),
-                                TMUPrepassDepthMap, uv).r;
-
-    // Whatever you *think* the right inverse is:
-    float sceneZ = LinearizeDepth(depth, 0.5, 65336.0);
-
-    // Compare
-    float rayZ = fragPosVS.z;
-    float diff = rayZ - sceneZ;
-    //FragColor = vec4(diff,0.0,0.0,1.0);
-    vec3 normalVS = normalize(InFrameCoords * vNormal);
-    FragColor = vec4(normalVS * 0.5 + 0.5, 1.0);
-    return;
-}
 
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
 #if OPT_PhongShading

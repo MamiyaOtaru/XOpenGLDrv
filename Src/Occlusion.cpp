@@ -216,7 +216,7 @@ static bool BacktraceEmergesFromOrigin(
 
     const FBspSurf& OriginSurf = Model->Surfs(OriginSurfIndex);
     bool isMover = (OriginSurf.Actor && OriginSurf.Actor->IsA(AMover::StaticClass()));
-    if (isMover && (Hit.Location - Start).Size() <= skipMagnitude * 20) // bit more leeway for movers
+    if (isMover && (Hit.Location - Start).Size() <= skipMagnitude * 4) // bit more leeway for movers
         return true;
 
     INT NodeIndex = Hit.Item;
@@ -241,7 +241,7 @@ static bool BacktraceEmergesFromOrigin(
     DWORD PF = HitSurf.PolyFlags;
 
     if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
-                PF_Masked | PF_AlphaTexture | PF_Portal | PF_Modulated | PF_None))
+                PF_Masked | PF_AlphaTexture | PF_Portal | PF_Modulated))
         return true;
 
     // Compare to origin.  Currently only by texture but could try to get more exact with iSurfs and planes
@@ -297,14 +297,14 @@ static bool EmergedFromTransparent(
 
 bool BSPVisibilityRay(
     UModel* Model,
-    INT OriginSurf,
+    INT OriginSurfIndex,
     const FVector& Start,
     const FVector& End)
 {
     FLOAT skipMagnitude = 8.0;
 
-    const FBspSurf& StartSurf = Model->Surfs(OriginSurf);
-    bool isMover = (StartSurf.Actor && StartSurf.Actor->IsA(AMover::StaticClass()));
+    const FBspSurf& OriginSurf = Model->Surfs(OriginSurfIndex);
+    bool isMover = (OriginSurf.Actor && OriginSurf.Actor->IsA(AMover::StaticClass()));
 
     FVector Dir          = (End - Start).SafeNormal();
     FVector CurrentStart = Start;
@@ -339,13 +339,13 @@ bool BSPVisibilityRay(
 
             if (!bEscapedOrigin && !bInitialCheck)
             {
-                if (!BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurf))
+                if (!BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurfIndex))
                 {
                     Result = Ray_Occluded;
                     break;
                 }
             }
-            else if (bLastTranslucent)
+            if (bLastTranslucent)
             {
                 if (!EmergedFromTransparent(Model, Start, CurrentStart))
                 {
@@ -374,14 +374,16 @@ bool BSPVisibilityRay(
             // origin-emergence backcheck happens the first time we leave the origin (if we started in it at all)
             if (!bEscapedOrigin && !bInitialCheck)
             {
-                if (!BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurf))
+                if (!BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurfIndex))
                 {
                     Result = Ray_Occluded;
                     break;
                 }
             }
+            bEscapedOrigin = true;
+
             // if we were inside glass, verify we emerged from glass
-            else if (bLastTranslucent)
+            if (bLastTranslucent)
             {
                 if (!EmergedFromTransparent(Model, Start, CurrentStart))
                 {
@@ -390,7 +392,6 @@ bool BSPVisibilityRay(
                 }
                 bLastTranslucent = false;
             }
-            bEscapedOrigin = true;
 
             // classify non-vis-blocking
             FBspNode& Node = Model->Nodes(NodeIndex);
@@ -404,8 +405,8 @@ bool BSPVisibilityRay(
                 DWORD PF = Surf.PolyFlags;
                 bTransSurf = (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
                                     PF_Masked | PF_AlphaTexture | PF_Portal)) != 0;
-                bSameSurface = isMover && Surf.Actor == StartSurf.Actor;
-                bSameSurface |= SameSurface(Model, OriginSurf, HitSurf, NodeIndex);
+                bSameSurface = isMover && Surf.Actor == OriginSurf.Actor;
+                //bSameSurface |= SameSurface(Model, OriginSurf, HitSurf, NodeIndex);
             }
             else
             {
@@ -437,161 +438,6 @@ bool BSPVisibilityRay(
     }
 
     return Result == Ray_Unoccluded;
-}
-
-bool BSPVisibilityRayReverse(
-    UModel* Model,
-    INT OriginSurf,
-    const FVector& SurfacePoint,   // the point being lit
-    const FVector& LightPoint      // the light position
-)
-{
-    const FLOAT skipMagnitude = 8.0f;
-
-    // Ray goes from light -> surface
-    FVector RayDir = (SurfacePoint - LightPoint).SafeNormal();
-    FVector RayPos = LightPoint;
-
-    FCheckResult Hit;
-    FCheckResult BackHit;
-
-    bool bLastWasTranslucent = false;
-
-    while (true)
-    {
-        // If we've reached/passed the surface, it's unobstructed
-        float distToSurface = (SurfacePoint - RayPos) | RayDir;
-        if (distToSurface <= 0.0f)
-            return true;
-
-        // Trace from light toward the surface
-        UBOOL hit = !Model->LineCheck(
-            Hit, nullptr,
-            SurfacePoint,
-            RayPos,
-            FVector(0,0,0),
-            0
-        );
-
-        if (!hit)
-        {
-            if (bLastWasTranslucent) // test that the surface where the ray emerged is still transparent
-            {
-                Model->LineCheck(
-                    BackHit, nullptr,
-                    LightPoint,
-                    RayPos,
-                    FVector(0,0,0),
-                    0
-                );
-                INT NodeIndex = BackHit.Item;
-                FBspNode& Node = Model->Nodes(NodeIndex);
-                if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg)) // && Node.iZone[0] != Node.iZone[1])
-                {
-                    return true;
-                }
-                INT HitSurf = Node.iSurf;
-                if (HitSurf >= 0 && HitSurf < Model->Surfs.Num())
-                {
-                    const FBspSurf& Surf = Model->Surfs(HitSurf);
-                    DWORD PF = Surf.PolyFlags;
-
-                    if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
-                                PF_Masked | PF_AlphaTexture | PF_Portal))
-                    {
-                        return true;
-                    }
-                }
-                return false; // ray may have gone into a transparent surface but did not come out of one
-            }
-            return true;
-        }
-
-        INT NodeIndex = Hit.Item;
-
-        // Validate node index
-        if (NodeIndex >= 1 && NodeIndex < Model->Nodes.Num())
-        {
-            // hit something.  will test if transparent.  BUT first test (if we went into transparent) that we came out of transparent as well
-            if (bLastWasTranslucent) // test that the surface where the ray emerged is still transparent
-            {
-                bool emergedFromTransparent = false;
-                Model->LineCheck(
-                    BackHit, nullptr,
-                    LightPoint,
-                    RayPos,
-                    FVector(0, 0, 0),
-                    0
-                );
-                INT NodeIndex = BackHit.Item;
-                FBspNode& Node = Model->Nodes(NodeIndex);
-                if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg)) // && Node.iZone[0] != Node.iZone[1])
-                {
-                    emergedFromTransparent = true;
-                }
-                INT HitSurf = Node.iSurf;
-                if (HitSurf >= 0 && HitSurf < Model->Surfs.Num())
-                {
-                    const FBspSurf& Surf = Model->Surfs(HitSurf);
-                    DWORD PF = Surf.PolyFlags;
-
-                    if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
-                        PF_Masked | PF_AlphaTexture | PF_Portal))
-                    {
-                        emergedFromTransparent = true;
-                    }
-                }
-                if (!emergedFromTransparent)
-                {
-                    return false; // ray may have gone into a transparent surface but did not come out of one
-                }
-            }
-            FBspNode& Node = Model->Nodes(NodeIndex);
-
-            INT HitSurf = Node.iSurf;
-
-            if (HitSurf == OriginSurf) // unobstructed to surface being tested
-            {
-                return true; // hit the surface being tested: consider this unoccluded, pending backtesting any transparency
-            }
-
-            // Skip nodes that do not block visibility
-            if (Node.NodeFlags & (NF_NotVisBlocking | NF_NotCsg)) // && Node.iZone[0] != Node.iZone[1])
-            {
-                bLastWasTranslucent = true;
-                RayPos = Hit.Location + RayDir * skipMagnitude;
-                continue;
-            }
-
-            // Skip translucent / masked / invisible / non-solid
-            if (HitSurf >= 0 && HitSurf < Model->Surfs.Num())
-            {
-                const FBspSurf& Surf = Model->Surfs(HitSurf);
-                DWORD PF = Surf.PolyFlags;
-
-                if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
-                          PF_Masked | PF_AlphaTexture | PF_Portal))
-                {
-                    bLastWasTranslucent = true;
-                    RayPos = Hit.Location + RayDir * skipMagnitude;
-                    continue;
-                }
-            }
-
-            if ((Hit.Location - SurfacePoint).Size() <= skipMagnitude) // reached the surface (or close anyway). optional: * some amount when needed for certain maps
-            {
-                return true; // hit very close to the surface being tested: consider this unoccluded to allow for numerical imprecision
-            }
-        }
-        else if (bLastWasTranslucent) // tunnel through transparency
-        {
-            RayPos = Hit.Location + RayDir * skipMagnitude;
-            continue;
-        }
-
-        // If we hit a real surface that is NOT the one being tested: occluded
-        return false;
-    }
 }
 
 // build an occlusion map for a given surface
@@ -655,7 +501,7 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         if (TwoSided)
             mult = 10.0f;
         if (isMover)
-            mult = 40.0f;
+            mult = 2.0f; // 40 for less likely to be in the surface leads to weirdness around edges
 
         // Start slightly off the surface toward the light
         FVector SamplePos = WorldPos + Basis.Normal * mult;
@@ -1176,26 +1022,6 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
         Pending.Height = 0;
         return;
     }
-    /* {
-        SurfaceInfoMap.Set(iSurf, FSurfInfo());
-        SI = SurfaceInfoMap.Find(iSurf);
-
-        SI->IsMover = isMover;
-        SI->Owner = Owner;
-        SI->Verts.Empty();
-
-        // Collect verts from this node
-        for (INT vi = 0; vi < Node.NumVertices; ++vi)
-        {
-            INT iVert = Node.iVertPool + vi;
-            if (iVert < 0 || iVert >= Model->Verts.Num())
-                continue;
-
-            const FVert& V = Model->Verts(iVert);
-            const FVector& P = Model->Points(V.pVertex);
-            SI->Verts.AddItem(P);
-        }
-    }*/
 
     if (SI->Verts.Num() < 3)
     {
@@ -1353,6 +1179,8 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
         Pending.AtlasMaxU = float(DestX + W) / AtlasWidth;
         Pending.AtlasMinV = float(DestY) / AtlasHeight;
         Pending.AtlasMaxV = float(DestY + H) / AtlasHeight;
+
+        SI->LightmapBasis        = Basis;
 
         SI->HDLightmap.AtlasMinU = Pending.AtlasMinU;
         SI->HDLightmap.AtlasMinV = Pending.AtlasMinV;

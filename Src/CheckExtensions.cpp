@@ -164,7 +164,6 @@ void UXOpenGLRenderDevice::CheckExtensions()
         }
         else
         {
-            // TODO blow up here.  Need SSBO for the light array, end of story.  or disable bumpmapping
             GWarn->Logf(TEXT("XOpenGL: GL_ARB_shader_draw_parameters or GL_ARB_shader_storage_buffer_object not found. UseShaderDrawParameters disabled."));
             UseShaderDrawParameters = false;
         }
