@@ -155,21 +155,6 @@ void UXOpenGLRenderDevice::GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, T
     }
 }
 
-struct FVert2D { FLOAT X, Y; FVector P; };
-static UBOOL IsConvex(const FVert2D& A, const FVert2D& B, const FVert2D& C)
-{
-    FLOAT cross = (B.X - A.X)*(C.Y - A.Y) - (B.Y - A.Y)*(C.X - A.X);
-    return cross > 0.f; // CCW winding
-}
-
-static UBOOL PointInTri(const FVert2D& P, const FVert2D& A, const FVert2D& B, const FVert2D& C)
-{
-    FLOAT c1 = (B.X - A.X)*(P.Y - A.Y) - (B.Y - A.Y)*(P.X - A.X);
-    FLOAT c2 = (C.X - B.X)*(P.Y - B.Y) - (C.Y - B.Y)*(P.X - B.X);
-    FLOAT c3 = (A.X - C.X)*(P.Y - C.Y) - (A.Y - C.Y)*(P.X - C.X);
-    return (c1 >= 0 && c2 >= 0 && c3 >= 0);
-}
-
 static UBOOL PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N)
 {
     FVector v0 = B - A;

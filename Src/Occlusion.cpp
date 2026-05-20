@@ -126,12 +126,6 @@ INT GetHitSurfIndex(UModel* Model, const FCheckResult& Hit)
     return Node.iSurf;
 }
 
-enum ERayVisibilityResult
-{
-    Ray_Unoccluded,
-    Ray_Occluded
-};
-
 static bool SameSurface(
     const UModel* Model,
     INT OriginSurfIndex,
@@ -313,7 +307,7 @@ bool BSPVisibilityRay(
     bool bEscapedOrigin   = false;
     bool bLastTranslucent = false;
 
-    ERayVisibilityResult Result = Ray_Occluded; // default pessimistic
+    bool occluded = true; // default pessimistic
 
     while (true)
     {
@@ -321,7 +315,7 @@ bool BSPVisibilityRay(
         float distToEnd = (End - CurrentStart) | Dir;
         if (distToEnd <= 0.0f)
         {
-            Result = Ray_Unoccluded;
+            occluded = false;
             break;
         }
 
@@ -341,7 +335,7 @@ bool BSPVisibilityRay(
             {
                 if (!BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurfIndex))
                 {
-                    Result = Ray_Occluded;
+                    occluded = true;
                     break;
                 }
             }
@@ -349,12 +343,12 @@ bool BSPVisibilityRay(
             {
                 if (!EmergedFromTransparent(Model, Start, CurrentStart))
                 {
-                    Result = Ray_Occluded;
+                    occluded = true;
                     break;
                 }
             }
 
-            Result = Ray_Unoccluded;
+            occluded = false;
             break;
         }
 
@@ -376,7 +370,7 @@ bool BSPVisibilityRay(
             {
                 if (!BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurfIndex))
                 {
-                    Result = Ray_Occluded;
+                    occluded = true;
                     break;
                 }
             }
@@ -387,7 +381,7 @@ bool BSPVisibilityRay(
             {
                 if (!EmergedFromTransparent(Model, Start, CurrentStart))
                 {
-                    Result = Ray_Occluded;
+                    occluded = true;
                     break;
                 }
                 bLastTranslucent = false;
@@ -432,12 +426,12 @@ bool BSPVisibilityRay(
         else
         {
             // solid, non-origin, non-transparent -> occluder
-            Result = Ray_Occluded;
+            occluded = true;
             break;
         }
     }
 
-    return Result == Ray_Unoccluded;
+    return !occluded;
 }
 
 // build an occlusion map for a given surface
@@ -510,8 +504,8 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
 
         if (TwoSided)
         {
-            //SamplePos = WorldPos - Basis.Normal * mult;
-            //bUnobstructed = bUnobstructed || BSPVisibilityRay(Model, iSurf, SamplePos, Light->Location);
+            SamplePos = WorldPos - Basis.Normal * mult;
+            bUnobstructed = bUnobstructed || BSPVisibilityRay(Model, iSurf, SamplePos, Light->Location);
         }
 
         if (bUnobstructed)
