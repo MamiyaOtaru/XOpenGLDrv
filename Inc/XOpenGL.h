@@ -491,7 +491,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	// Dumb bling
 	BITFIELD PhongShading;
-	BITFIELD Multipass;
+	BITFIELD AmbientOcclusion;
+	BITFIELD IndirectIllumination;
 	BITFIELD HDLightMap;
 
 	FLOAT GammaMultiplier;
@@ -1160,6 +1161,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 		Prepass_Prog,
 		SSAO_Prog,
 		SsaoBlur_Prog,
+		SSGI_Prog,
+		SSGIComposite_Prog,
 		Max_Prog,
 	};
 
@@ -1196,7 +1199,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 			// Dumb visual stuff
 			DF_PhongShading	  = 1 << 17,
 			DF_ReadDepth	  = 1 << 18,
-			DF_Multipass	  = 1 << 19,
+			DF_AmbientOcclusion	  = 1 << 19,
 			DF_HDLightMap	  = 1 << 20,
 		};
 	};
@@ -1234,9 +1237,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 			// Additional renderer features
 			OPT_PhongShading       = 1 << 16,
-			OPT_Multipass          = 1 << 17,
-			OPT_MSAA               = 1 << 18,
-			OPT_HDLightMap		   = 1 << 19
+			OPT_AmbientOcclusion   = 1 << 17,
+			OPT_IndirectIllumination = 1 << 18,
+			OPT_MSAA               = 1 << 19,
+			OPT_HDLightMap		   = 1 << 20
 		};
 
 
@@ -1864,6 +1868,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// FBO stuff
 	// --- Scene render target (MSAA or not) ---
 	Fbo* SceneFbo = nullptr;
+    Fbo* ResolveFbo = nullptr; // if MSAA is enabled, we need a separate FBO to resolve the scene into for postprocessing and/or presenting. If not, this will just be a reference to SceneFbo.
+	Fbo* CompositeFbo = nullptr; // for post processing.  can't read from and write to resolve at the same time
 
 	// --- Prepass / GBuffer (depth + normal, maybe more later) ---
 	Fbo* gbufferFbo = nullptr;
@@ -1890,6 +1896,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	std::vector<glm::vec3> UXOpenGLRenderDevice::GenerateSSAOKernel(int total);
 	void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame);
 	void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations);
+	void UXOpenGLRenderDevice::RunIndirectIlluminationPass();
+	void UXOpenGLRenderDevice::RunIndirectCompositePass();
 
 	std::vector<glm::vec3> SSAOKernel;
 
@@ -2232,6 +2240,104 @@ class UXOpenGLRenderDevice : public URenderDevice
 		GLint resolutionLoc;
 
 	private:
+	};
+
+	//
+	// SSGI Shader (Indirect Illumination)
+	//
+	class SSGIProgram : public ShaderProgramImpl<NoVertex, NoParameters>
+	{
+	public:
+		SSGIProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
+
+		// Samplers
+		GLint uDepth      = -1;   // gDepth
+		GLint uNormal     = -1;   // gNormal
+		GLint uAlbedo     = -1;   // gAlbedo
+		GLint uNoise      = -1;   // texNoise
+
+		// Kernel + params
+		GLint uKernelSize = -1;
+		GLint uRadius     = -1;
+		GLint uBias       = -1;
+		GLint uIntensity  = -1;
+
+		// Matrices
+		GLint uProj       = -1;
+		GLint uInvProj    = -1;
+
+		// Screen size
+		GLint uScreenSize = -1;
+
+		// Kernel sample array
+		GLint uSamples[64];
+
+		// Fullscreen quad uses its own VAO/VBO
+		void CreateInputLayout() {}
+
+		void MapBuffers();
+		void UnmapBuffers();
+		void Flush(bool Rotate);
+
+		void ActivateShader();
+		void DeactivateShader();
+
+		void BindShaderState(CompiledShader* Spec);
+	};
+
+	//
+	// SSGI Composite Shader (adds indirect light to forward color)
+	//
+	class SSGICompositeProgram : public ShaderProgramImpl<NoVertex, NoParameters>
+	{
+	public:
+		SSGICompositeProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev)
+			: ShaderProgramImpl(Name, RenDev)
+		{
+			VertexBufferSize             = 0;
+			ParametersBufferSize         = 0;
+			ParametersBufferBindingIndex = 0;
+			NumTextureSamplers           = 3;   // direct, albedo, indirect
+			DrawMode                     = GL_TRIANGLES;
+			UseSSBOParametersBuffer      = false;
+			ParametersInfo               = nullptr;
+
+			VertexShaderFunc   = nullptr;
+			GeoShaderFunc      = nullptr;
+			FragmentShaderFunc = nullptr;
+
+			bUseExternalShaders = true;
+			ExternalVertexPath   = TEXT("xopengl/shaders/ssgi_composite.vert");
+			ExternalFragmentPath = TEXT("xopengl/shaders/ssgi_composite.frag");
+		}
+
+		// Samplers
+		GLint uDirect   = -1;   // uDirect        (ResolveFbo color)
+		GLint uAlbedo   = -1;   // uAlbedo        (gbuffer albedo)
+		GLint uIndirect = -1;   // uIndirect      (blurred half-res SSGI)
+
+		// Fullscreen quad uses its own VAO/VBO
+		void CreateInputLayout() {}
+
+		void BindShaderState(CompiledShader* Spec)
+		{
+			ShaderProgramImpl::BindShaderState(Spec);
+
+			GetUniformLocation(Spec, uDirect,   "uDirect");
+			GetUniformLocation(Spec, uAlbedo,   "uAlbedo");
+			GetUniformLocation(Spec, uIndirect, "uIndirect");
+
+			if (uDirect   != -1) glUniform1i(uDirect,   0);
+			if (uAlbedo   != -1) glUniform1i(uAlbedo,   1);
+			if (uIndirect != -1) glUniform1i(uIndirect, 2);
+		}
+
+		void MapBuffers() {}
+		void UnmapBuffers() {}
+		void Flush(bool Rotate) {}
+
+		void ActivateShader()   { UseShader(); }
+		void DeactivateShader() {}
 	};
 
 	//

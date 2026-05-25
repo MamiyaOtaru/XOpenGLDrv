@@ -420,6 +420,7 @@
     <ClCompile Include="ShaderLoader.cpp" />
     <ClCompile Include="ShaderProgram.cpp" />
     <ClCompile Include="SSAOPass.cpp" />
+    <ClCompile Include="SSGIPass.cpp" />
     <ClCompile Include="StbImpl.cpp" />
     <ClCompile Include="XOpenGL.cpp" />
     <ClCompile Include="XOpenGLDrv.cpp" />

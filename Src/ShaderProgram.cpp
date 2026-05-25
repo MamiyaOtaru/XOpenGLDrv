@@ -114,7 +114,7 @@ precision lowp int;
 	Out << "#define DF_HeightMap " << ShaderDrawFlags::DF_HeightMap << "u" << END_LINE;
 	Out << "#define DF_PhongShading " << ShaderDrawFlags::DF_PhongShading << "u" << END_LINE;
 	Out << "#define DF_ReadDepth " << ShaderDrawFlags::DF_ReadDepth << "u" << END_LINE;
-	Out << "#define DF_Multipass " << ShaderDrawFlags::DF_Multipass << "u" << END_LINE;
+	Out << "#define DF_AmbientOcclusion " << ShaderDrawFlags::DF_AmbientOcclusion << "u" << END_LINE;
 	Out << "#define DF_HDLightMap " << ShaderDrawFlags::DF_HDLightMap << "u" << END_LINE;
 	Out << "#define DF_Masked " << ShaderDrawFlags::DF_Masked << "u" << END_LINE;
 	Out << "#define DF_Unlit " << ShaderDrawFlags::DF_Unlit << "u" << END_LINE;
@@ -683,6 +683,8 @@ void UXOpenGLRenderDevice::InitShaders()
 	Shaders[Prepass_Prog]			= new DrawPrepassProgram(TEXT("DrawPrepass"), this);
 	Shaders[SSAO_Prog]				= new SSAOProgram(TEXT("DrawSSAO"), this);
 	Shaders[SsaoBlur_Prog]			= new SsaoBlurProgram(TEXT("DrawSSAOBlur"), this);
+    Shaders[SSGI_Prog]				= new SSGIProgram(TEXT("DrawSSGI"), this);
+    Shaders[SSGIComposite_Prog]		= new SSGICompositeProgram(TEXT("DrawSSGIComposite"), this);
 
 
 	// (Re)initialize UBOs
@@ -979,8 +981,10 @@ void UXOpenGLRenderDevice::ShaderCompilationOptions::SetOptionsForRendererConfig
 		SetOption(OPT_HeightMaps);
 	if (RenDev->PhongShading)
 		SetOption(OPT_PhongShading);
-	if (RenDev->Multipass)
-		SetOption(OPT_Multipass);
+	if (RenDev->AmbientOcclusion)
+		SetOption(OPT_AmbientOcclusion);
+	if (RenDev->IndirectIllumination)
+		SetOption(OPT_IndirectIllumination);
 	if (RenDev->HDLightMap)
 		SetOption(OPT_HDLightMap);
 	if (RenDev->UseAA)
@@ -1020,7 +1024,8 @@ AddOptionFunc(Result, L ## #x, (OptionsMask & x) ? true : false);
 	ADD_OPTION(OPT_BumpMaps)
 	ADD_OPTION(OPT_HeightMaps)
 	ADD_OPTION(OPT_PhongShading)
-	ADD_OPTION(OPT_Multipass)
+	ADD_OPTION(OPT_AmbientOcclusion)
+	ADD_OPTION(OPT_IndirectIllumination)
 	ADD_OPTION(OPT_HDLightMap)
 	ADD_OPTION(OPT_MSAA)
 	ADD_OPTION(OPT_EnvironmentMaps)

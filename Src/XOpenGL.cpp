@@ -163,7 +163,8 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	new(GetClass(), TEXT("BumpMaps"), RF_Public)UBoolProperty(CPP_PROPERTY(BumpMaps), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("ParallaxVersion"), RF_Public)UByteProperty(CPP_PROPERTY(ParallaxVersion), TEXT("Options"), CPF_Config, ParallaxVersions);
 	new(GetClass(), TEXT("PhongShading"), RF_Public)UBoolProperty(CPP_PROPERTY(PhongShading), TEXT("Options"), CPF_Config);
-	new(GetClass(), TEXT("Multipass"), RF_Public)UBoolProperty(CPP_PROPERTY(Multipass), TEXT("Options"), CPF_Config);
+	new(GetClass(), TEXT("AmbientOcclusion"), RF_Public)UBoolProperty(CPP_PROPERTY(AmbientOcclusion), TEXT("Options"), CPF_Config);
+	new(GetClass(), TEXT("IndirectIllumination"), RF_Public)UBoolProperty(CPP_PROPERTY(IndirectIllumination), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("HDLightMap"), RF_Public)UBoolProperty(CPP_PROPERTY(HDLightMap), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("NoAATiles"), RF_Public)UBoolProperty(CPP_PROPERTY(NoAATiles), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("GenerateMipMaps"), RF_Public)UBoolProperty(CPP_PROPERTY(GenerateMipMaps), TEXT("Options"), CPF_Config);
@@ -234,7 +235,8 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	MacroTextures = 1;
 	BumpMaps = 1;
 	PhongShading = 1;
-	Multipass = 1;
+	AmbientOcclusion = 1;
+	IndirectIllumination = 0; // this one is too heavy, and doesn't look all that great
 	HDLightMap = 1;
 	GammaMultiplier = 1.75f;
 	GammaMultiplierUED  = 1.75f;
@@ -458,7 +460,8 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	debugf(NAME_DevLoad, TEXT("BumpMaps %i"), BumpMaps);
 	debugf(NAME_DevLoad, TEXT("ParallaxVersion %i (%ls)"),ParallaxVersion, ParallaxVersion == Parallax_Basic ? TEXT("Basic") : ParallaxVersion == Parallax_Occlusion ? TEXT("Occlusion") : ParallaxVersion == Parallax_Relief ? TEXT("Relief") : TEXT("Disabled"));
 	debugf(NAME_DevLoad, TEXT("PhongShading %i"), PhongShading);
-	debugf(NAME_DevLoad, TEXT("Multipass %i"), Multipass);
+	debugf(NAME_DevLoad, TEXT("AmbientOcclusion %i"), AmbientOcclusion);
+	debugf(NAME_DevLoad, TEXT("IndirectIllumiunation %i"), IndirectIllumination);
 	debugf(NAME_DevLoad, TEXT("HDLightMap %i"), HDLightMap);
 	debugf(NAME_DevLoad, TEXT("EnvironmentMaps %i"), EnvironmentMaps);
 	debugf(NAME_DevLoad, TEXT("NoAATiles %i"), NoAATiles);
@@ -583,20 +586,24 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
             debugf(TEXT("XOpenGL: Disabling BumpMaps (requires SSBO)"));
         if (PhongShading)
             debugf(TEXT("XOpenGL: Disabling PhongShading (requires SSBO)"));
-        if (Multipass)
-            debugf(TEXT("XOpenGL: Disabling Multipass (requires SSBO)"));
+        if (AmbientOcclusion)
+            debugf(TEXT("XOpenGL: Disabling AmbientOcclusion (requires SSBO)"));
+		if (IndirectIllumination)
+            debugf(TEXT("XOpenGL: Disabling IndirectIllumination (requires SSBO)"));
         if (HDLightMap)
             debugf(TEXT("XOpenGL: Disabling HDLightMap (requires SSBO)"));
 
         BumpMaps     = 0;
         PhongShading = 0;
-        Multipass    = 0;
+        AmbientOcclusion    = 0;
+		IndirectIllumination = 0;
         HDLightMap   = 0;
 
         // Grey them out in the config UI
         FindField<UBoolProperty>(GetClass(), TEXT("BumpMaps"))    ->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("PhongShading"))->PropertyFlags |= CPF_EditConst;
-        FindField<UBoolProperty>(GetClass(), TEXT("Multipass"))   ->PropertyFlags |= CPF_EditConst;
+        FindField<UBoolProperty>(GetClass(), TEXT("AmbientOcclusion"))   ->PropertyFlags |= CPF_EditConst;
+        FindField<UBoolProperty>(GetClass(), TEXT("IndirectIllumination"))   ->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("HDLightMap"))  ->PropertyFlags |= CPF_EditConst;
     }
 
@@ -1335,6 +1342,20 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
         delete SsaoFullResFbo;
         SsaoFullResFbo = nullptr;
     }
+
+	if (ResolveFbo && UseAA)
+	{
+		ResolveFbo->Dispose();
+		delete ResolveFbo;
+		ResolveFbo = nullptr;
+	}
+
+	if (CompositeFbo)
+    {
+        CompositeFbo->Dispose();
+        delete CompositeFbo;
+        CompositeFbo = nullptr;
+    }
 	DeleteFullscreenQuad();
 
     SceneWidth  = NewX;
@@ -1346,18 +1367,42 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 		SceneWidth,
 		SceneHeight,
 		Samples,
-		1,
+		3,
 		TRUE,   // depth texture (active depth buffer)
 		FALSE   // no depth RBO
 	);
 
-    if (Multipass)
+	if (Samples > 1)
+	{
+		ResolveFbo = new Fbo(
+			SceneWidth,
+			SceneHeight,
+			1,          // single-sample
+			3,          // color0 = finalColor, color1 = simulateMultipassSomething *if* GLES, color2 = albedo
+			FALSE,      // no depth needed
+			FALSE
+		);
+	}
+	else
+	{
+        ResolveFbo = SceneFbo;
+	}
+	CompositeFbo = new Fbo(
+		SceneWidth,
+		SceneHeight,
+		1,          // single-sample
+		2,          // color0 = finalColor, color1 = albedo
+		FALSE,      // no depth needed
+		FALSE
+	);
+
+    if (AmbientOcclusion || IndirectIllumination)
     {
         gbufferFbo = new Fbo(
             SceneWidth,
             SceneHeight,
             1,      // single-sample
-            2,      // color0 = normals, color1 = spare/future
+            2,      // color0 = normals, color1 = albedo
             TRUE,   // depth texture (SSAO needs depth)
             FALSE,  // no depth RBO
 			GL_RGB16F  // for normals
@@ -1840,6 +1885,8 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 
 	CurrentLightToIndex.Empty(); // done per frame.  the static part could be done per level, but this is easier and not really a problem.  The static lights are in the same order each time
 	NumLights = LightList.Num();
+	if (NumLights > MAX_LIGHTS)
+		NumLights = MAX_LIGHTS;
 
 	auto LightData = LightInfoBuffer.GetElementPtr(0);
 	for (INT i = 0; i < NumLights; i++)
@@ -1866,18 +1913,16 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 #endif
 		
 		CurrentLightToIndex.Set(LightList(i), static_cast<GLuint>(i));
-
-		if (i == MAX_LIGHTS - 1)
-			break;
 	}
 
 	LightInfoBuffer.Bind();
 	LightInfoBuffer.BufferData(true);
 
-	// Depth prepass into gbufferFbo (for SSAO)
-	if (Multipass && !DepthPrepassDone && LastLevel && !LastLevel->IsEntry)
+	// Depth prepass into gbufferFbo (for SSAO / indirect illumination)
+	if ((AmbientOcclusion || IndirectIllumination) && !DepthPrepassDone && LastLevel && !LastLevel->IsEntry)
 	{
 		gbufferFbo->Bind();
+		glDrawBuffer(GL_COLOR_ATTACHMENT0);
 		glViewport(0, 0, SceneWidth, SceneHeight);
 
 		glClearColor(1.0, 0.0, 1.0, 1.0);
@@ -2285,16 +2330,88 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 	// Unlock and render.
 	check(LockCount == 1);
 
-	// Blit from offscreen FBO to default framebuffer
-	glBindFramebuffer(GL_READ_FRAMEBUFFER, SceneFbo->fboID);
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	const bool DoPost = (IndirectIllumination != 0); // or some other post processing, like bloom
+	if (DoPost) 
+	{
+		if (ActiveProgram != No_Prog)
+		{
+            // flush pending data to the FBO it expects to be in, before we switch FBOs for postprocessing
+			Shaders[ActiveProgram]->DeactivateShader();
+			ActiveProgram = No_Prog;
+		}
 
-	glBlitFramebuffer(
-		0, 0, SceneWidth, SceneHeight,
-		0, 0, SceneWidth, SceneHeight,
-		GL_COLOR_BUFFER_BIT,
-		GL_NEAREST
-	);
+		// store state
+		GLboolean prevBlend   = glIsEnabled(GL_BLEND);
+		GLboolean prevDepth   = glIsEnabled(GL_DEPTH_TEST);
+		GLboolean prevCull    = glIsEnabled(GL_CULL_FACE);
+		GLboolean prevStencil = glIsEnabled(GL_STENCIL_TEST);
+		GLboolean prevScissor = glIsEnabled(GL_SCISSOR_TEST);
+
+		if (SceneFbo->samples > 1)
+        {
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, SceneFbo->fboID);
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ResolveFbo->fboID);
+
+			// Resolve color0
+			glReadBuffer(GL_COLOR_ATTACHMENT0);
+			glDrawBuffer(GL_COLOR_ATTACHMENT0);
+			glBlitFramebuffer(
+				0, 0, SceneWidth, SceneHeight,
+				0, 0, SceneWidth, SceneHeight,
+				GL_COLOR_BUFFER_BIT,
+				GL_NEAREST
+			);
+
+			// Resolve color2 (albedo)
+			glReadBuffer(GL_COLOR_ATTACHMENT2);
+			glDrawBuffer(GL_COLOR_ATTACHMENT2);
+			glBlitFramebuffer(
+				0, 0, SceneWidth, SceneHeight,
+				0, 0, SceneWidth, SceneHeight,
+				GL_COLOR_BUFFER_BIT,
+				GL_NEAREST
+			);
+        }
+        else
+        {
+            // No MSAA -> ResolveFbo == SceneFbo
+            // (this was already set up in SetRes)
+        }
+
+        RunIndirectIlluminationPass();
+		RunIndirectCompositePass();
+
+		// Blit from composite FBO to default framebuffer
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, CompositeFbo->fboID);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+		glBlitFramebuffer(
+			0, 0, SceneWidth, SceneHeight,
+			0, 0, SceneWidth, SceneHeight,
+			GL_COLOR_BUFFER_BIT,
+			GL_NEAREST
+		);
+
+        // restore GL state
+		if (prevBlend)   glEnable(GL_BLEND);   else glDisable(GL_BLEND);
+		if (prevDepth)   glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+		if (prevCull)    glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
+		if (prevStencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+		if (prevScissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+	}
+	else
+	{
+		// Blit from offscreen FBO to default framebuffer.  Could be multisampling or not
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, SceneFbo->fboID);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+		glBlitFramebuffer(
+			0, 0, SceneWidth, SceneHeight,
+			0, 0, SceneWidth, SceneHeight,
+			GL_COLOR_BUFFER_BIT,
+			GL_NEAREST
+		);
+	}
 
 	// Debug: visualize GBuffer normals
 	/*if (Multipass && LastLevel && !LastLevel->IsEntry)
@@ -2313,11 +2430,25 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 	}*/
 
 	// debug postprocessing
-	/*if (Multipass && LastLevel && !LastLevel->IsEntry)
+	/*if (AmbientOcclusion && LastLevel && !LastLevel->IsEntry)
 	{
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, SsaoFbo->fboID);
 		glReadBuffer(GL_COLOR_ATTACHMENT0);
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+		glBlitFramebuffer(
+			0, 0, SceneWidth/2, SceneHeight/2,
+			0, 0, SceneWidth, SceneHeight,
+			GL_COLOR_BUFFER_BIT,
+			GL_NEAREST
+		);
+	}*/
+	/*if (IndirectIllumination && LastLevel && !LastLevel->IsEntry)
+	{
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, SsaoFbo->fboID);
+		glReadBuffer(GL_COLOR_ATTACHMENT0);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+		//glDrawBuffer(GL_BACK);
 
 		glBlitFramebuffer(
 			0, 0, SceneWidth/2, SceneHeight/2,
@@ -2691,10 +2822,14 @@ void UXOpenGLRenderDevice::Exit()
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseBufferInvalidation"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseBufferInvalidation)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("NoAATiles"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(NoAATiles)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("DetailTextures"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(DetailTextures)));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("GammaCorrectScreenshots"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(GammaCorrectScreenshots)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("MacroTextures"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(MacroTextures)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("BumpMaps"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(BumpMaps)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("ParallaxVersion"), *FString::Printf(TEXT("%ls"), ParallaxVersion == Parallax_Basic ? TEXT("Basic") : ParallaxVersion == Parallax_Occlusion ? TEXT("Occlusion") : ParallaxVersion == Parallax_Relief ? TEXT("Relief") : TEXT("None")));
-	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("GammaCorrectScreenshots"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(GammaCorrectScreenshots)));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("PhongShading"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(PhongShading)));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("AmbientOcclusion"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(AmbientOcclusion)));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("IndirectIllumination"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(IndirectIllumination)));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("HDLightMap"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(HDLightMap)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseAA"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseAA)));
 	//GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseAASmoothing"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseAASmoothing)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseTrilinear"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseTrilinear)));

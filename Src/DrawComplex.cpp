@@ -366,7 +366,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		}
 	}
 
-	if (BumpMaps && Multipass && IsSolidBSP && (SI && !SI->IsMover)) // only works in per pixel
+	if (BumpMaps && AmbientOcclusion && IsSolidBSP && (SI && !SI->IsMover)) // only works in per pixel
 	{
 		glActiveTexture(GL_TEXTURE0 + PostProcessIndex);
 		glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
@@ -376,10 +376,10 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 		glMakeTextureHandleResidentARB(DrawCallParams->TexHandles[PostProcessIndex]);
 
-		DrawFlags |= ShaderDrawFlags::DF_Multipass;
+		DrawFlags |= ShaderDrawFlags::DF_AmbientOcclusion;
 	}
 
-	if (BumpMaps && Multipass)
+	if (BumpMaps && AmbientOcclusion)
 	{
 		PreparePrepassDepthTexture();
 		INT depthIndex = PrepassDepthIndex;
@@ -828,7 +828,8 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 		ShaderCompilationOptions::OPT_BumpMaps |
 		ShaderCompilationOptions::OPT_HeightMaps |
 		ShaderCompilationOptions::OPT_PhongShading |
-		ShaderCompilationOptions::OPT_Multipass |
+		ShaderCompilationOptions::OPT_AmbientOcclusion |
+		ShaderCompilationOptions::OPT_IndirectIllumination |
 		ShaderCompilationOptions::OPT_HDLightMap |
 		ShaderCompilationOptions::OPT_MSAA |
 		ShaderCompilationOptions::OPT_HWLighting |

@@ -292,7 +292,7 @@ void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations)
 void UXOpenGLRenderDevice::PreparePrepassDepthTexture()
 {
     // GBuffer depth
-    if (Multipass && gbufferFbo && gbufferFbo->depthTexID)
+    if ((AmbientOcclusion || IndirectIllumination) && gbufferFbo && gbufferFbo->depthTexID)
     {
         if (UsingBindlessTextures)
         {
@@ -303,5 +303,153 @@ void UXOpenGLRenderDevice::PreparePrepassDepthTexture()
             gbufferFbo->BindDepthTexture(PrepassDepthIndex);
         }
     }
+}
+
+void UXOpenGLRenderDevice::RunIndirectIlluminationPass()
+{
+    guard(UXOpenGLRenderDevice::RunIndirectIlluminationPass);
+
+    float IndirectRadius    = 113.0f;
+    float IndirectBias      = 3.0f;
+    float IndirectIntensity = 5.0f;
+
+    // Reuse SSAO noise texture
+    GLuint SsaoNoiseTex = CreateSSAONoiseTexture();
+
+    // Reuse SSAO half-res FBO for raw SSGI
+    SsaoFbo->Bind();
+    glViewport(0, 0, SceneWidth / 2, SceneHeight / 2);
+
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // Activate SSGI shader
+    SetProgram(SSGI_Prog);
+    auto Shader = static_cast<SSGIProgram*>(Shaders[SSGI_Prog]);
+
+    // ------------------------------------------------------------
+    // Bind textures (same pattern as SSAO)
+    // ------------------------------------------------------------
+
+    glActiveTexture(GL_TEXTURE20);
+    glBindTexture(GL_TEXTURE_2D, gbufferFbo->depthTexID);
+    glGenerateMipmap(GL_TEXTURE_2D); // mipmap for distance independent SSAO speed. Originators make their own in a shader to avoid something or other. Consider
+
+    glActiveTexture(GL_TEXTURE21);
+    glBindTexture(GL_TEXTURE_2D, gbufferFbo->colorTexIDs[0]); // normals
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    glActiveTexture(GL_TEXTURE22);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[0]); // color
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    glActiveTexture(GL_TEXTURE23);
+    glBindTexture(GL_TEXTURE_2D, SsaoNoiseTex);
+
+    if (Shader->uDepth != -1)
+        glUniform1i(Shader->uDepth, 20);
+
+    if (Shader->uNormal != -1)
+        glUniform1i(Shader->uNormal, 21);
+
+    if (Shader->uAlbedo != -1)
+        glUniform1i(Shader->uAlbedo, 22);
+
+    if (Shader->uNoise != -1)
+        glUniform1i(Shader->uNoise, 23);
+
+    // ------------------------------------------------------------
+    // SSGI parameters
+    // ------------------------------------------------------------
+
+    if (Shader->uScreenSize != -1)
+        glUniform2f(Shader->uScreenSize, float(SceneWidth), float(SceneHeight));
+
+    if (Shader->uRadius != -1)
+        glUniform1f(Shader->uRadius, IndirectRadius);
+
+    if (Shader->uBias != -1)
+        glUniform1f(Shader->uBias, IndirectBias);
+
+    if (Shader->uIntensity != -1)
+        glUniform1f(Shader->uIntensity, IndirectIntensity);
+
+    // ------------------------------------------------------------
+    // Kernel (reuse SSAO kernel)
+    // ------------------------------------------------------------
+    const int kernelSize = 64;
+
+    if (SSAOKernel.empty())
+        SSAOKernel = GenerateSSAOKernel(kernelSize);
+
+    for (int i = 0; i < kernelSize; i++)
+    {
+        if (Shader->uSamples[i] != -1)
+            glUniform3fv(Shader->uSamples[i], 1, &SSAOKernel[i].x);
+    }
+
+    if (Shader->uKernelSize != -1)
+        glUniform1i(Shader->uKernelSize, kernelSize);
+
+    // ------------------------------------------------------------
+    // Draw fullscreen quad
+    // ------------------------------------------------------------
+    DrawFullscreenQuad();
+
+    Shader->Flush(false);
+
+    // ------------------------------------------------------------
+    // Blur indirect (reuse SSAO blur path)
+    // ------------------------------------------------------------
+    RunSSAOBlurPass(5);
+
+    unguard;
+}
+
+void UXOpenGLRenderDevice::RunIndirectCompositePass()
+{
+    guard(UXOpenGLRenderDevice::RunIndirectCompositePass);
+
+    // Write into CompositeFbo (full-res final color)
+    CompositeFbo->Bind();
+    glViewport(0, 0, SceneWidth, SceneHeight);
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_FALSE);
+    
+    SetProgram(SSGIComposite_Prog);
+    auto Shader = static_cast<SSGICompositeProgram*>(Shaders[SSGIComposite_Prog]);
+    
+    // Direct (forward) color
+    glActiveTexture(GL_TEXTURE20);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[0]);
+
+    // Albedo
+    glActiveTexture(GL_TEXTURE21);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[2]);
+
+    // Indirect (blurred half-res)
+    glActiveTexture(GL_TEXTURE22);
+    glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
+
+    if (Shader->uDirect != -1)
+        glUniform1i(Shader->uDirect, 20);
+
+    if (Shader->uAlbedo != -1)
+        glUniform1i(Shader->uAlbedo, 21);
+
+    if (Shader->uIndirect != -1)
+        glUniform1i(Shader->uIndirect, 22);
+
+    DrawFullscreenQuad();
+
+    Shader->Flush(false);
+
+    unguard;
 }
 

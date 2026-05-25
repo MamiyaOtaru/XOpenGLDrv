@@ -94,6 +94,9 @@
     <ClCompile Include="StbImpl.cpp">
       <Filter>Src</Filter>
     </ClCompile>
+    <ClCompile Include="SSGIPass.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Inc\XOpenGL.h">

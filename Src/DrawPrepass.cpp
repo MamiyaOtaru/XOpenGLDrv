@@ -24,8 +24,7 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
 {
     guard(UXOpenGLRenderDevice::DrawDepthOnlySurface);
 
-    // Depth-only shader is already bound, state already set:
-    // - ColorMask(false,false,false,false)
+    // Depth/normal-only shader is already bound, state already set:
     // - DepthMask(true)
     // - DepthFunc(GL_LESS)
     // - No blending

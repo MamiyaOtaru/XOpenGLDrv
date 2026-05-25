@@ -159,6 +159,16 @@ Fbo::Fbo(int w, int h,
                                   depthRboID);
     }
 
+    // Enable all color attachments as draw buffers
+    if (!colorTexIDs.empty())
+    {
+        std::vector<GLenum> bufs(colorTexIDs.size());
+        for (size_t i = 0; i < colorTexIDs.size(); ++i)
+            bufs[i] = GL_COLOR_ATTACHMENT0 + (GLenum)i;
+
+        glDrawBuffers((GLsizei)bufs.size(), bufs.data());
+    }
+
     CheckStatus();
 
     CreateDepthSampler();

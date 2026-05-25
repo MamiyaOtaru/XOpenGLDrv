@@ -439,15 +439,28 @@ in vec4 vEyeSpacePos;
 #endif
 
 #if OPT_GLES
-layout(location = 0) out vec4 FragColor;
-# if OPT_SimulateMultiPass
-layout(location = 1) out vec4 FragColor1;
-# endif
-#else
-# if OPT_SimulateMultiPass
-layout(location = 0, index = 1) out vec4 FragColor1;
-# endif
-layout(location = 0, index = 0) out vec4 FragColor;
+// Primary color output
+  layout(location = 0) out vec4 FragColor;
+
+  #if OPT_SimulateMultiPass
+    layout(location = 1) out vec4 FragColor1;
+  #endif
+
+  #if OPT_IndirectIllumination
+    // Albedo output for SSDO/SSGI
+    layout(location = 2) out vec4 Albedo;
+  #endif
+#else // Desktop GL
+  #if OPT_SimulateMultiPass
+    layout(location = 0, index = 1) out vec4 FragColor1;
+  #endif
+
+  layout(location = 0, index = 0) out vec4 FragColor;
+
+  #if OPT_IndirectIllumination
+    // Albedo output for SSDO/SSGI
+    layout(location = 2) out vec4 Albedo;
+  #endif
 #endif
     )";
 
@@ -614,6 +627,9 @@ void main(void)
   Color.a *= GetDiffuseInfo(vDrawID).z;
 
   TotalColor = ApplyPolyFlags(Color, DrawFlags);
+#if OPT_IndirectIllumination
+  Albedo = vec4(TotalColor.rgb, 1.0);
+#endif
   vec4 LightColor = vec4(1.0);
   vec4 Occlusion = vec4(1.0);
 
@@ -756,7 +772,7 @@ return;
 #endif
 
   vec2 screenUV = vec2(0,0);
-  if ((DrawFlags & (DF_ReadDepth | DF_Multipass)) != 0)
+  if ((DrawFlags & (DF_ReadDepth | DF_AmbientOcclusion)) != 0)
   {
     screenUV = gl_FragCoord.xy / vec2(DrawDrawComplexParams[vDrawID].SceneWidth, DrawDrawComplexParams[vDrawID].SceneHeight);
   }
@@ -883,8 +899,8 @@ return;
 
       vec3 totalLight = totalStaticLight * Occlusion.rgb + totalDynamicLight;
       totalLight = clamp(totalLight, 0.0, 1.0);
-#if OPT_Multipass
-      if ((DrawFlags & DF_Multipass) == DF_Multipass) {
+#if OPT_AmbientOcclusion
+      if ((DrawFlags & DF_AmbientOcclusion) == DF_AmbientOcclusion) {
         // Sample SSAO (0 = dark, 1 = no occlusion)
         float AO = GetTexel(GetTexHandleHelper(vDrawID, PostProcessIndex), TMUPostProcessMap, screenUV).r;
         totalLight *= AO * AO * AO * AO * AO * AO;
