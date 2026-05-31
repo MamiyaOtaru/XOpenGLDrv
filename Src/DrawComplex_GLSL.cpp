@@ -861,7 +861,7 @@ return;
         diff = abs(dot(N, L));
       else
         diff = max(dot(N, L), 0.0);
-      
+   
       if (li < numStaticLights) {
         totalStaticLight += rawColor * diff * attenuation;
       }
@@ -897,7 +897,14 @@ return;
       float lmIntensity = dot(LightColor.rgb * Occlusion.rgb, vec3(0.299, 0.587, 0.114));
       totalSpec *= lmIntensity; // attenuate specular by the lightmap
 
-      vec3 totalLight = totalStaticLight * Occlusion.rgb + totalDynamicLight;
+      totalStaticLight = clamp(totalStaticLight, 0.0, 1.0);
+
+      vec3 minLight = min(LightColor.rgb, Occlusion.rgb);
+      float bias = 0.95f; // 0.0 = all vanilla, 1.0 = all HD
+      vec3 blendedLM = mix(LightColor.rgb, minLight.rgb, bias);
+      vec3 totalLight = totalStaticLight * blendedLM + totalDynamicLight;
+      //vec3 totalLight = totalStaticLight * ((Occlusion.rgb + LightColor.rgb) / 2) + totalDynamicLight;
+      //vec3 totalLight = totalStaticLight * Occlusion.rgb + totalDynamicLight;
       totalLight = clamp(totalLight, 0.0, 1.0);
 #if OPT_AmbientOcclusion
       if ((DrawFlags & DF_AmbientOcclusion) == DF_AmbientOcclusion) {
@@ -906,7 +913,8 @@ return;
         totalLight *= AO * AO * AO * AO * AO * AO;
       }
 #endif
-      LightColor.rgb *= totalLight;
+      LightColor.rgb = totalLight;
+      //LightColor.rgb *= totalLight;
       
       // lighting debug
       /*if (true) {

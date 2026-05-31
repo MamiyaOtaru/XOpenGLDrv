@@ -366,7 +366,11 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		}
 	}
 
-	if (BumpMaps && AmbientOcclusion && IsSolidBSP && (SI && !SI->IsMover)) // only works in per pixel
+    // Bind SSAO texture if using per pixel lighting on solid BSP surfaces
+	// Any surfaces that do not contribute to SSAO in the prepass should not USE it.
+	// So any that are excluded from the prepass in UXOpenGLRenderDevice::SetSceneNode
+	// should be excluded here as well.
+	if (BumpMaps && AmbientOcclusion && IsSolidBSP && (SI && !SI->IsMover) && !(NextPolyFlags & PF_TwoSided)) // only works in per pixel
 	{
 		glActiveTexture(GL_TEXTURE0 + PostProcessIndex);
 		glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
@@ -379,7 +383,9 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawFlags |= ShaderDrawFlags::DF_AmbientOcclusion;
 	}
 
-	if (BumpMaps && AmbientOcclusion)
+	// Bind gbuffer depth texture.  Only used for screen space shadows (which are disabled)
+	// and would require MSAA enabled depth sampling (see note in shader)
+	/*if (BumpMaps && AmbientOcclusion)
 	{
 		PreparePrepassDepthTexture();
 		INT depthIndex = PrepassDepthIndex;
@@ -403,7 +409,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			if (gbufferFbo->depthSampler)
 				glBindSampler(depthIndex, gbufferFbo->depthSampler);
 		}
-	}
+	}*/
 
 	if (SI && SI->HasHDLightmap && GOcclusionState == EOcclusionState::Ready)
 	{
@@ -450,7 +456,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	TArray<glm::vec2> PolyVertexLightmapUVs;
 	int NumPts = 0;
 
-	// something in here is causing weirdness on movers when phong is on, though it should not trigger if it is a mover. ah, regular stuff under glowy bits zfights with phong on
 	if (PhongShading && BumpMaps && SI && !SI->IsMover) // phong shading only works with "bumpmaps" aka per pixel lighting
 	{
 		// Per-surface precomputed normals (if available) and world-space verts for matching

@@ -123,7 +123,7 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 	SetTexture(DiffuseTextureIndex, Info, PolyFlags, 0);
 
 	bool safeToReadDepth = !(PolyFlags & PF_Occlude);
-	if (safeToReadDepth && IsDepthFadeFX(Info.Texture))
+	if (safeToReadDepth && Z > 1.0f)
 	{
 		// Fix shader-side behavior
 		//DrawFlags &= ~ShaderDrawFlags::DF_Translucent;

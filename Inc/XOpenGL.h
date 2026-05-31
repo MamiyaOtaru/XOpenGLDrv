@@ -1796,6 +1796,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 		bool IsMover = false;
 		AActor* Owner;
+		DWORD PolyFlags = 0;
 
 		bool HasHDLightmap = false;
 		FSurfaceLightmap HDLightmap; // our HD lightmap info

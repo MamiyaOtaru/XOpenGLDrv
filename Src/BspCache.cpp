@@ -72,6 +72,7 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 			pSI->SurfaceNormal = Level->Model->Vectors(Surf.vNormal).SafeNormal();
 			pSI->IsMover = isMover;
 			pSI->Owner = Owner;
+			pSI->PolyFlags = Surf.PolyFlags;
 		}
 
 		FSurfInfo& SI = *pSI;
