@@ -494,6 +494,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	BITFIELD AmbientOcclusion;
 	BITFIELD IndirectIllumination;
 	BITFIELD HDLightMap;
+	BITFIELD CoronaScaling;
 
 	FLOAT GammaMultiplier;
 	FLOAT GammaMultiplierUED;
@@ -1828,6 +1829,16 @@ class UXOpenGLRenderDevice : public URenderDevice
 	void UXOpenGLRenderDevice::InitLightLevelOverrides();
 	void UXOpenGLRenderDevice::NewLevelPP();
 	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
+
+	// list of lights with coronas so we can shrink them based on distance
+	struct FCoronaLight
+	{
+		AActor* Actor;
+		float ScreenX;
+		float ScreenY;
+		float Distance;
+	};
+	TArray<FCoronaLight> CoronaLights;
 
 	// occlusion map stuff
 	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf);

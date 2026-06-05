@@ -541,6 +541,19 @@ vec2 ViewToUV(vec3 viewPos) {
 
     return 0.0;
 }*/
+
+vec3 GammaLift(vec3 v, float gamma)
+{
+    return pow(v, vec3(1.0 / gamma));
+}
+
+vec3 GammaLiftLum(vec3 v, float gamma)
+{
+    float L = dot(v, vec3(0.299, 0.587, 0.114));
+    float Lg = pow(L, 1.0 / gamma);
+    vec3 chroma = v / max(L, 0.0001);
+    return chroma * Lg;
+}
     )";
     Out << R"(
 void main(void)
@@ -897,24 +910,34 @@ return;
       float lmIntensity = dot(LightColor.rgb * Occlusion.rgb, vec3(0.299, 0.587, 0.114));
       totalSpec *= lmIntensity; // attenuate specular by the lightmap
 
-      totalStaticLight = clamp(totalStaticLight, 0.0, 1.0);
+      //totalStaticLight = clamp(totalStaticLight, 0.0, 1.0);
+      //float maxC = max(max(totalStaticLight.r, totalStaticLight.g), totalStaticLight.b);
+      //if (maxC > 1.0)
+      //    totalStaticLight /= maxC;
+      totalStaticLight = GammaLiftLum(totalStaticLight, 2.8).rgb; 
+      //totalDynamicLight = GammaLift(totalDynamicLight, 1.5).rgb; 
 
       vec3 minLight = min(LightColor.rgb, Occlusion.rgb);
-      float bias = 0.95f; // 0.0 = all vanilla, 1.0 = all HD
-      vec3 blendedLM = mix(LightColor.rgb, minLight.rgb, bias);
-      vec3 totalLight = totalStaticLight * blendedLM + totalDynamicLight;
-      //vec3 totalLight = totalStaticLight * ((Occlusion.rgb + LightColor.rgb) / 2) + totalDynamicLight;
-      //vec3 totalLight = totalStaticLight * Occlusion.rgb + totalDynamicLight;
-      totalLight = clamp(totalLight, 0.0, 1.0);
+      float bias = 0.95f; // 0.0 = all vanilla, 1.0 = all HD. 0.95 keeps shadows pretty dark where only HD has them while still showing the originals
+      vec3 blendedLM = mix(LightColor.rgb, minLight.rgb, bias); // lerp
+      //vec3 blendedLM = LightColor.rgb * Occlusion.rgb; // multiply
+      //vec3 blendedLM = ((Occlusion.rgb + LightColor.rgb) / 2); // average
 #if OPT_AmbientOcclusion
       if ((DrawFlags & DF_AmbientOcclusion) == DF_AmbientOcclusion) {
         // Sample SSAO (0 = dark, 1 = no occlusion)
         float AO = GetTexel(GetTexHandleHelper(vDrawID, PostProcessIndex), TMUPostProcessMap, screenUV).r;
-        totalLight *= AO * AO * AO * AO * AO * AO;
+        blendedLM *= AO * AO * AO * AO * AO;// * AO;
       }
 #endif
+      vec3 totalLight = totalStaticLight * blendedLM + totalDynamicLight;
+      totalLight = clamp(totalLight, 0.0, 1.0);
+      float maxC = max(max(totalLight.r, totalLight.g), totalLight.b);
+      if (maxC > 1.0)
+          totalLight /= maxC;
+      //totalLight = GammaLiftLum(totalLight, 2.8).rgb; // blows out shadows
+      //totalSpec = GammaLiftLum(totalSpec, 1.8).rgb; 
+
       LightColor.rgb = totalLight;
-      //LightColor.rgb *= totalLight;
       
       // lighting debug
       /*if (true) {
@@ -953,7 +976,9 @@ return;
 
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
     TotalColor = clamp(TotalColor * LightColor + vec4(totalSpec.rgb, 1.0), 0.0, 1.0);
-
+#if OPT_BumpMaps
+  //TotalColor.rgb = GammaLift(TotalColor.rgb, 1.8).rgb; // blows out textures
+#endif
   TotalColor += FogColor;
 
 #if OPT_DistanceFog
@@ -1048,6 +1073,9 @@ return;
     TotalColor.rgb *= proximityFade;
   }    
 
+#if OPT_BumpMaps
+  //TotalColor.rgb = GammaLiftLum(TotalColor.rgb, 1.8); // blows out everything
+#endif
 
 #if OPT_SimulateMultiPass
   FragColor = TotalColor;

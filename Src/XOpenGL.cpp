@@ -166,6 +166,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	new(GetClass(), TEXT("AmbientOcclusion"), RF_Public)UBoolProperty(CPP_PROPERTY(AmbientOcclusion), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("IndirectIllumination"), RF_Public)UBoolProperty(CPP_PROPERTY(IndirectIllumination), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("HDLightMap"), RF_Public)UBoolProperty(CPP_PROPERTY(HDLightMap), TEXT("Options"), CPF_Config);
+	new(GetClass(), TEXT("CoronaScaling"), RF_Public)UBoolProperty(CPP_PROPERTY(CoronaScaling), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("NoAATiles"), RF_Public)UBoolProperty(CPP_PROPERTY(NoAATiles), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("GenerateMipMaps"), RF_Public)UBoolProperty(CPP_PROPERTY(GenerateMipMaps), TEXT("Options"), CPF_Config);
 
@@ -238,6 +239,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	AmbientOcclusion = 1;
 	IndirectIllumination = 0; // this one is too heavy, and doesn't look all that great
 	HDLightMap = 1;
+	CoronaScaling = 1;
 	GammaMultiplier = 1.75f;
 	GammaMultiplierUED  = 1.75f;
 	ParallaxVersion = Parallax_Disabled;
@@ -463,6 +465,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	debugf(NAME_DevLoad, TEXT("AmbientOcclusion %i"), AmbientOcclusion);
 	debugf(NAME_DevLoad, TEXT("IndirectIllumiunation %i"), IndirectIllumination);
 	debugf(NAME_DevLoad, TEXT("HDLightMap %i"), HDLightMap);
+	debugf(NAME_DevLoad, TEXT("CoronaScaling %i"), CoronaScaling);
 	debugf(NAME_DevLoad, TEXT("EnvironmentMaps %i"), EnvironmentMaps);
 	debugf(NAME_DevLoad, TEXT("NoAATiles %i"), NoAATiles);
 	debugf(NAME_DevLoad, TEXT("GenerateMipMaps %i"), GenerateMipMaps);
@@ -1824,8 +1827,9 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 	else if (StoredFovAngle != Viewport->Actor->FovAngle || StoredFX != Frame->FX || StoredFY != Frame->FY || GIsEditor || StoredbNearZ)
 		SetProjection(Frame, 0);
 
-	else if (BumpMaps) // stijn: TODO: We need this to prevent lights from jumping around. This indicates there's some problem in Render!  
-		UpdateCoords(Frame); // Jason: This is because the facet data is in view space while light data is in world space, so if we don't update the transforms every frame, the lights will be in the wrong place when the camera moves. We could optimize this by only updating the light data when the camera moves, but that would require some refactoring of the code.
+	//else if (BumpMaps) // stijn: TODO: We need this to prevent lights from jumping around. This indicates there's some problem in Render!  
+	UpdateCoords(Frame); // Jason: This is because the facet data is in view space while light data is in world space, so if we don't update the transforms every frame, the lights will be in the wrong place when the camera moves. We could optimize this by only updating the light data when the camera moves, but that would require some refactoring of the code.
+	// doing without bumpmaps now to handle corona locations and scaling
 
 	if (StoredGamma != GetViewportGamma(Viewport) || StoredOneXBlending != OneXBlending || StoredActorXBlending != ActorXBlending)
 		SetFrameStateUniforms();
@@ -1855,68 +1859,182 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 #endif
 	if (!Level || 
 		(!UseHWLighting && !BumpMaps && !GIsEditor && NumLights > 0)) // If we're in-game (without HWLighting or Bumpmaps or editing), we only push light data once
-		return;
-
-	// Gather actors
-	LightList.Empty();
-	for (INT i = 0; i < Level->Actors.Num(); ++i)
 	{
-		AActor* Actor = Level->Actors(i);
+		//skip gather
+	}
+	else {
+		// Gather actors
+		LightList.Empty();
+		for (INT i = 0; i < Level->Actors.Num(); ++i)
+		{
+			AActor* Actor = Level->Actors(i);
 
-		// Filter out invalid actors
-		if (!Actor || Actor->bDeleteMe)
-			continue;
+			// Filter out invalid actors
+			if (!Actor || Actor->bDeleteMe)
+				continue;
 
-		// Filter out irrelevant lights
-		if (Actor->LightType == LE_None || Actor->LightRadius == 0 || Actor->LightBrightness == 0)
-			continue;
+			// Filter out irrelevant lights
+			if (Actor->LightType == LE_None || Actor->LightRadius == 0 || Actor->LightBrightness == 0)
+				continue;
 
-		// Filter out non-static lights if we're not using HW Lighting or per pixel lighting
-		if (!Actor->bStatic && Actor->bMovable && !HWLighting && !BumpMaps)
-			continue;
+			// Filter out non-static lights if we're not using HW Lighting or per pixel lighting
+			if (!Actor->bStatic && Actor->bMovable && !HWLighting && !BumpMaps)
+				continue;
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
-		LightList.AddItem(Actor);
-#else
-		if (Actor->NormalLightRadius) //for normal mapping only add lights with normallightradius set. Needs performance tests if not.
 			LightList.AddItem(Actor);
+#else
+			if (Actor->NormalLightRadius) //for normal mapping only add lights with normallightradius set. Needs performance tests if not.
+				LightList.AddItem(Actor);
 #endif
+		}
+
+		CurrentLightToIndex.Empty(); // done per frame.  the static part could be done per level, but this is easier and not really a problem.  The static lights are in the same order each time
+		NumLights = LightList.Num();
+		if (NumLights > MAX_LIGHTS)
+			NumLights = MAX_LIGHTS;
+
+		auto LightData = LightInfoBuffer.GetElementPtr(0);
+		for (INT i = 0; i < NumLights; i++)
+		{
+			auto Actor = LightList(i);
+			LightData->LightPos[i] = glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
+
+			FPlane RGBColor = FGetHSV(Actor->LightHue, Actor->LightSaturation, Actor->LightBrightness);
+
+#if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
+			LightData->LightData1[i] = glm::vec4(RGBColor.X, RGBColor.Y, RGBColor.Z, Actor->LightCone);
+#else
+			LightData->LightData1[i] = glm::vec4(RGBColor.R, RGBColor.G, RGBColor.B, Actor->LightCone);
+#endif
+			LightData->LightData2[i] = glm::vec4(Actor->LightEffect, Actor->LightPeriod, Actor->LightPhase, Actor->LightRadius);
+			LightData->LightData3[i] = glm::vec4(Actor->LightType, Actor->VolumeBrightness, Actor->VolumeFog, Actor->VolumeRadius);
+
+#if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
+			LightData->LightData4[i] = glm::vec4(Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f));
+			LightData->LightData5[i] = glm::vec4(Actor->LightRadius * 10, 1.0, 0.0, 0.0);
+#else
+			LightData->LightData4[i] = glm::vec4(Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
+			LightData->LightData5[i] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
+#endif
+
+			CurrentLightToIndex.Set(LightList(i), static_cast<GLuint>(i));
+		}
+
+		LightInfoBuffer.Bind();
+		LightInfoBuffer.BufferData(true);
 	}
 
-	CurrentLightToIndex.Empty(); // done per frame.  the static part could be done per level, but this is easier and not really a problem.  The static lights are in the same order each time
-	NumLights = LightList.Num();
-	if (NumLights > MAX_LIGHTS)
-		NumLights = MAX_LIGHTS;
-
-	auto LightData = LightInfoBuffer.GetElementPtr(0);
-	for (INT i = 0; i < NumLights; i++)
+	if (CoronaScaling)
 	{
-		auto Actor = LightList(i);
-		LightData->LightPos[i] = glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
+		// record keeping for which lights emit coronas and lens flares.  This is used in DrawTile so we can shrink coronas based on distance
+		CoronaLights.Empty();
 
-		FPlane RGBColor = FGetHSV(Actor->LightHue, Actor->LightSaturation, Actor->LightBrightness);
+		const FVector CameraPos = Frame->Viewport->Actor
+			? Frame->Viewport->Actor->Location
+			: FVector(0, 0, 0);
 
-#if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
-		LightData->LightData1[i] = glm::vec4(RGBColor.X, RGBColor.Y, RGBColor.Z, Actor->LightCone);
-#else
-		LightData->LightData1[i] = glm::vec4(RGBColor.R, RGBColor.G, RGBColor.B, Actor->LightCone);
-#endif
-		LightData->LightData2[i] = glm::vec4(Actor->LightEffect, Actor->LightPeriod, Actor->LightPhase, Actor->LightRadius);
-		LightData->LightData3[i] = glm::vec4(Actor->LightType, Actor->VolumeBrightness, Actor->VolumeFog, Actor->VolumeRadius);
-		
-#if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
-		LightData->LightData4[i] = glm::vec4(Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f));
-		LightData->LightData5[i] = glm::vec4(Actor->LightRadius * 10, 1.0, 0.0, 0.0);
-#else
-		LightData->LightData4[i] = glm::vec4(Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
-		LightData->LightData5[i] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
-#endif
-		
-		CurrentLightToIndex.Set(LightList(i), static_cast<GLuint>(i));
-	}
+		FRotator& Rot = Frame->Viewport->Actor->Rotation;
+		//FVector Forward = Rot.Vector();
+		//FVector Up = (Rot + FRotator(0,16384,0)).Vector();
+		//FVector Right = (Rot + FRotator(16384,0,0)).Vector();
+		FVector Forward = Frame->Coords.ZAxis;
+		FVector Right = Frame->Coords.XAxis;
+		FVector Up = -Frame->Coords.YAxis;   // because YAxis is "down"
 
-	LightInfoBuffer.Bind();
-	LightInfoBuffer.BufferData(true);
+		//const FLOAT HFOV = Frame->Viewport->Actor->FovAngle * (PI / 180.f);
+		//const FLOAT Aspect = (FLOAT)Frame->X / (FLOAT)Frame->Y;
+		//const FLOAT VFOV = 2.f * atan(tan(HFOV * 0.5f) / Aspect);
+		const FLOAT VFOV = Frame->Viewport->Actor->FovAngle * (PI / 180.f);
+		const FLOAT Aspect = (FLOAT)Frame->X / (FLOAT)Frame->Y;
+		const FLOAT HFOV = 2.f * atan(tan(VFOV * 0.5f) / Aspect);
+
+		// Build frustum planes
+		FPlane FrustumPlanes[6];
+
+		FVector LeftNormal = (Forward * cos(HFOV * 0.5f) + Right * sin(HFOV * 0.5f)).UnsafeNormal();
+		FVector RightNormal = (Forward * cos(HFOV * 0.5f) - Right * sin(HFOV * 0.5f)).UnsafeNormal();
+		FVector TopNormal = (Forward * cos(VFOV * 0.5f) - Up * sin(VFOV * 0.5f)).UnsafeNormal();
+		FVector BottomNormal = (Forward * cos(VFOV * 0.5f) + Up * sin(VFOV * 0.5f)).UnsafeNormal();
+
+		FrustumPlanes[0] = FPlane(CameraPos, LeftNormal);
+		FrustumPlanes[1] = FPlane(CameraPos, RightNormal);
+		FrustumPlanes[2] = FPlane(CameraPos, TopNormal);
+		FrustumPlanes[3] = FPlane(CameraPos, BottomNormal);
+
+		const FLOAT NearDist = 0.f;
+		const FLOAT FarDist = 20000.f;
+
+		FrustumPlanes[4] = FPlane(CameraPos + Forward * NearDist, Forward);
+		FrustumPlanes[5] = FPlane(CameraPos + Forward * FarDist, -Forward);
+
+		// Collect corona lights in frustum
+		//for (INT i = 0; i < NumLights; i++)
+		//{
+		//	AActor* L = LightList(i);
+		// can't use LightList here because sometimes it skips lights that have had their brightness set to 0, but they can still have coronas/lens flares.  So we have to iterate over all actors and filter them again :(
+		for (INT i = 0; i < Level->Actors.Num(); ++i)
+		{
+			AActor* L = Level->Actors(i);
+
+			// Filter out invalid actors
+			if (!L || L->bDeleteMe)
+				continue;
+
+			// Filter out irrelevant lights
+			if (L->LightType == LE_None || L->LightRadius == 0)// || L->LightBrightness == 0)
+				continue;
+
+			//if (!L->bCorona && !L->bLensFlare) // not communicated to the renderer :(
+			//	continue;
+
+			const FVector& Pos = L->Location;
+
+			bool InFrustum = true;
+			for (int p = 0; p < 6; p++)
+			{
+				if (FrustumPlanes[p].PlaneDot(Pos) < 0.f)
+				{
+					InFrustum = false;
+					break;
+				}
+			}
+
+			if (!InFrustum)
+				continue;
+
+			// Project to screen space using UT99 projection
+			// World-space light position
+			FVector P = L->Location;
+
+			// 1) World -> view: same as DrawComplex
+			FVector V = P.TransformPointBy(Frame->Coords); // this is what you already do for geometry
+
+			// 2) View -> clip: use the same modelviewprojMat you send to the shader
+			const auto FrameState = FrameStateBuffer.GetElementPtr(0);
+			glm::vec4 viewPos(V.X, V.Y, V.Z, 1.0f);
+			glm::vec4 clipPos = FrameState->modelviewprojMat * viewPos;
+
+			// Behind camera or clipped
+			if (clipPos.w <= 0.0f)
+				continue;
+
+			// 3) Clip -> NDC
+			glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w; // [-1,1] in x,y,z
+
+			// 4) NDC -> normalized screen [0,1]
+			float sx = 0.5f * (ndc.x + 1.0f);
+			float sy = 0.5f * (1.0f - ndc.y); // flip Y for screen space
+
+			FCoronaLight C;
+			C.Actor = L;
+			C.ScreenX = sx;
+			C.ScreenY = sy;
+			C.Distance = Abs(V.Z);
+
+			CoronaLights.AddItem(C);
+		}
+	} // end if CoronaScaling
 
 	// Depth prepass into gbufferFbo (for SSAO / indirect illumination)
 	if ((AmbientOcclusion || IndirectIllumination) && !DepthPrepassDone && LastLevel && !LastLevel->IsEntry)
@@ -2832,6 +2950,7 @@ void UXOpenGLRenderDevice::Exit()
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("AmbientOcclusion"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(AmbientOcclusion)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("IndirectIllumination"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(IndirectIllumination)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("HDLightMap"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(HDLightMap)));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("CoronaScaling"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(CoronaScaling)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseAA"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseAA)));
 	//GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseAASmoothing"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseAASmoothing)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseTrilinear"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseTrilinear)));

@@ -434,6 +434,21 @@ bool BSPVisibilityRay(
     return !occluded;
 }
 
+inline FVector GammaLiftLum(const FVector& v, float gamma)
+{
+    // Perceptual luminance
+    float L = v.X * 0.299f + v.Y * 0.587f + v.Z * 0.114f;
+
+    // Gamma-lift luminance
+    float Lg = powf(L, 1.0f / gamma);
+
+    // Preserve chroma
+    float invL = (L > 0.0001f) ? (1.0f / L) : 0.0f;
+    FVector chroma = v * invL;
+
+    return chroma * Lg;
+}
+
 // build an occlusion map for a given surface
 FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     const TArray<AActor*>& Lights,
@@ -484,6 +499,7 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         );
 
         FVector Color = RGB * NdotL * Atten;
+        //Color = GammaLiftLum(Color, 2.0f);
 
         // Always accumulate unshadowed
         Unshadowed.X += Color.X;

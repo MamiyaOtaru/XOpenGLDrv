@@ -344,8 +344,14 @@ void main(void)
     float proximityFade = smoothstep(0.0, fadeWidth, diff);
 
     // additive fade
-    TotalColor.rgb *= proximityFade;
-    TotalColor.a = 1.0;
+    if ((DrawFlags & DF_Modulated) != DF_Modulated)
+    {
+      TotalColor.rgb *= proximityFade;
+    }
+    else
+    {    
+        TotalColor.a *= proximityFade;
+    }
   }
 
 

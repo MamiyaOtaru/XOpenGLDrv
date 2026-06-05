@@ -122,6 +122,97 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 
 	SetTexture(DiffuseTextureIndex, Info, PolyFlags, 0);
 
+	// --- Corona classification & matching ---
+	bool bIsCorona = (Z == 1.0f) &&
+		(PolyFlags & PF_Translucent) &&
+        (PolyFlags & PF_TwoSided) &&
+		!(PolyFlags & PF_Masked) &&
+        !(PolyFlags & PF_Modulated) &&
+        !(PolyFlags & PF_AlphaBlend);
+
+	if (Info.Texture)
+	{
+		const TCHAR* name = Info.Texture->GetName();
+
+		if (!appStrnicmp(name, TEXT("CHair"), 5))
+		{
+			bIsCorona = false;
+		}
+	}
+
+	float alpha = 1.0f;
+	if (CoronaScaling && bIsCorona && CoronaLights.Num() > 0)
+	{
+		// Convert tile center to normalized screen coords (0–1)
+		float CenterX = (X + XL * 0.5f) / Frame->X;
+		float CenterY = (Y + YL * 0.5f) / Frame->Y;
+
+		UXOpenGLRenderDevice::FCoronaLight* Best = nullptr;
+		float BestD2 = 1e9f;
+
+		for (INT i = 0; i < CoronaLights.Num(); ++i)
+		{
+			auto& L = CoronaLights(i);
+			float dx = L.ScreenX - CenterX;
+			float dy = L.ScreenY - CenterY;
+			float d2 = dx*dx + dy*dy;
+
+			if (d2 < BestD2)
+			{
+				BestD2 = d2;
+				Best   = &L;
+			}
+		}
+
+		if (BestD2 > .00001f)
+            return; // No corona is close enough to this tile to be worth scaling for
+
+		if (Best)
+		{
+			// Simple distance-based scale: closer = bigger, farther = smaller
+			float dist = Best->Distance;
+			float baseScale = 1.0f;
+			float minScale  = 0.1f; // fade out when very small
+			float maxScale  = 2.0f; // fade out when very large
+
+			float standardDistance = Max(1150 - XL, 300.0f); // distance at which the corona is drawn at normal size
+			// want it to be farther away for smaller ones though
+			float scale = baseScale * (standardDistance / (dist + 50.0f));
+
+			// Fade out when too small
+			if (scale < minScale)
+			{
+				alpha = scale / minScale;   // 1 -> 0
+			}
+			// Fade out when too large
+			if (scale > maxScale)
+			{
+				alpha = maxScale / scale;   // 1 -> 0
+			}
+			alpha = Clamp(alpha, 0.0f, 1.0f);
+
+			// Scale around center
+			float oldXL = XL;
+			float oldYL = YL;
+
+			XL *= scale;
+			YL *= scale;
+
+			X += (oldXL - XL) * 0.5f;
+			Y += (oldYL - YL) * 0.5f;
+		}
+	} // end if coronaScaling and this is a corona
+	if (bIsCorona) // per pixel mode is darker.  Lower their alpha more to compensate or they look very not transparent
+	{
+		// below less important if we adjust gamma of per pixel path, but still needs some tweaking
+		// need to lower alpha even if we don't scale
+		if (BumpMaps)
+		{
+			alpha *= 0.5f;
+		}
+		DrawColor *= alpha;
+	}
+
 	bool safeToReadDepth = !(PolyFlags & PF_Occlude);
 	if (safeToReadDepth && Z > 1.0f)
 	{
