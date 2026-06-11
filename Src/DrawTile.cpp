@@ -208,7 +208,7 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 		// need to lower alpha even if we don't scale
 		if (BumpMaps)
 		{
-			alpha *= 0.5f;
+			//alpha *= 0.5f;
 		}
 		DrawColor *= alpha;
 	}

@@ -541,18 +541,15 @@ vec2 ViewToUV(vec3 viewPos) {
 
     return 0.0;
 }*/
-
-vec3 GammaLift(vec3 v, float gamma)
-{
-    return pow(v, vec3(1.0 / gamma));
-}
-
-vec3 GammaLiftLum(vec3 v, float gamma)
-{
-    float L = dot(v, vec3(0.299, 0.587, 0.114));
-    float Lg = pow(L, 1.0 / gamma);
-    vec3 chroma = v / max(L, 0.0001);
-    return chroma * Lg;
+vec3 applyReinhard(vec3 color, float threshold) {
+    // Normalize the range down to a 0-1 baseline
+    vec3 normalized = color / vec3(threshold);
+    
+    // Apply the per-channel Reinhard curve: x / (x + 1)
+    vec3 curved = normalized / (normalized + vec3(1.0));
+    
+    // Scale back up to target ceiling
+    return curved * vec3(threshold);
 }
     )";
     Out << R"(
@@ -840,10 +837,22 @@ return;
 
       //float NormalLightRadius  = LightData5[i].x;
       // attenuation that fades out by radius.  worldLightRadius looks better here
-      float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
-      float attenuation = (1.0 - x) / (1.0 + 4.0 * x*x);
+      //float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
+      //float attenuation = (1.0 - x) / (1.0 + 4.0 * x*x);
 
-      // HWLighting style attenuation
+      // more closely match liner (slightly brighter)
+      //float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
+      //float attenuation = (1.0 - x) * (1.0 + x - x*x);
+
+      // literally linear
+      float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
+      float attenuation = 1.0 - x;
+
+      // quadratic flat top - brighter all around, still gets to 0 at radius
+      //float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
+      //float attenuation = 1.0 - x * x;
+
+      // HWLighting style attenuation (super bright in the middle, rapid drop, still minlight at radius
       //float RWorldLightRadius = WorldLightRadius * WorldLightRadius;
       //float b = WorldLightRadius / (RWorldLightRadius * MinLight);
       //float attenuation = WorldLightRadius / (dist + b * dist * dist);
@@ -851,11 +860,23 @@ return;
       // Light color + brightness
       vec3 rawColor = clamp(vec3(LightData1[i].x, LightData1[i].y, LightData1[i].z), 0.0, 1.0);
       float lum = dot(rawColor, vec3(0.299, 0.587, 0.114));
-      //vec3 desatColor = mix(rawColor, vec3(lum), 0.15); // not desaturating looks better in most cases, and it also makes the specular term look better without tweaking the exponent and intensity.
+    
+      float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0
+      float brightnessFactor = max(lum, brightness); // so in UT this == lum, but in Unreal it allows the light's brightness to boost the diffuse and specular even if the color is dark
 
-      float brightness = LightData5[i].z / 255.0;
-      float brightnessFactor = max(lum, brightness);
-        
+      /*
+      // Determine how highly saturated the light color is.
+      // Pure colors yield a high saturationMeasure; white yields 0.0.
+      float maxChannel = max(rawColor.r, max(rawColor.g, rawColor.b));
+      float saturationMeasure = maxChannel - lum;
+      // tunable desaturation strength:
+      // 1.0 = much less eyebleedy than no desaturation.
+      // 1.5 = Pushes heavily into vanilla "chalky/pastel" territory
+      // 2.0 = Aggressive desaturation
+      float desatStrength = 1.12;
+      rawColor = mix(rawColor, vec3(lum), clamp(saturationMeasure * desatStrength, 0.0, 0.85)); // desaturate very saturated colors
+     */
+
       // Choose normal / coordinate space based on whether we have a normal map
       vec3 N;
       vec3 L;
@@ -907,21 +928,26 @@ return;
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {
-      float lmIntensity = dot(LightColor.rgb * Occlusion.rgb, vec3(0.299, 0.587, 0.114));
-      totalSpec *= lmIntensity; // attenuate specular by the lightmap
+      totalStaticLight *= (LightMapIntensity * 1.5); // vanilla boosts 2 X LightMapIntensity.  We do a little less or it ends up too bright
+      totalSpec *= (LightMapIntensity); // give specular less of a boost
 
-      //totalStaticLight = clamp(totalStaticLight, 0.0, 1.0);
-      //float maxC = max(max(totalStaticLight.r, totalStaticLight.g), totalStaticLight.b);
-      //if (maxC > 1.0)
-      //    totalStaticLight /= maxC;
-      totalStaticLight = GammaLiftLum(totalStaticLight, 2.8).rgb; 
-      //totalDynamicLight = GammaLift(totalDynamicLight, 1.5).rgb; 
+      float specThreshold = 1.0; // for specular, we want to allow it to be as bright as the light color, but not brighter
+      float specMaxC = max(max(totalSpec.r, totalSpec.g), totalSpec.b);
+      if (specMaxC > specThreshold)
+          totalSpec *= (specThreshold / specMaxC);
 
-      vec3 minLight = min(LightColor.rgb, Occlusion.rgb);
-      float bias = 0.95f; // 0.0 = all vanilla, 1.0 = all HD. 0.95 keeps shadows pretty dark where only HD has them while still showing the originals
-      vec3 blendedLM = mix(LightColor.rgb, minLight.rgb, bias); // lerp
-      //vec3 blendedLM = LightColor.rgb * Occlusion.rgb; // multiply
-      //vec3 blendedLM = ((Occlusion.rgb + LightColor.rgb) / 2); // average
+      float threshold = 1.34; // must match the GPU_Threshold in the CPU occlusion calculator
+#if OPT_HDLightMap
+      // flat clamp to maintain potential energy in all channels (match occlusion generation on CPU)
+      totalStaticLight = clamp(totalStaticLight, vec3(0.0), vec3(threshold));
+
+      // HD shadows with vanilla shadow-strength preservation
+      vec3 blendedLM = min(Occlusion.rgb, LightColor.rgb);
+#else
+      // bring down total via reinhard before multiplying in vanilla colormap
+      totalStaticLight = applyReinhard(totalStaticLight, threshold);
+      vec3 blendedLM = LightColor.rgb;
+#endif
 #if OPT_AmbientOcclusion
       if ((DrawFlags & DF_AmbientOcclusion) == DF_AmbientOcclusion) {
         // Sample SSAO (0 = dark, 1 = no occlusion)
@@ -929,13 +955,10 @@ return;
         blendedLM *= AO * AO * AO * AO * AO;// * AO;
       }
 #endif
-      vec3 totalLight = totalStaticLight * blendedLM + totalDynamicLight;
-      totalLight = clamp(totalLight, 0.0, 1.0);
-      float maxC = max(max(totalLight.r, totalLight.g), totalLight.b);
-      if (maxC > 1.0)
-          totalLight /= maxC;
-      //totalLight = GammaLiftLum(totalLight, 2.8).rgb; // blows out shadows
-      //totalSpec = GammaLiftLum(totalSpec, 1.8).rgb; 
+      float lmIntensity = dot(blendedLM, vec3(0.299, 0.587, 0.114));
+      totalSpec *= lmIntensity;
+      totalStaticLight = totalStaticLight * blendedLM;
+      vec3 totalLight = totalStaticLight + totalDynamicLight;
 
       LightColor.rgb = totalLight;
       
@@ -976,9 +999,7 @@ return;
 
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
     TotalColor = clamp(TotalColor * LightColor + vec4(totalSpec.rgb, 1.0), 0.0, 1.0);
-#if OPT_BumpMaps
-  //TotalColor.rgb = GammaLift(TotalColor.rgb, 1.8).rgb; // blows out textures
-#endif
+
   TotalColor += FogColor;
 
 #if OPT_DistanceFog
@@ -1062,8 +1083,8 @@ return;
     float spriteL = n / (f - spriteZ * (f - n));
     float diff = sceneL - spriteL;
 
-    // 2. Linear Scaling with a "Floor"
-    // 0.001 is your "Minimum Thickness" (about 65 world units)
+    // Linear Scaling with a "Floor"
+    // 0.001 is "Minimum Thickness" (about 65 world units)
     // + 0.01 * spriteL makes it get even THICKER as it moves away
     float fadeWidth = 0.001 + (0.01 * spriteL); 
 
@@ -1072,10 +1093,6 @@ return;
     // alpha fade
     TotalColor.rgb *= proximityFade;
   }    
-
-#if OPT_BumpMaps
-  //TotalColor.rgb = GammaLiftLum(TotalColor.rgb, 1.8); // blows out everything
-#endif
 
 #if OPT_SimulateMultiPass
   FragColor = TotalColor;

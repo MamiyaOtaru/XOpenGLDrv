@@ -487,8 +487,14 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         if (NdotL <= 0.f)
             continue;
 
+        // original formula with inverse-quadratic falloff, which is more physically correct but leads to very dark shadows
+        //float x = Clamp(Dist / Radius, 0.0f, 1.0f);
+        //float Atten = (1.f - x) / (1.f + 4.f * x * x);
+        //if (Atten <= 0.f)
+        //    continue;
+        // Match the GPU's linear falloff
         float x = Clamp(Dist / Radius, 0.0f, 1.0f);
-        float Atten = (1.f - x) / (1.f + 4.f * x * x);
+        float Atten = 1.0f - x; 
         if (Atten <= 0.f)
             continue;
 
@@ -498,8 +504,22 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
             Light->LightBrightness
         );
 
+        /*
+        // --- MIRROR SHADER DESATURATION PASS (DIRECTLY ON LIGHT RGB) ---
+        float lum = 0.299f * RGB.X + 0.587f * RGB.Y + 0.114f * RGB.Z;
+        float maxChannel = Max(RGB.X, Max(RGB.Y, RGB.Z));
+        float saturationMeasure = maxChannel - lum;
+        float desatStrength = 1.12f;
+        float finalMix = Clamp(saturationMeasure * desatStrength, 0.0f, 0.85f);
+        // Apply the mix back directly to the raw light components
+        RGB.X = Lerp(RGB.X, lum, finalMix);
+        RGB.Y = Lerp(RGB.Y, lum, finalMix);
+        RGB.Z = Lerp(RGB.Z, lum, finalMix);
+        // ---------------------------------------------------------------
+        */
+
+        // Now apply spatial factors to the cleanly desaturated light color
         FVector Color = RGB * NdotL * Atten;
-        //Color = GammaLiftLum(Color, 2.0f);
 
         // Always accumulate unshadowed
         Unshadowed.X += Color.X;
@@ -534,14 +554,98 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
 
     // Compute ratio per channel
     const float eps = 0.0001f;
-    float r = Shadowed.X / (Unshadowed.X + eps);
-    float g = Shadowed.Y / (Unshadowed.Y + eps);
-    float b = Shadowed.Z / (Unshadowed.Z + eps);
 
+    // Apply the global 1.5xLightMapIntensity engine intensity boost to the sums
+    Unshadowed.X *= 1.5f * 2;   Unshadowed.Y *= 1.5f * 2;   Unshadowed.Z *= 1.5f * 2;
+    Shadowed.X   *= 1.5f * 2;   Shadowed.Y   *= 1.5f * 2;   Shadowed.Z   *= 1.5f * 2;
+
+    float GPU_Threshold = 1.34f; // <- must match the clamp in the shader!
+    // Apply flat Ceiling Pass to total light to preserve channels potential intensity
+    // apply color preserving clamp to final, which is where we want to end up
+    if (Unshadowed.X > GPU_Threshold)
+        Unshadowed.X = GPU_Threshold;
+    if (Unshadowed.Y > GPU_Threshold)
+        Unshadowed.Y = GPU_Threshold;
+    if (Unshadowed.Z > GPU_Threshold)
+        Unshadowed.Z = GPU_Threshold;
+    
+    
+    /*float maxUnshadowed = Max(Unshadowed.X, Max(Unshadowed.Y, Unshadowed.Z));
+    if (maxUnshadowed > GPU_Threshold) {
+        Unshadowed.X *= (GPU_Threshold / maxUnshadowed);
+        Unshadowed.Y *= (GPU_Threshold / maxUnshadowed);
+        Unshadowed.Z *= (GPU_Threshold / maxUnshadowed);
+    }*/
+
+    /*
+    float maxShadowed = Max(Shadowed.X, Max(Shadowed.Y, Shadowed.Z));
+    if (maxShadowed > GPU_Threshold) {
+        Shadowed.X *= (GPU_Threshold / maxShadowed);
+        Shadowed.Y *= (GPU_Threshold / maxShadowed);
+        Shadowed.Z *= (GPU_Threshold / maxShadowed);
+    }*/
+
+    // Apply independent stepped linear curve per-channel to the shadowed final target
+    /*float alpha = GPU_Threshold - linearLimit;
+    float linearLimit = 1.0f; // Bending starts at 1.0f
+    // Lambda helper to process each FPlane channel in isolation
+    auto clampChannel = [&](float val) {
+        if (val <= linearLimit) return val;
+        float numerator = val - linearLimit;
+        float denominator = 1.0f + (numerator / alpha);
+        return linearLimit + (numerator / denominator);
+    };*/
+    auto clampChannel = [&](float val) {
+        // Standard x / (x + 1) normalized to the 1.34 ceiling
+        float normalized = val / GPU_Threshold;
+        float curved = normalized / (normalized + 1.0f);
+        return curved * GPU_Threshold;
+    };
+    /*auto clampChannel = [&](float val) {
+        if (val <= 0.0001f) return 0.0f;
+        // Extended Reinhard: (x * (1 + x / (max*max))) / (1 + x)
+        // This squashes infinitely to GPU_Threshold but protects midtone brightness.  lose the highlights in dm-grit though
+        float maxSq = GPU_Threshold * GPU_Threshold;
+        return (val * (1.0f + (val / maxSq))) / (1.0f + (val / GPU_Threshold));
+    };*/
+    /*auto clampChannel = [&](float val) {
+        if (val <= linearLimit) return val;
+        float excess = val - linearLimit;
+        // Uses a square root curve to smoothly bend the overbright highlights.  also loses highlights in grit
+        return linearLimit + alpha * (excess / std::sqrt(alpha * alpha + excess * excess));
+    };*/
+
+    Shadowed.X = clampChannel(Shadowed.X);
+    Shadowed.Y = clampChannel(Shadowed.Y);
+    Shadowed.Z = clampChannel(Shadowed.Z);
+
+    // Now compute final color-accurate RGB ratio safely
+    float FinalR = Shadowed.X / (Unshadowed.X + eps);
+    float FinalG = Shadowed.Y / (Unshadowed.Y + eps);
+    float FinalB = Shadowed.Z / (Unshadowed.Z + eps);
+
+    // Clamp the final ratios to standard 0.0-1.0 space for texture packing
+    FinalR = Clamp(FinalR, 0.0f, 1.0f);
+    FinalG = Clamp(FinalG, 0.0f, 1.0f);
+    FinalB = Clamp(FinalB, 0.0f, 1.0f);
+    
+    /*
+    float FinalR = Shadowed.X / (Unshadowed.X + eps);
+    float FinalG = Shadowed.Y / (Unshadowed.Y + eps);
+    float FinalB = Shadowed.Z / (Unshadowed.Z + eps);
+
+    // FALLBACK CEILING PROTECTION
+    // If the room blows past 1.34, compress the ratio toward 1.0 (less shadow)
+    // so the shadow math matches the GPU's headroom.
+    float GPU_Threshold = 1.34f; // <- must match the clamp in the shader!
+    if (Unshadowed.X > GPU_Threshold) FinalR = Clamp(1.0f - (1.0f - FinalR) * (GPU_Threshold / Unshadowed.X), 0.0f, 1.0f);
+    if (Unshadowed.Y > GPU_Threshold) FinalG = Clamp(1.0f - (1.0f - FinalG) * (GPU_Threshold / Unshadowed.Y), 0.0f, 1.0f);
+    if (Unshadowed.Z > GPU_Threshold) FinalB = Clamp(1.0f - (1.0f - FinalB) * (GPU_Threshold / Unshadowed.Z), 0.0f, 1.0f);
+    */
     // Optional alpha = luminance
-    float a = 0.2126f*r + 0.7152f*g + 0.0722f*b;
+    float a = 0.2126f*FinalR + 0.7152f*FinalG + 0.0722f*FinalB;
 
-    return FPlane(r, g, b, a);
+    return FPlane(FinalR, FinalG, FinalB, a);
 }
 
 // UNUSED
@@ -1530,7 +1634,7 @@ void UXOpenGLRenderDevice::BuildingPoll()
             //DumpAtlasToDDS(Atlas, AtlasWidth, AtlasHeight, AtlasPNG, EDDSType::BC1);
             DumpAtlasMetadata(PendingLightmaps, AtlasMeta);
             AtlasFinished.store(true, std::memory_order_release);
-
+           
             // Now upload the texture
             glGenTextures(1, &GStaticLightmapAtlasTex);
             glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
@@ -1552,7 +1656,7 @@ void UXOpenGLRenderDevice::BuildingPoll()
                 GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
                 glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
             }
-
+            
             GOcclusionState = EOcclusionState::Ready;
             StatusMessage   = TEXT("");
 
@@ -1682,6 +1786,8 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
 
     // Load PNG as float RGBA via stb_image (or your equivalent)
     int W = 0, H = 0, Comp = 0;
+    // FORCE stb_image to treat the PNG bytes as pure linear data, skipping the 2.2 gamma crash
+    stbi_ldr_to_hdr_gamma(1.0f);
     float* Pixels = stbi_loadf(TCHAR_TO_ANSI(*AtlasPNG), &W, &H, &Comp, 4);
     if (!Pixels)
     {

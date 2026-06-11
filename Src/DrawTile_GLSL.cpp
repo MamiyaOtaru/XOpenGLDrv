@@ -350,6 +350,7 @@ void main(void)
     }
     else
     {    
+        // pretty much rocket secondary smoke trail
         TotalColor.a *= proximityFade;
     }
   }

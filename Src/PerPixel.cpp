@@ -742,7 +742,7 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     Add(TEXT("DM-Deck16]["), 25);
     Add(TEXT("DM-Fetid"), 25);
     Add(TEXT("DM-Fractal"), 25);
-    Add(TEXT("DM-Gothic"), 25);
+    Add(TEXT("DM-Gothic"), 45);
     Add(TEXT("DM-Grinder"), 65);                // "heavy metal grinder"
     Add(TEXT("DM-Grit-TOURNEY"), 75);           // "grit"
     Add(TEXT("DM-HealPod]["), 35);              // "healing pod ]["
@@ -780,7 +780,7 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     Add(TEXT("DOM-Lament]["), 55);              // "lament ]["
     Add(TEXT("DOM-Leadworks"), 95);             // "southside leadworks"
     Add(TEXT("DOM-MetalDream"), 45);            // "metal dream"
-    Add(TEXT("DOM-Olden"), 25);
+    Add(TEXT("DOM-Olden"), 45);
     Add(TEXT("DOM-Sesmar"), 55);                // "tomb of sesmar"
     Add(TEXT("DOM-Tutorial"), 25);
     Add(TEXT("DOM-WolfsBay"), 45);              // "wolf's bay"
