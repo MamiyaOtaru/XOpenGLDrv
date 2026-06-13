@@ -487,14 +487,24 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         if (NdotL <= 0.f)
             continue;
 
-        // original formula with inverse-quadratic falloff, which is more physically correct but leads to very dark shadows
+        // my original formula with inverse-quadratic falloff, which is more physically correct but leads to very dark shadows
         //float x = Clamp(Dist / Radius, 0.0f, 1.0f);
         //float Atten = (1.f - x) / (1.f + 4.f * x * x);
-        //if (Atten <= 0.f)
-        //    continue;
+
+        // more closely match linear
+        //float x = Clamp(Dist / Radius, 0.0f, 1.0f);
+        //float Atten = (1.0 - x) * (1.0 + x - x*x);
+        
+        // match the "hardware" path in Unreal
+        /*float RWorldLightRadius = Radius * Radius;
+        float b = Radius / (RWorldLightRadius * .05f);
+        float Atten = Radius / (Dist + b * Dist * Dist);
+        Atten -= 0.05f;*/
+
         // Match the GPU's linear falloff
         float x = Clamp(Dist / Radius, 0.0f, 1.0f);
-        float Atten = 1.0f - x; 
+        float Atten = 1.0f - x;
+
         if (Atten <= 0.f)
             continue;
 
@@ -554,7 +564,7 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
 
     // Compute ratio per channel
     const float eps = 0.0001f;
-
+    
     // Apply the global 1.5xLightMapIntensity engine intensity boost to the sums
     Unshadowed.X *= 1.5f * 2;   Unshadowed.Y *= 1.5f * 2;   Unshadowed.Z *= 1.5f * 2;
     Shadowed.X   *= 1.5f * 2;   Shadowed.Y   *= 1.5f * 2;   Shadowed.Z   *= 1.5f * 2;
@@ -568,52 +578,13 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         Unshadowed.Y = GPU_Threshold;
     if (Unshadowed.Z > GPU_Threshold)
         Unshadowed.Z = GPU_Threshold;
-    
-    
-    /*float maxUnshadowed = Max(Unshadowed.X, Max(Unshadowed.Y, Unshadowed.Z));
-    if (maxUnshadowed > GPU_Threshold) {
-        Unshadowed.X *= (GPU_Threshold / maxUnshadowed);
-        Unshadowed.Y *= (GPU_Threshold / maxUnshadowed);
-        Unshadowed.Z *= (GPU_Threshold / maxUnshadowed);
-    }*/
 
-    /*
-    float maxShadowed = Max(Shadowed.X, Max(Shadowed.Y, Shadowed.Z));
-    if (maxShadowed > GPU_Threshold) {
-        Shadowed.X *= (GPU_Threshold / maxShadowed);
-        Shadowed.Y *= (GPU_Threshold / maxShadowed);
-        Shadowed.Z *= (GPU_Threshold / maxShadowed);
-    }*/
-
-    // Apply independent stepped linear curve per-channel to the shadowed final target
-    /*float alpha = GPU_Threshold - linearLimit;
-    float linearLimit = 1.0f; // Bending starts at 1.0f
-    // Lambda helper to process each FPlane channel in isolation
-    auto clampChannel = [&](float val) {
-        if (val <= linearLimit) return val;
-        float numerator = val - linearLimit;
-        float denominator = 1.0f + (numerator / alpha);
-        return linearLimit + (numerator / denominator);
-    };*/
     auto clampChannel = [&](float val) {
         // Standard x / (x + 1) normalized to the 1.34 ceiling
         float normalized = val / GPU_Threshold;
         float curved = normalized / (normalized + 1.0f);
         return curved * GPU_Threshold;
     };
-    /*auto clampChannel = [&](float val) {
-        if (val <= 0.0001f) return 0.0f;
-        // Extended Reinhard: (x * (1 + x / (max*max))) / (1 + x)
-        // This squashes infinitely to GPU_Threshold but protects midtone brightness.  lose the highlights in dm-grit though
-        float maxSq = GPU_Threshold * GPU_Threshold;
-        return (val * (1.0f + (val / maxSq))) / (1.0f + (val / GPU_Threshold));
-    };*/
-    /*auto clampChannel = [&](float val) {
-        if (val <= linearLimit) return val;
-        float excess = val - linearLimit;
-        // Uses a square root curve to smoothly bend the overbright highlights.  also loses highlights in grit
-        return linearLimit + alpha * (excess / std::sqrt(alpha * alpha + excess * excess));
-    };*/
 
     Shadowed.X = clampChannel(Shadowed.X);
     Shadowed.Y = clampChannel(Shadowed.Y);
@@ -629,19 +600,6 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     FinalG = Clamp(FinalG, 0.0f, 1.0f);
     FinalB = Clamp(FinalB, 0.0f, 1.0f);
     
-    /*
-    float FinalR = Shadowed.X / (Unshadowed.X + eps);
-    float FinalG = Shadowed.Y / (Unshadowed.Y + eps);
-    float FinalB = Shadowed.Z / (Unshadowed.Z + eps);
-
-    // FALLBACK CEILING PROTECTION
-    // If the room blows past 1.34, compress the ratio toward 1.0 (less shadow)
-    // so the shadow math matches the GPU's headroom.
-    float GPU_Threshold = 1.34f; // <- must match the clamp in the shader!
-    if (Unshadowed.X > GPU_Threshold) FinalR = Clamp(1.0f - (1.0f - FinalR) * (GPU_Threshold / Unshadowed.X), 0.0f, 1.0f);
-    if (Unshadowed.Y > GPU_Threshold) FinalG = Clamp(1.0f - (1.0f - FinalG) * (GPU_Threshold / Unshadowed.Y), 0.0f, 1.0f);
-    if (Unshadowed.Z > GPU_Threshold) FinalB = Clamp(1.0f - (1.0f - FinalB) * (GPU_Threshold / Unshadowed.Z), 0.0f, 1.0f);
-    */
     // Optional alpha = luminance
     float a = 0.2126f*FinalR + 0.7152f*FinalG + 0.0722f*FinalB;
 

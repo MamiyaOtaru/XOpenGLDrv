@@ -1894,13 +1894,104 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		if (NumLights > MAX_LIGHTS)
 			NumLights = MAX_LIGHTS;
 
+		FLOAT Time = Frame->Viewport->Actor->Level->TimeSeconds;
 		auto LightData = LightInfoBuffer.GetElementPtr(0);
 		for (INT i = 0; i < NumLights; i++)
 		{
 			auto Actor = LightList(i);
 			LightData->LightPos[i] = glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
 
-			FPlane RGBColor = FGetHSV(Actor->LightHue, Actor->LightSaturation, Actor->LightBrightness);
+			FLOAT FlickerScale = 1.0f;
+
+			// Enforce Stijn's frame-independent frequency tracking constants
+			// 10.24f maps the time cycle cleanly to the engine's 256-unit internal cycle rate
+			FLOAT SafePeriod = (Actor->LightPeriod == 0) ? 32.0f : (FLOAT)Actor->LightPeriod;
+			FLOAT FloatPhase = (FLOAT)Actor->LightPhase;
+
+			// Convert the 0-255 phase byte into a clean canonical radian offset
+			FLOAT RadianPhase = (FloatPhase / 256.0f) * 6.2831853f;
+
+			// The precise engine scale multiplier to match the Gouraud loop rate
+			FLOAT EngineSpeedFactor = (35.0f * 6.2831853f) / 32.0f; // Evaluates to ~6.87223
+
+			switch (Actor->LightType)
+			{
+				case 0: // LT_None
+					FlickerScale = 0.0f;
+					break;
+
+				case 2: // LT_Pulse
+				{
+					// Restored exact alignment with the Gouraud lightmap pipeline speed
+					FLOAT WaveAngle = (Time * (32.0f / SafePeriod) * EngineSpeedFactor) + RadianPhase;
+					FlickerScale = 0.5f + 0.5f * appSin(WaveAngle);
+					break;
+				}
+
+				case 3: // LT_Blink
+				{
+					FLOAT BlinkAngle = (Time * (32.0f / SafePeriod) * (EngineSpeedFactor * 0.5f)) + RadianPhase;
+					FlickerScale = (appFmod(BlinkAngle, 6.2831853f) > 3.14159265f) ? 1.0f : 0.0f;
+					break;
+				}
+
+				case 4: // LT_Flicker
+				{
+					// 1. The exact 256-step byte lookup table used by Unreal Engine 1 for LT_Flicker
+					// 255 = Full Brightness, 0 = Off.
+					static const BYTE FlickerTable[256] = {
+						255,   0, 255, 255,   0,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0, 255,
+						255, 255,   0,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
+						  0, 255, 255,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0,   0, 255,   0,
+						255, 255, 255,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
+						255,   0, 255, 255,   0,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0, 255,
+						255, 255,   0,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
+						  0, 255, 255,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0,   0, 255,   0,
+						255, 255, 255,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
+						255,   0, 255, 255,   0,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0, 255,
+						255, 255,   0,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
+						  0, 255, 255,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0,   0, 255,   0,
+						255, 255, 255,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
+						255,   0, 255, 255,   0,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0, 255,
+						255, 255,   0,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
+						  0, 255, 255,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0,   0, 255,   0,
+						255, 255, 255,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255
+					};
+
+					// 2. Compute the exact 35Hz engine tick index
+					INT TickStep = appFloor(Time * 35.0f);
+        
+					// 3. Stagger the starting index using the light's actual FloatPhase byte
+					INT TableIndex = (TickStep + (INT)FloatPhase) % 256;
+        
+					// 4. Map the table byte (0 or 255) down to your expected 0.15 to 1.0 float scale
+					FlickerScale = (FlickerTable[TableIndex] > 128) ? 1.0f : 0.15f;
+					break;
+				}
+
+				case 5: // LT_Strobe
+				{
+					FLOAT StrobeVal = (Time * (32.0f / SafePeriod) * (EngineSpeedFactor * 2.0f)) + RadianPhase;
+					FLOAT StrobeFract = StrobeVal - appFloor(StrobeVal);
+					FlickerScale = (StrobeFract > 0.5f) ? 1.0f : 0.0f;
+					break;
+				}
+
+				case 7: // LT_SubtlePulse
+				{
+					FLOAT WaveAngle = (Time * (32.0f / SafePeriod) * EngineSpeedFactor) + RadianPhase;
+					FlickerScale = 0.85f + 0.15f * appSin(WaveAngle);
+					break;
+				}
+
+				default:
+					FlickerScale = 1.0f;
+					break;
+			}
+
+			// Convert back to Byte
+			BYTE AnimatedBrightness = (BYTE)Clamp(appRound((FLOAT)Actor->LightBrightness * FlickerScale), 0, 255);
+			FPlane RGBColor = FGetHSV(Actor->LightHue, Actor->LightSaturation, AnimatedBrightness);// Actor->LightBrightness);
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
 			LightData->LightData1[i] = glm::vec4(RGBColor.X, RGBColor.Y, RGBColor.Z, Actor->LightCone);

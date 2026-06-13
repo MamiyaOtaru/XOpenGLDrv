@@ -853,15 +853,17 @@ return;
       //float attenuation = 1.0 - x * x;
 
       // HWLighting style attenuation (super bright in the middle, rapid drop, still minlight at radius
-      //float RWorldLightRadius = WorldLightRadius * WorldLightRadius;
-      //float b = WorldLightRadius / (RWorldLightRadius * MinLight);
-      //float attenuation = WorldLightRadius / (dist + b * dist * dist);
+      /*float RWorldLightRadius = WorldLightRadius * WorldLightRadius;
+      float b = WorldLightRadius / (RWorldLightRadius * MinLight);
+      float attenuation = WorldLightRadius / (dist + b * dist * dist);
+      attenuation -= .05;
+      attenuation = clamp(attenuation, 0, 5);*/
 
       // Light color + brightness
       vec3 rawColor = clamp(vec3(LightData1[i].x, LightData1[i].y, LightData1[i].z), 0.0, 1.0);
       float lum = dot(rawColor, vec3(0.299, 0.587, 0.114));
     
-      float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0
+      float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0.  (unless I pass Actor->LightBrightness like Unreal path does.  Why not?)
       float brightnessFactor = max(lum, brightness); // so in UT this == lum, but in Unreal it allows the light's brightness to boost the diffuse and specular even if the color is dark
 
       /*
@@ -929,22 +931,43 @@ return;
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {
       totalStaticLight *= (LightMapIntensity * 1.5); // vanilla boosts 2 X LightMapIntensity.  We do a little less or it ends up too bright
+      totalDynamicLight *= (LightMapIntensity * 1.5);      
       totalSpec *= (LightMapIntensity); // give specular less of a boost
 
       float specThreshold = 1.0; // for specular, we want to allow it to be as bright as the light color, but not brighter
-      float specMaxC = max(max(totalSpec.r, totalSpec.g), totalSpec.b);
-      if (specMaxC > specThreshold)
-          totalSpec *= (specThreshold / specMaxC);
+      totalSpec = applyReinhard(totalSpec, specThreshold);
 
       float threshold = 1.34; // must match the GPU_Threshold in the CPU occlusion calculator
 #if OPT_HDLightMap
       // flat clamp to maintain potential energy in all channels (match occlusion generation on CPU)
       totalStaticLight = clamp(totalStaticLight, vec3(0.0), vec3(threshold));
 
-      // HD shadows with vanilla shadow-strength preservation
-      vec3 blendedLM = min(Occlusion.rgb, LightColor.rgb);
+      // HD shadows only
+      //vec3 blendedLM = Occlusion.rgb;
+
+      // HD shadows with vanilla shadow-strength preservation (wrecks color a bit)
+      //vec3 blendedLM = min(Occlusion.rgb, LightColor.rgb);
+
+      /*
+      // HD shadows with vanilla color preservation (tosses vanilla shadows)
+      vec3 blendedLM = Occlusion.rgb;
+      if (maxChan > 0) {
+        blendedLM *= (LightColor.rgb / maxChan);
+      }*/
+
+      // preserve color from both HD and vanilla and use the darker shadow term
+      float HDShadow  = max(Occlusion.r, max(Occlusion.g, Occlusion.b));
+      float VanShadow = max(LightColor.r, max(LightColor.g, LightColor.b));
+      vec3 HDHue     = (HDShadow  > 0) ? (Occlusion.rgb / HDShadow)  : vec3(1.0);
+      vec3 VanHue    = (VanShadow > 0) ? (LightColor.rgb / VanShadow) : vec3(1.0);
+      // Final hue = HD hue * vanilla hue
+      vec3 finalHue = HDHue * VanHue;
+      // Choose shadow term
+      float finalShadow = (VanShadow < HDShadow) ? VanShadow : HDShadow;
+      // Final
+      vec3 blendedLM = finalHue * finalShadow;
 #else
-      // bring down total via reinhard before multiplying in vanilla colormap
+      // bring down total via reinhard before multiplying in vanilla colormap (and so we at least get the albeit less accurate vanilla shadows)
       totalStaticLight = applyReinhard(totalStaticLight, threshold);
       vec3 blendedLM = LightColor.rgb;
 #endif
@@ -961,6 +984,7 @@ return;
       vec3 totalLight = totalStaticLight + totalDynamicLight;
 
       LightColor.rgb = totalLight;
+      //LightColor.rgb = applyReinhard(LightColor.rgb, 1.34);
       
       // lighting debug
       /*if (true) {
@@ -998,7 +1022,10 @@ return;
 #endif
 
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
+  {
+    //TotalColor.rgb = applyReinhard(TotalColor.rgb * LightColor.rgb + totalSpec.rgb, 1.34);
     TotalColor = clamp(TotalColor * LightColor + vec4(totalSpec.rgb, 1.0), 0.0, 1.0);
+  }
 
   TotalColor += FogColor;
 

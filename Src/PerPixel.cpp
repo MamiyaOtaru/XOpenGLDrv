@@ -80,7 +80,7 @@ inline bool IsDynamicLight(AActor* A)
         return true;
 
     // Animated light types are dynamic
-	switch (A->LightType)
+	/*switch (A->LightType)
 	{
 		case LT_Pulse:
 		case LT_Blink:
@@ -95,7 +95,7 @@ inline bool IsDynamicLight(AActor* A)
 		case LT_BackdropLight:
 		default:
 			break;         // not dynamic
-	}
+	}*/
 
     return false;
 }
@@ -272,6 +272,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 
     FBspSurf bspSurf = Level->Model->Surfs(iSurf);
     bool twoSided = (bspSurf.PolyFlags & PF_TwoSided);
+    bool specialLit = (bspSurf.PolyFlags & PF_SpecialLit);
 
     TArray<RankedLight> Ranked;
     Ranked.Reserve(Level->Actors.Num());
@@ -283,6 +284,11 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
     {
         AActor* L = Level->Actors(i);
         if (!L || !IsStaticLight(L))
+            continue;
+
+        // surfaces marked specialLit only receive lighting from actors with bSpecialLit=1
+        bool specialLight = L->bSpecialLit == 1;
+        if (specialLit != specialLight)
             continue;
 
         if (!DummyLight)
