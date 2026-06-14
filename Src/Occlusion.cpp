@@ -508,11 +508,21 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         if (Atten <= 0.f)
             continue;
 
-        FPlane RGB = FGetHSV(
-            Light->LightHue,
-            Light->LightSaturation,
-            Light->LightBrightness
-        );
+        FPlane RGB;
+        if (Light->LightType == LT_TexturePaletteOnce || Light->LightType == LT_TexturePaletteLoop)
+        {
+            // For texture lights, just use a shade of white into which we'll mix the vanilla colormap (which this takes over full responsibility for the final color)
+            FLOAT AnimatedBrightness = Light->LightBrightness;// *0.9f;
+            RGB = FPlane(AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, 1.0f);
+        }
+        else
+        {
+            RGB = FGetHSV(
+                Light->LightHue,
+                Light->LightSaturation,
+                Light->LightBrightness
+            );
+        }
 
         /*
         // --- MIRROR SHADER DESATURATION PASS (DIRECTLY ON LIGHT RGB) ---
@@ -566,8 +576,10 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     const float eps = 0.0001f;
     
     // Apply the global 1.5xLightMapIntensity engine intensity boost to the sums
-    Unshadowed.X *= 1.5f * 2;   Unshadowed.Y *= 1.5f * 2;   Unshadowed.Z *= 1.5f * 2;
-    Shadowed.X   *= 1.5f * 2;   Shadowed.Y   *= 1.5f * 2;   Shadowed.Z   *= 1.5f * 2;
+    float vanillaLightmapIntensity = 2.0;
+    float hdLightmapIntensity = 2.0; // must match the value in the shader for consistent final results
+    Unshadowed.X *= hdLightmapIntensity * vanillaLightmapIntensity;   Unshadowed.Y *= hdLightmapIntensity * vanillaLightmapIntensity;   Unshadowed.Z *= hdLightmapIntensity * vanillaLightmapIntensity;
+    Shadowed.X   *= hdLightmapIntensity * vanillaLightmapIntensity;   Shadowed.Y   *= hdLightmapIntensity * vanillaLightmapIntensity;   Shadowed.Z   *= hdLightmapIntensity * vanillaLightmapIntensity;
 
     float GPU_Threshold = 1.34f; // <- must match the clamp in the shader!
     // Apply flat Ceiling Pass to total light to preserve channels potential intensity
@@ -1055,27 +1067,16 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
 
     if (!isMover)
     {
-        // Collect dynamic lights for this facet
-        ComputeDynamicLightsForFacet(Level, iSurf, Lights);
-
-        // Append static lights
+        // Retrieve stored static light list for this surf (if any)
         if (TArray<AActor*>* StaticLightList = StaticLightsForFacet.Find(iSurf))
         {
-            for (INT t = 0; t < StaticLightList->Num(); ++t)
-            {
-                Lights.AddItem((*StaticLightList)(t));
-            }
+            Lights = *StaticLightList;
         }
     }
     else
     {
-        // For movers, collect all lights in the level
-        for (INT ai = 0; ai < Level->Actors.Num(); ++ai)
-        {
-            AActor* A = Level->Actors(ai);
-            if (A && A->IsA(ALight::StaticClass()))
-                Lights.AddItem(A);
-        }
+        // For movers, use all static lights in the level
+        Lights = StaticLevelLights;
     }
     if (Lights.Num() == 0)
     {

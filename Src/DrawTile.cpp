@@ -129,6 +129,9 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 		!(PolyFlags & PF_Masked) &&
         !(PolyFlags & PF_Modulated) &&
         !(PolyFlags & PF_AlphaBlend);
+	// unfortunately also includes muzzle flashes and crosshairs.  
+	// Filtering out crosshairs below, need to do something similar for muzzleflash
+	// OR if no matches just render same size as normal (and hope all real coronas actually match so their size doesn't jump around)
 
 	if (Info.Texture)
 	{
@@ -164,10 +167,10 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 			}
 		}
 
-		if (BestD2 > .00001f)
-            return; // No corona is close enough to this tile to be worth scaling for
+		//if (BestD2 > .00001f)
+        //    return; // No corona is close enough to this tile to be worth scaling for
 
-		if (Best)
+        if (Best && BestD2 <= .00001f) // otherwise is muzzle flash or something that shouldn't scale
 		{
 			// Simple distance-based scale: closer = bigger, farther = smaller
 			float dist = Best->Distance;

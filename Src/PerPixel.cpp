@@ -57,7 +57,7 @@ bool IsStaticLight(AActor* A)
         return false;
 
     // Movable actors cannot be static lights
-    if (A->bMovable)
+    if (A->bMovable && !A->bStatic) // Liandri's green teleport light is "movable" but also "static", so we check both flags to be sure
         return false;
 
     return true;
@@ -74,9 +74,9 @@ inline bool IsDynamicLight(AActor* A)
         return false;
 
     if (A->bDynamicLight)
-        return true;
+       return true;
 
-    if (A->bMovable)
+    if (A->bMovable && !A->bStatic) // Liandri's green teleport light is "movable" but also "static", so we check both flags to be sure
         return true;
 
     // Animated light types are dynamic
@@ -838,6 +838,7 @@ void UXOpenGLRenderDevice::NewLevelPP()
 	StaticLightsForFacet.Empty();
     DynamicLightsForFacet.Empty();
     CurrentLightToIndex.Empty();
+    StaticLevelLights.Empty();
 		
 	// empty this on new level.  Otherwise can get stale pointers
 	RoughnessCache.Empty();
@@ -899,6 +900,13 @@ void UXOpenGLRenderDevice::NewLevelPP()
                 ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Bump);
                 ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height);
             }
+        }
+        // build the level's static light list for quick lookup when doing occlusion for movers
+        for (INT ai = 0; ai < LastLevel->Actors.Num(); ++ai)
+        {
+            AActor* A = LastLevel->Actors(ai);
+            if (A && A->IsA(ALight::StaticClass()) && !IsDynamicLight(A))
+                StaticLevelLights.AddItem(A);
         }
     }
 }

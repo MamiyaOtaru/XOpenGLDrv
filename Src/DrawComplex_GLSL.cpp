@@ -930,9 +930,10 @@ return;
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {
-      totalStaticLight *= (LightMapIntensity * 1.5); // vanilla boosts 2 X LightMapIntensity.  We do a little less or it ends up too bright
-      totalDynamicLight *= (LightMapIntensity * 1.5);      
-      totalSpec *= (LightMapIntensity); // give specular less of a boost
+      float hdLightmapIntensity = 2; // vanilla boosts 2 X LightMapIntensity.  We do a little less or it ends up too bright
+      totalStaticLight *= (LightMapIntensity * hdLightmapIntensity);
+      totalDynamicLight *= (LightMapIntensity * hdLightmapIntensity);      
+      totalSpec *= (LightMapIntensity * 1.5f); // give specular less of a boost
 
       float specThreshold = 1.0; // for specular, we want to allow it to be as bright as the light color, but not brighter
       totalSpec = applyReinhard(totalSpec, specThreshold);

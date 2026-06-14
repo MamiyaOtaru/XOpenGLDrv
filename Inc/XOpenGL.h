@@ -1807,6 +1807,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// per pixel resources
 	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
 	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
+	// per level list of all static lights that movers use during occlusion generation
+	TArray<AActor*> StaticLevelLights;
 
 	#define MAX_SURFACE_LIGHTS 2048
 	// Just taking all that touch a surface now (they should be there) fine now that we don't pad out the array with junk so most surfaces can have one or two or some other small number

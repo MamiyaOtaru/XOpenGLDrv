@@ -1914,13 +1914,18 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			// The precise engine scale multiplier to match the Gouraud loop rate
 			FLOAT EngineSpeedFactor = (35.0f * 6.2831853f) / 32.0f; // Evaluates to ~6.87223
 
+			BOOL bUseEngineLight = false;
 			switch (Actor->LightType)
 			{
-				case 0: // LT_None
+				case LT_None:
 					FlickerScale = 0.0f;
 					break;
 
-				case 2: // LT_Pulse
+				case LT_Steady:
+					FlickerScale = 1.0f;
+					break;
+
+				case LT_Pulse:
 				{
 					// Restored exact alignment with the Gouraud lightmap pipeline speed
 					FLOAT WaveAngle = (Time * (32.0f / SafePeriod) * EngineSpeedFactor) + RadianPhase;
@@ -1928,48 +1933,43 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 					break;
 				}
 
-				case 3: // LT_Blink
+				case LT_Blink:
 				{
 					FLOAT BlinkAngle = (Time * (32.0f / SafePeriod) * (EngineSpeedFactor * 0.5f)) + RadianPhase;
 					FlickerScale = (appFmod(BlinkAngle, 6.2831853f) > 3.14159265f) ? 1.0f : 0.0f;
 					break;
 				}
 
-				case 4: // LT_Flicker
+				case LT_Flicker:
 				{
-					// 1. The exact 256-step byte lookup table used by Unreal Engine 1 for LT_Flicker
-					// 255 = Full Brightness, 0 = Off.
+					// The exact 256-step byte lookup table used by Unreal Engine 1 for LT_Flicker
 					static const BYTE FlickerTable[256] = {
-						255,   0, 255, 255,   0,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0, 255,
-						255, 255,   0,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
-						  0, 255, 255,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0,   0, 255,   0,
-						255, 255, 255,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
-						255,   0, 255, 255,   0,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0, 255,
-						255, 255,   0,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
-						  0, 255, 255,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0,   0, 255,   0,
-						255, 255, 255,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
-						255,   0, 255, 255,   0,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0, 255,
-						255, 255,   0,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
-						  0, 255, 255,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0,   0, 255,   0,
-						255, 255, 255,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
-						255,   0, 255, 255,   0,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0, 255,
-						255, 255,   0,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255,
-						  0, 255, 255,   0, 255, 255, 255,   0, 255,   0, 255, 255,   0,   0, 255,   0,
-						255, 255, 255,   0, 255,   0, 255, 255,   0, 255, 255, 255,   0,   0, 255, 255
+						255,0,255,255,0,0,255,255,255,0,255,0,255,255,0,255,
+						255,255,0,0,255,0,255,255,0,255,255,255,0,0,255,255,
+						0,255,255,0,255,255,255,0,255,0,255,255,0,0,255,0,
+						255,255,255,0,255,0,255,255,0,255,255,255,0,0,255,255,
+						255,0,255,255,0,0,255,255,255,0,255,0,255,255,0,255,
+						255,255,0,0,255,0,255,255,0,255,255,255,0,0,255,255,
+						0,255,255,0,255,255,255,0,255,0,255,255,0,0,255,0,
+						255,255,255,0,255,0,255,255,0,255,255,255,0,0,255,255,
+						255,0,255,255,0,0,255,255,255,0,255,0,255,255,0,255,
+						255,255,0,0,255,0,255,255,0,255,255,255,0,0,255,255,
+						0,255,255,0,255,255,255,0,255,0,255,255,0,0,255,0,
+						255,255,255,0,255,0,255,255,0,255,255,255,0,0,255,255,
+						255,0,255,255,0,0,255,255,255,0,255,0,255,255,0,255,
+						255,255,0,0,255,0,255,255,0,255,255,255,0,0,255,255,
+						0,255,255,0,255,255,255,0,255,0,255,255,0,0,255,0,
+						255,255,255,0,255,0,255,255,0,255,255,255,0,0,255,255
 					};
 
-					// 2. Compute the exact 35Hz engine tick index
 					INT TickStep = appFloor(Time * 35.0f);
-        
-					// 3. Stagger the starting index using the light's actual FloatPhase byte
 					INT TableIndex = (TickStep + (INT)FloatPhase) % 256;
-        
-					// 4. Map the table byte (0 or 255) down to your expected 0.15 to 1.0 float scale
+
 					FlickerScale = (FlickerTable[TableIndex] > 128) ? 1.0f : 0.15f;
 					break;
 				}
 
-				case 5: // LT_Strobe
+				case LT_Strobe:
 				{
 					FLOAT StrobeVal = (Time * (32.0f / SafePeriod) * (EngineSpeedFactor * 2.0f)) + RadianPhase;
 					FLOAT StrobeFract = StrobeVal - appFloor(StrobeVal);
@@ -1977,10 +1977,23 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 					break;
 				}
 
-				case 7: // LT_SubtlePulse
+				case LT_SubtlePulse:
 				{
 					FLOAT WaveAngle = (Time * (32.0f / SafePeriod) * EngineSpeedFactor) + RadianPhase;
 					FlickerScale = 0.85f + 0.15f * appSin(WaveAngle);
+					break;
+				}
+
+				case LT_TexturePaletteOnce:
+				case LT_TexturePaletteLoop:
+				{
+					// trying to replicate pulsing and sometimes moving behavior here is a fools errand
+					// instead of modulating brightness, will just set rgb to 1 or something and attenuate slightly more aggressively
+					// then blend in the vanilla lightmap.  I mean we already do this, but setting this light to white will mean the vanilla lightmap contributes fully
+					// so the final output is straight from the vanilla output.  By that I mean the final output of this light.  Where it blends with other lights,
+					// THOSE lights will represent a blend of vanilla lightmap and real time per pixel lights.
+                    bUseEngineLight = true;
+					//FlickerScale = 0.9f; // slightly dim for safety as we have different attenuation than vanilla.  don't want to spread too much white light
 					break;
 				}
 
@@ -1989,9 +2002,22 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 					break;
 			}
 
-			// Convert back to Byte
 			BYTE AnimatedBrightness = (BYTE)Clamp(appRound((FLOAT)Actor->LightBrightness * FlickerScale), 0, 255);
-			FPlane RGBColor = FGetHSV(Actor->LightHue, Actor->LightSaturation, AnimatedBrightness);// Actor->LightBrightness);
+			// Final RGB always comes from HSV
+			FPlane RGBColor;
+			if (bUseEngineLight)
+			{
+				// If we're using the engine light, we want to ignore the hue and saturation and just use the brightness as a white light, since the vanilla lightmap will provide the color information.  This is important for LT_TexturePaletteLoop and LT_TexturePaletteOnce, which can have animated brightness but don't have any way to specify color changes.
+				//INT LightHue = 0; // Hue doesn't matter when saturation is 0, but set it to 0 for consistency
+				//INT LightSaturation = 0;
+				//RGBColor = FGetHSV(LightHue, LightSaturation, AnimatedBrightness); // UT makes this red (fits for hue 0 but shouldn't happen with sat 0 but does) will set rgb directly
+				RGBColor = FPlane(AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, 1.0f);
+            }
+			else
+			{
+				RGBColor = FGetHSV(Actor->LightHue, Actor->LightSaturation, AnimatedBrightness);
+			}
+			//FPlane RGBColor = UE1_FGetHSV(Actor->LightHue, Actor->LightSaturation, AnimatedBrightness);
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
 			LightData->LightData1[i] = glm::vec4(RGBColor.X, RGBColor.Y, RGBColor.Z, Actor->LightCone);
@@ -2026,16 +2052,10 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			: FVector(0, 0, 0);
 
 		FRotator& Rot = Frame->Viewport->Actor->Rotation;
-		//FVector Forward = Rot.Vector();
-		//FVector Up = (Rot + FRotator(0,16384,0)).Vector();
-		//FVector Right = (Rot + FRotator(16384,0,0)).Vector();
 		FVector Forward = Frame->Coords.ZAxis;
 		FVector Right = Frame->Coords.XAxis;
 		FVector Up = -Frame->Coords.YAxis;   // because YAxis is "down"
 
-		//const FLOAT HFOV = Frame->Viewport->Actor->FovAngle * (PI / 180.f);
-		//const FLOAT Aspect = (FLOAT)Frame->X / (FLOAT)Frame->Y;
-		//const FLOAT VFOV = 2.f * atan(tan(HFOV * 0.5f) / Aspect);
 		const FLOAT VFOV = Frame->Viewport->Actor->FovAngle * (PI / 180.f);
 		const FLOAT Aspect = (FLOAT)Frame->X / (FLOAT)Frame->Y;
 		const FLOAT HFOV = 2.f * atan(tan(VFOV * 0.5f) / Aspect);
