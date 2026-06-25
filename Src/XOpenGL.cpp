@@ -166,6 +166,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	new(GetClass(), TEXT("AmbientOcclusion"), RF_Public)UBoolProperty(CPP_PROPERTY(AmbientOcclusion), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("IndirectIllumination"), RF_Public)UBoolProperty(CPP_PROPERTY(IndirectIllumination), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("HDLightMap"), RF_Public)UBoolProperty(CPP_PROPERTY(HDLightMap), TEXT("Options"), CPF_Config);
+	new(GetClass(), TEXT("ShadowMaps"), RF_Public)UBoolProperty(CPP_PROPERTY(ShadowMaps), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("CoronaScaling"), RF_Public)UBoolProperty(CPP_PROPERTY(CoronaScaling), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("NoAATiles"), RF_Public)UBoolProperty(CPP_PROPERTY(NoAATiles), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("GenerateMipMaps"), RF_Public)UBoolProperty(CPP_PROPERTY(GenerateMipMaps), TEXT("Options"), CPF_Config);
@@ -239,6 +240,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	AmbientOcclusion = 1;
 	IndirectIllumination = 0; // this one is too heavy, and doesn't look all that great
 	HDLightMap = 1;
+	ShadowMaps = 1; // TODO might default this to off
 	CoronaScaling = 1;
 	GammaMultiplier = 1.75f;
 	GammaMultiplierUED  = 1.75f;
@@ -465,6 +467,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	debugf(NAME_DevLoad, TEXT("AmbientOcclusion %i"), AmbientOcclusion);
 	debugf(NAME_DevLoad, TEXT("IndirectIllumiunation %i"), IndirectIllumination);
 	debugf(NAME_DevLoad, TEXT("HDLightMap %i"), HDLightMap);
+	debugf(NAME_DevLoad, TEXT("ShadowMaps %i"), ShadowMaps);
 	debugf(NAME_DevLoad, TEXT("CoronaScaling %i"), CoronaScaling);
 	debugf(NAME_DevLoad, TEXT("EnvironmentMaps %i"), EnvironmentMaps);
 	debugf(NAME_DevLoad, TEXT("NoAATiles %i"), NoAATiles);
@@ -627,6 +630,18 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	UsingPersistentBuffers = false;
 	UsingShaderDrawParameters = false;
 #endif
+
+	// Shadowmaps require bindless textures
+    if (!UsingBindlessTextures)
+    {
+        if (ShadowMaps)
+            debugf(TEXT("XOpenGL: Disabling ShadowMaps (requires BindlessTextures)"));
+
+        ShadowMaps     = 0;
+
+        // Grey them out in the config UI
+        FindField<UBoolProperty>(GetClass(), TEXT("ShadowMaps"))    ->PropertyFlags |= CPF_EditConst;
+    }
 
 	if (OpenGLVersion == GL_Core
 #if MACOSX
@@ -1812,6 +1827,14 @@ void DrawDebugTriangle()
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
+inline UBOOL IsHeroLight(AActor* L, const TArray<UXOpenGLHeroLight*>& HeroLights)
+{
+	for (INT i = 0; i < HeroLights.Num(); ++i)
+		if (HeroLights(i)->GetActor() == L)
+			return TRUE;
+	return FALSE;
+}
+
 void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 {
 	guard(UXOpenGLRenderDevice::SetSceneNode);
@@ -1842,6 +1865,88 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 	while (NumClipPlanes > 0)
 		PopClipPlane();
 #endif
+
+	// =========================================================================
+	// DYNAMIC HERO SHADOWMAP CUBEMAP GENERATION
+	// =========================================================================
+	// doing this above light gather so we can mark if a hero light is active
+	if (ShadowMaps && !ShadowMapDone && LastLevel && !LastLevel->IsEntry)
+	{
+		if (LastLevel && LastLevel->Actors.Num() > 0 && LastLevel->Actors(0))
+		{
+			ALevelInfo* Info = (ALevelInfo*)LastLevel->Actors(0);
+        
+			// 0 = LEVACT_None, 1 = LEVACT_Loading, 2 = LEVACT_Saving, 3 = LEVACT_Connecting
+			if (Info->LevelAction != 0) 
+			{
+				// The old level is in a teardown/load state! 
+				// Force-empty your caches immediately to prevent trailing frame crashes
+				if (HeroLights.Num() > 0)
+				{
+					for (INT i = 0; i < HeroLights.Num(); ++i)
+					{
+						if (HeroLights(i)) delete HeroLights(i);
+					}
+					HeroLights.Empty(); // Safely unbinds residency handles and deletes FBOs
+				}
+			}
+			else if (HeroLights.Num() == 0)
+			{
+				// load them, is now safe
+				// search the static lights for likely hero lights for shadow mapping
+				TArray<ALight*> ChosenActors;
+				PickHeroLights(LastLevel, StaticLevelLights, ChosenActors, 280); // can use a DesiredCount variable
+				for (INT i = 0; i < ChosenActors.Num(); ++i)
+				{
+					// The class object encapsulates its own complete data pass natively on creation
+					UXOpenGLHeroLight* NewHero = new UXOpenGLHeroLight(ChosenActors(i), LastLevel, StaticLightsForFacet, this);
+					HeroLights.AddItem(NewHero);
+				}
+			}
+		}
+		// might have deleted them if we detected level change
+		if (HeroLights.Num() > 0)
+		{
+			PerFrameActorSplatCache.Empty();
+			PerFrameStaticMeshCache.Empty();
+
+			// Core Hardware Pass State Overrides
+			// Force standard depth configurations. The individual cubemap face update 
+			// loops will handle binding target textures internally as they update.
+			glEnable(GL_DEPTH_TEST);
+			glDepthFunc(GL_LESS);
+			glDepthMask(GL_TRUE);
+			glEnable(GL_BLEND);
+    
+			// DECOUPLE CHANNELS VIA HARDWARE BLENDING ---
+			// Channel 0 (Red / Depth): We use MIN logic. The closest BSP geometry depth always wins.
+			// Channel 1 (Green / Mask): We use MAX logic. Any dynamic bot splat footprints stack up natively.
+			glBlendEquationSeparate(GL_MIN, GL_MAX);
+    
+			// Ensure standard factor tracking applies cleanly to both operations
+			glBlendFunc(GL_ONE, GL_ONE);
+
+			glDisable(GL_CULL_FACE);  // Force all triangles to draw regardless of winding direction.  leave it on afterwards as decals croak without it
+
+			// Fire individual dynamic culling, evaluation, and on-demand FBO draw passes
+			for (INT i = 0; i < HeroLights.Num(); ++i)
+			{
+				if (HeroLights(i))
+				{
+					HeroLights(i)->UpdateShadowMap(Frame, this);
+				}
+			}
+
+			// Restore Context Restrictions for Main Viewport Scene Painting
+			glDepthFunc(GL_LEQUAL);
+			glBlendEquation(GL_FUNC_ADD);
+			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+			SceneFbo->Bind();
+			glViewport(0, 0, SceneWidth, SceneHeight);
+
+			ShadowMapDone = true;
+		} // end if HeroLights.Num is (still) > 0
+	} // end if should do shadowmapping
 
 	// Push light data to the GPU. We only need this if we enable HW lighting or bumpmaps.
 	// 
@@ -1894,12 +1999,39 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		if (NumLights > MAX_LIGHTS)
 			NumLights = MAX_LIGHTS;
 
+		ActiveHeroMap.Empty();
+		for (INT h = 0; h < HeroLights.Num(); ++h)
+		{
+			if (HeroLights(h) && HeroLights(h)->GetActor())
+			{
+				ActiveHeroMap.Set(HeroLights(h)->GetActor(), HeroLights(h));
+			}
+		}
+
 		FLOAT Time = Frame->Viewport->Actor->Level->TimeSeconds;
 		auto LightData = LightInfoBuffer.GetElementPtr(0);
 		for (INT i = 0; i < NumLights; i++)
 		{
 			auto Actor = LightList(i);
 			LightData->LightPos[i] = glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
+
+			GLuint64 MaskHandle = 0; // Default: 0 means no bindless shadow map
+			if (ShadowMaps)
+			{
+				// Instant O(1) pointer lookup inside the active map
+				UXOpenGLHeroLight** FoundHeroPtr = ActiveHeroMap.Find(Actor);
+
+				if (FoundHeroPtr != nullptr && 
+					(*FoundHeroPtr)->HasActiveShadowMap() && 
+					UseBindlessTextures)
+				{
+					MaskHandle = (*FoundHeroPtr)->GetBindlessMaskHandle();
+				}
+			}
+
+			// Split the 64-bit handle cleanly into two 32-bit bit containers
+			GLuint LowerBits = (GLuint)(MaskHandle & 0xFFFFFFFF);
+			GLuint UpperBits = (GLuint)((MaskHandle >> 32) & 0xFFFFFFFF);
 
 			FLOAT FlickerScale = 1.0f;
 
@@ -2005,19 +2137,22 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			BYTE AnimatedBrightness = (BYTE)Clamp(appRound((FLOAT)Actor->LightBrightness * FlickerScale), 0, 255);
 			// Final RGB always comes from HSV
 			FPlane RGBColor;
-			if (bUseEngineLight)
+			if (false && IsHeroLight(Actor, HeroLights))
+			{
+				// Hero lights get the magentaist
+				// Full intensity magenta, scaled by AnimatedBrightness
+				float s = AnimatedBrightness / 255.0f;
+				RGBColor = FPlane(s, 0.0f, s, 1.0f);   // (R,G,B) = (s,0,s)
+			}
+			else if (bUseEngineLight)
 			{
 				// If we're using the engine light, we want to ignore the hue and saturation and just use the brightness as a white light, since the vanilla lightmap will provide the color information.  This is important for LT_TexturePaletteLoop and LT_TexturePaletteOnce, which can have animated brightness but don't have any way to specify color changes.
-				//INT LightHue = 0; // Hue doesn't matter when saturation is 0, but set it to 0 for consistency
-				//INT LightSaturation = 0;
-				//RGBColor = FGetHSV(LightHue, LightSaturation, AnimatedBrightness); // UT makes this red (fits for hue 0 but shouldn't happen with sat 0 but does) will set rgb directly
 				RGBColor = FPlane(AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, 1.0f);
             }
 			else
 			{
 				RGBColor = FGetHSV(Actor->LightHue, Actor->LightSaturation, AnimatedBrightness);
 			}
-			//FPlane RGBColor = UE1_FGetHSV(Actor->LightHue, Actor->LightSaturation, AnimatedBrightness);
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
 			LightData->LightData1[i] = glm::vec4(RGBColor.X, RGBColor.Y, RGBColor.Z, Actor->LightCone);
@@ -2029,7 +2164,13 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
 			LightData->LightData4[i] = glm::vec4(Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f));
-			LightData->LightData5[i] = glm::vec4(Actor->LightRadius * 10, 1.0, 0.0, 0.0);
+			// --- SAFE TO STUFF: UT-only path utilizes the dead Z and W components perfectly! ---
+			LightData->LightData5[i] = glm::vec4(
+				Actor->LightRadius * 10, 
+				1.0f, 
+				*reinterpret_cast<float*>(&LowerBits), // Type pun bitcast into Z
+				*reinterpret_cast<float*>(&UpperBits)  // Type pun bitcast into W
+			);
 #else
 			LightData->LightData4[i] = glm::vec4(Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
 			LightData->LightData5[i] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
@@ -2163,6 +2304,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		glFrontFace(GL_CW);
 		glEnable(GL_CULL_FACE);
 		glCullFace(GL_BACK);
+		glDisable(GL_BLEND);
 
 		// Only draw BSP surfaces that were visible last frame
 		INT TargetFrame = LocalFrameCounter - 1;
@@ -2192,6 +2334,139 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 	}
 
 	unguard;
+}
+
+void UXOpenGLRenderDevice::DrawShadowmapDebugOverlay()
+{
+    UXOpenGLHeroLight* DebugLight = nullptr;
+    for (INT i = 0; i < HeroLights.Num(); ++i) // 1 is the corner with row of health vials in stalwart
+    {
+        if (HeroLights(i) && HeroLights(i)->HasValidShadowMap())
+        {
+            DebugLight = HeroLights(i);
+            break;
+        }
+    }
+    if (!DebugLight || !DebugLight->HasValidShadowMap()) return;
+
+    static GLuint DebugProgramID = 0;
+    if (DebugProgramID == 0)
+    {
+        const char* VertSrc = 
+            "#version 330 core\n"
+            "layout(location = 0) in vec2 in_Pos;\n"
+            "out vec2 v_TexCoords;\n"
+            "void main() {\n"
+            "   v_TexCoords = in_Pos * 0.5 + 0.5;\n"
+            "   gl_Position = vec4(in_Pos, 0.0, 1.0);\n"
+            "}\n";
+
+                const char* FragSrc = 
+            "#version 330 core\n"
+            "in vec2 v_TexCoords;\n"
+            "out vec4 out_Color;\n"
+            "uniform samplerCube u_DepthCubemap;\n"
+            "uniform samplerCube u_MaskCubemap;\n"
+            "uniform int u_Mode;\n"
+            
+            "void main() {\n"
+            "   vec3 dir = vec3(0.0);\n"
+            "   bool valid = false;\n"
+            "   int col = int(v_TexCoords.x * 4.0);\n"
+            "   int row = int(v_TexCoords.y * 3.0);\n"
+            "   vec2 localUV = fract(v_TexCoords * vec2(4.0, 3.0));\n"
+            "   vec2 m = localUV * 2.0 - 1.0;\n"
+            
+            "   if (row == 1) {\n"
+            "       valid = true;\n"
+            // --- FIXED: Continuous Hardware Loop Sequence (LEFT -> FRONT -> RIGHT -> BACK) ---
+            "       if      (col == 0) dir = vec3(-1.0, -m.y, -m.x); // Index 1: NEGATIVE_X (LEFT)\n"
+            "       else if (col == 1) dir = vec3( m.x, -m.y, -1.0); // Index 5: NEGATIVE_Z (FRONT)\n"
+            "       else if (col == 2) dir = vec3( 1.0, -m.y,  m.x); // Index 0: POSITIVE_X (RIGHT)\n"
+            "       else if (col == 3) dir = vec3(-m.x, -m.y,  1.0); // Index 4: POSITIVE_Z (BACK)\n"
+            "       else valid = false;\n"
+            "   } else if (row == 2 && col == 1) {\n"
+            "       valid = true; dir = vec3(m.x, 1.0, m.y);         // Index 2: POSITIVE_Y (TOP)\n"
+            "   } else if (row == 0 && col == 1) {\n"
+            "       valid = true; dir = vec3(m.x, -1.0, -m.y);       // Index 3: NEGATIVE_Y (BOTTOM)\n"
+            "   }\n"
+            
+            "   if (!valid) { out_Color = vec4(0.1, 0.1, 0.1, 1.0); return; }\n"
+            "   float val = 0.0;\n"
+            "   if (u_Mode == 1) val = texture(u_MaskCubemap, normalize(dir)).r;\n"
+            "   else             val = texture(u_DepthCubemap, normalize(dir)).r;\n"
+            "   if (u_Mode == 1) out_Color = vec4(val, 0.0, 0.0, 1.0);\n"
+            "   else             out_Color = vec4(vec3(val), 1.0);\n"
+            "}\n";
+
+        GLuint VS = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(VS, 1, &VertSrc, nullptr);
+        glCompileShader(VS);
+
+        GLuint FS = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(FS, 1, &FragSrc, nullptr);
+        glCompileShader(FS);
+
+        DebugProgramID = glCreateProgram();
+        glAttachShader(DebugProgramID, VS);
+        glAttachShader(DebugProgramID, FS);
+        glLinkProgram(DebugProgramID);
+        glDeleteShader(VS);
+        glDeleteShader(FS);
+    }
+
+    glUseProgram(DebugProgramID);
+    
+    GLint PrevViewport[4];
+    glGetIntegerv(GL_VIEWPORT, PrevViewport);
+    
+    glViewport(20, 20, 800, 600); 
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+
+    // =========================================================================
+    // TOGGLE MODE HERE:
+    // DebugMode = 0 -> Inspect Linear Depth (Attachment 0, Texture Unit 0)
+    // DebugMode = 1 -> Inspect Actor Classification Mask (Attachment 1, Texture Unit 1)
+    // =========================================================================
+    int DebugMode = 0; 
+
+    // Binds Depth to Texture Unit 0, Mask to Texture Unit 1 seamlessly
+    DebugLight->BindTextures(30); 
+    
+    // Explicitly link the samplers to their respective texture unit values
+    glUniform1i(glGetUniformLocation(DebugProgramID, "u_DepthCubemap"), 30); // Slot 0
+    glUniform1i(glGetUniformLocation(DebugProgramID, "u_MaskCubemap"),  31); // Slot 1
+    glUniform1i(glGetUniformLocation(DebugProgramID, "u_Mode"), DebugMode);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); 
+
+    static GLuint QuadVAO = 0, QuadVBO = 0;
+    if (QuadVAO == 0)
+    {
+        float QuadVerts[] = {
+            -1.0f,  1.0f,
+            -1.0f, -1.0f,
+             1.0f,  1.0f,
+             1.0f, -1.0f,
+        };
+        glGenVertexArrays(1, &QuadVAO);
+        glGenBuffers(1, &QuadVBO);
+        glBindVertexArray(QuadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, QuadVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(QuadVerts), QuadVerts, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    }
+
+    glBindVertexArray(QuadVAO);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glViewport(PrevViewport[0], PrevViewport[1], PrevViewport[2], PrevViewport[3]);
 }
 
 void UXOpenGLRenderDevice::SetFrameStateUniforms()
@@ -2373,6 +2648,7 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 	}
 
 	DepthPrepassDone = false;
+	ShadowMapDone = false;
 
 	// Bind our offscreen FBO for world rendering
 	SceneFbo->Bind();
@@ -2688,6 +2964,20 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 			GL_NEAREST
 		);
 	}*/
+	// DYNAMIC SHADOWMAP CUBEMAP DIAGNOSTIC DISPLAY
+	/*if (LastLevel && !LastLevel->IsEntry)
+	{
+		// Make sure any legacy program contexts are released before hijacking raw GL state
+		if (ActiveProgram != No_Prog)
+		{
+			Shaders[ActiveProgram]->DeactivateShader();
+			ActiveProgram = No_Prog;
+		}
+
+		// Execute direct raw OpenGL debug cross overlay blit
+		DrawShadowmapDebugOverlay();
+	}*/
+
 	// Unbind
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -3061,6 +3351,7 @@ void UXOpenGLRenderDevice::Exit()
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("AmbientOcclusion"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(AmbientOcclusion)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("IndirectIllumination"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(IndirectIllumination)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("HDLightMap"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(HDLightMap)));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("ShadowMaps"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(ShadowMaps)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("CoronaScaling"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(CoronaScaling)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseAA"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseAA)));
 	//GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseAASmoothing"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseAASmoothing)));

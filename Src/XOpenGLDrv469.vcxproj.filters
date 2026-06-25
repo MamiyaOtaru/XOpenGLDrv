@@ -97,6 +97,27 @@
     <ClCompile Include="SSGIPass.cpp">
       <Filter>Src</Filter>
     </ClCompile>
+    <ClCompile Include="HeroLight.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="DrawShadowmap_GLSL.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="DrawShadowmap.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="DrawShadowmapSplats.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="DrawShadowmapSplats_GLSL.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="ShadowMapping.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="GLStateManager.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Inc\XOpenGL.h">
@@ -129,6 +150,12 @@
     </ClInclude>
     <ClInclude Include="..\Inc\thirdparty\stb\stb_image_write.h" />
     <ClInclude Include="..\Inc\thirdparty\stb\stb_dxt.h">
+      <Filter>Inc</Filter>
+    </ClInclude>
+    <ClInclude Include="HeroLight.h">
+      <Filter>Inc</Filter>
+    </ClInclude>
+    <ClInclude Include="GLStateManager.h">
       <Filter>Inc</Filter>
     </ClInclude>
   </ItemGroup>

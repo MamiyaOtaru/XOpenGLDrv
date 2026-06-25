@@ -155,7 +155,7 @@ void UXOpenGLRenderDevice::GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, T
     }
 }
 
-static UBOOL PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N)
+UBOOL UXOpenGLRenderDevice::PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N)
 {
     FVector v0 = B - A;
     FVector v1 = C - A;
@@ -178,7 +178,7 @@ static UBOOL PointInTriangle(const FVector& P, const FVector& A, const FVector& 
     return (u >= 0.f && v >= 0.f && w >= 0.f);
 }
 
-static FVector ClosestPointOnTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C)
+FVector UXOpenGLRenderDevice::ClosestPointOnTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C)
 {
     // Edges
     FVector AB = B - A;
@@ -831,8 +831,7 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
 
 // lightmap stuff
 
-
-
+// run on new level to gather list of lights per surface,
 void UXOpenGLRenderDevice::NewLevelPP()
 {
 	StaticLightsForFacet.Empty();
@@ -909,7 +908,7 @@ void UXOpenGLRenderDevice::NewLevelPP()
                 StaticLevelLights.AddItem(A);
         }
     }
-}
+} // end function NewLevelPP
 
 INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle)
 {

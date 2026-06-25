@@ -177,6 +177,97 @@ Fbo::Fbo(int w, int h,
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 }
 
+// cubemap constructor
+Fbo::Fbo(int size, int numColorAttachments, GLenum colorFormat)
+    : width(size), height(size), samples(1), isCubemap(true)
+{
+    if (colorFormat == 0)
+        colorFormat = GL_RGBA8;
+
+    prevFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&prevFbo);
+
+    glGenFramebuffers(1, &fboID);
+    glBindFramebuffer(GL_FRAMEBUFFER, fboID);
+
+    colorTexIDs.resize(numColorAttachments);
+
+    GLenum externalFormat = GL_RGBA;
+    GLenum type = GL_UNSIGNED_BYTE;
+
+    if (colorFormat == GL_R32F || colorFormat == GL_R16F) {
+        externalFormat = GL_RED;
+        type = GL_FLOAT;
+    } else if (colorFormat == GL_RGB16F || colorFormat == GL_RGB32F) {
+        externalFormat = GL_RGB;
+        type = GL_FLOAT;
+    } else if (colorFormat == GL_RGBA16F || colorFormat == GL_RGBA32F) {
+        externalFormat = GL_RGBA;
+        type = GL_FLOAT;
+    }
+
+    // Allocate the multi-attachment cubemaps
+    for (int i = 0; i < numColorAttachments; i++)
+    {
+        glGenTextures(1, &colorTexIDs[i]);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, colorTexIDs[i]);
+
+        // Loop over all 6 faces of the cubemap to reserve VRAM allocation space
+        for (int face = 0; face < 6; face++)
+        {
+            glTexImage2D(
+                GL_TEXTURE_CUBE_MAP_POSITIVE_X + face,
+                0, colorFormat, width, height, 0,
+                externalFormat, type, nullptr
+            );
+        }
+
+        // Texture parameter filters for point shadows
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+        // =========================================================================
+        // FIX PART A: Pre-bind a default target face context to the attachments!
+        // This mirrors your 2D FBO constructor loop and ensures the FBO is complete.
+        // =========================================================================
+        glFramebufferTexture2D(
+            GL_FRAMEBUFFER,
+            GL_COLOR_ATTACHMENT0 + i,
+            GL_TEXTURE_CUBE_MAP_POSITIVE_X, // Safe default face index
+            colorTexIDs[i],
+            0
+        );
+        // =========================================================================
+    }
+
+    // Create a local Shared Depth Renderbuffer
+    glGenRenderbuffers(1, &depthRboID);
+    glBindRenderbuffer(GL_RENDERBUFFER, depthRboID);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRboID);
+
+    // =========================================================================
+    // FIX PART B: Enable all color attachments as draw buffers (MRT Mirror)!
+    // This unlocks multi-render target writing paths across your system.
+    // =========================================================================
+    if (!colorTexIDs.empty())
+    {
+        std::vector<GLenum> bufs(colorTexIDs.size());
+        for (size_t i = 0; i < colorTexIDs.size(); ++i)
+            bufs[i] = GL_COLOR_ATTACHMENT0 + (GLenum)i;
+
+        glDrawBuffers((GLsizei)bufs.size(), bufs.data());
+    }
+    // =========================================================================
+
+    CheckStatus();
+    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+}
+
+
 Fbo::~Fbo() {
     Dispose();
 }
@@ -188,6 +279,13 @@ void Fbo::Bind() {
 
 void Fbo::Unbind() {
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+}
+
+void Fbo::BindColorCubemap(GLuint attachmentIndex, GLuint textureUnit)
+{
+    if (attachmentIndex >= colorTexIDs.size()) return;
+    glActiveTexture(GL_TEXTURE0 + textureUnit);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, colorTexIDs[attachmentIndex]);
 }
 
 void Fbo::Dispose() {

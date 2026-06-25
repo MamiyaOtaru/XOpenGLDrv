@@ -541,6 +541,37 @@ vec2 ViewToUV(vec3 viewPos) {
 
     return 0.0;
 }*/
+#if OPT_ShadowMaps
+// Controls the blur width (softness) of the shadow edges on the wall surfaces
+const float SHADOW_FILTER_RADIUS = 0.0035f; 
+
+float GetSoftActorShadow(samplerCube shadowMap, vec3 sampleDir)
+{
+    vec3 N_Dir = normalize(sampleDir);
+
+    // 1. Establish a fast tangent plane perpendicular to the lookup ray
+    // This ensures our PCF offsets expand flatly along the cubemap face plane
+    vec3 up = (abs(N_Dir.z) < 0.999) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, N_Dir));
+    vec3 bitangent = cross(N_Dir, tangent);
+
+    // 2. Define a standard 4-tap diamond offset pattern
+    vec3 offset0 = ( tangent *  1.0 + bitangent *  1.0) * SHADOW_FILTER_RADIUS;
+    vec3 offset1 = (-tangent *  1.0 + bitangent *  1.0) * SHADOW_FILTER_RADIUS;
+    vec3 offset2 = ( tangent *  1.0 - bitangent *  1.0) * SHADOW_FILTER_RADIUS;
+    vec3 offset3 = (-tangent *  1.0 - bitangent *  1.0) * SHADOW_FILTER_RADIUS;
+
+    // 3. Accumulate classification values (alpha channel contains capsule splats and static meshes)
+    float shadowSample = 0.0;
+    shadowSample += texture(shadowMap, N_Dir + offset0).a;
+    shadowSample += texture(shadowMap, N_Dir + offset1).a;
+    shadowSample += texture(shadowMap, N_Dir + offset2).a;
+    shadowSample += texture(shadowMap, N_Dir + offset3).a;
+
+    // 4. Return the averaged shadow factor (0.0 = fully occluded, 1.0 = fully unshadowed)
+    return 1.0 - (shadowSample * 0.25);
+}
+#endif
 vec3 applyReinhard(vec3 color, float threshold) {
     // Normalize the range down to a 0-1 baseline
     vec3 normalized = color / vec3(threshold);
@@ -805,6 +836,7 @@ return;
 
     //vec3 TotalBumpColor = vec3(0.0);
     vec3 totalStaticLight = vec3(0.0);
+    vec3 totalSubtractedLight = vec3(0.0);
     vec3 totalDynamicLight = vec3(0.0);
     //int contributingLights = 0;
 
@@ -832,32 +864,65 @@ return;
 
       vec3 originVS = vec3(vCoords.x, vCoords.y, vCoords.z);
       vec3 lightPosVS = vec3(InLightPos.x, InLightPos.y, InLightPos.z);
+      
+      // screenspace shadows (boo)
       //if (ShadowForLight(vCoords, lightPosVS) != 0)
       //  continue;
+
+
+      float shadowFactor = 1.0f;
+ #if OPT_ShadowMaps   
+      // ====================================================================
+      // --- UNPACK BINDLESS HERO SHADOW MAP HANDLE (Z and W of LightData5) ---
+      // ====================================================================
+      // unpack the type-punned float bits back into raw 32-bit unsigned ints
+      uvec2 handleBits = uvec2(
+        floatBitsToUint(LightData5[i].z), // Lower 32 bits
+        floatBitsToUint(LightData5[i].w)  // Upper 32 bits
+      );
+
+      // If the 64-bit handle is non-zero, this light has an active, resident shadow map!
+      if (handleBits.x != 0u || handleBits.y != 0u)
+      {
+        samplerCube shadowMap = samplerCube(handleBits);
+
+        // Reconstruct true world coordinates (Your stable, locked-down math!)
+        vec3 X = FrameCoords[1].xyz; vec3 Y = FrameCoords[2].xyz; vec3 Z = FrameCoords[3].xyz;
+        mat3 ViewToWorld = mat3(X, Y, Z);
+        vec3 pixelWorldPos = FrameCoords[0].xyz + ViewToWorld * vCoords;
+
+        //Compute absolute world distance metrics
+        vec3 rawLookupWS = LightPos[i].xyz - pixelWorldPos;
+        float currentPixelDist = length(rawLookupWS); 
+        vec3 shadowLookupDirWS = vec3(rawLookupWS.x, -rawLookupWS.y, rawLookupWS.z);
+
+        // do a single texture tap here to see if the pixel is behind a wall.
+        vec4 shadowData = texture(shadowMap, shadowLookupDirWS);
+        float bspDepthNormalized = shadowData.r;
+        float staticBspWorldDist = bspDepthNormalized * WorldLightRadius;
+        float depthBias = 125.0f; 
+
+        // If the current pixel sits DEEPER in the level than the first solid wall,
+        // it is inside a pre-occluded back room. We bypass the shadow completely!
+        if (currentPixelDist <= staticBspWorldDist + depthBias)// && shadowData.a > 0.5) // doesn't seem to speed it up, and looks worse
+        {
+            // The pixel is in front of the wall! Run a 4-tap PCF kernel.
+            shadowFactor = GetSoftActorShadow(shadowMap, shadowLookupDirWS);
+        }
+      }
+#endif    
 
       //float NormalLightRadius  = LightData5[i].x;
       // attenuation that fades out by radius.  worldLightRadius looks better here
       //float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
       //float attenuation = (1.0 - x) / (1.0 + 4.0 * x*x);
 
-      // more closely match liner (slightly brighter)
-      //float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
-      //float attenuation = (1.0 - x) * (1.0 + x - x*x);
-
       // literally linear
       float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
       float attenuation = 1.0 - x;
 
-      // quadratic flat top - brighter all around, still gets to 0 at radius
-      //float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
-      //float attenuation = 1.0 - x * x;
-
-      // HWLighting style attenuation (super bright in the middle, rapid drop, still minlight at radius
-      /*float RWorldLightRadius = WorldLightRadius * WorldLightRadius;
-      float b = WorldLightRadius / (RWorldLightRadius * MinLight);
-      float attenuation = WorldLightRadius / (dist + b * dist * dist);
-      attenuation -= .05;
-      attenuation = clamp(attenuation, 0, 5);*/
+      // mix in shadowmap result, if any
+      attenuation;
 
       // Light color + brightness
       vec3 rawColor = clamp(vec3(LightData1[i].x, LightData1[i].y, LightData1[i].z), 0.0, 1.0);
@@ -865,19 +930,6 @@ return;
     
       float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0.  (unless I pass Actor->LightBrightness like Unreal path does.  Why not?)
       float brightnessFactor = max(lum, brightness); // so in UT this == lum, but in Unreal it allows the light's brightness to boost the diffuse and specular even if the color is dark
-
-      /*
-      // Determine how highly saturated the light color is.
-      // Pure colors yield a high saturationMeasure; white yields 0.0.
-      float maxChannel = max(rawColor.r, max(rawColor.g, rawColor.b));
-      float saturationMeasure = maxChannel - lum;
-      // tunable desaturation strength:
-      // 1.0 = much less eyebleedy than no desaturation.
-      // 1.5 = Pushes heavily into vanilla "chalky/pastel" territory
-      // 2.0 = Aggressive desaturation
-      float desatStrength = 1.12;
-      rawColor = mix(rawColor, vec3(lum), clamp(saturationMeasure * desatStrength, 0.0, 0.85)); // desaturate very saturated colors
-     */
 
       // Choose normal / coordinate space based on whether we have a normal map
       vec3 N;
@@ -900,6 +952,7 @@ return;
    
       if (li < numStaticLights) {
         totalStaticLight += rawColor * diff * attenuation;
+        totalSubtractedLight += (1.0 - shadowFactor) * rawColor * diff * attenuation;
       }
       else {
         totalDynamicLight += rawColor * diff * attenuation;
@@ -920,7 +973,8 @@ return;
       float spec = pow(specDot, shininess)
                    * specStrength
                    * brightnessFactor
-                   * attenuation;
+                   * attenuation
+                   * shadowFactor;
 
       vec3 specular = spec * rawColor;   // colored specular, matches UT99 lights
       totalSpec += specular;
@@ -932,6 +986,7 @@ return;
     if (numSurfaceLights > 0) {
       float hdLightmapIntensity = 2; // vanilla boosts 2 X LightMapIntensity.  We do a little less or it ends up too bright
       totalStaticLight *= (LightMapIntensity * hdLightmapIntensity);
+      totalSubtractedLight *= (LightMapIntensity * hdLightmapIntensity);
       totalDynamicLight *= (LightMapIntensity * hdLightmapIntensity);      
       totalSpec *= (LightMapIntensity * 1.5f); // give specular less of a boost
 
@@ -940,22 +995,6 @@ return;
 
       float threshold = 1.34; // must match the GPU_Threshold in the CPU occlusion calculator
 #if OPT_HDLightMap
-      // flat clamp to maintain potential energy in all channels (match occlusion generation on CPU)
-      totalStaticLight = clamp(totalStaticLight, vec3(0.0), vec3(threshold));
-
-      // HD shadows only
-      //vec3 blendedLM = Occlusion.rgb;
-
-      // HD shadows with vanilla shadow-strength preservation (wrecks color a bit)
-      //vec3 blendedLM = min(Occlusion.rgb, LightColor.rgb);
-
-      /*
-      // HD shadows with vanilla color preservation (tosses vanilla shadows)
-      vec3 blendedLM = Occlusion.rgb;
-      if (maxChan > 0) {
-        blendedLM *= (LightColor.rgb / maxChan);
-      }*/
-
       // preserve color from both HD and vanilla and use the darker shadow term
       float HDShadow  = max(Occlusion.r, max(Occlusion.g, Occlusion.b));
       float VanShadow = max(LightColor.r, max(LightColor.g, LightColor.b));
@@ -968,10 +1007,9 @@ return;
       // Final
       vec3 blendedLM = finalHue * finalShadow;
 #else
-      // bring down total via reinhard before multiplying in vanilla colormap (and so we at least get the albeit less accurate vanilla shadows)
-      totalStaticLight = applyReinhard(totalStaticLight, threshold);
       vec3 blendedLM = LightColor.rgb;
 #endif
+      totalSubtractedLight *= LightColor.rgb;
 #if OPT_AmbientOcclusion
       if ((DrawFlags & DF_AmbientOcclusion) == DF_AmbientOcclusion) {
         // Sample SSAO (0 = dark, 1 = no occlusion)
@@ -982,6 +1020,9 @@ return;
       float lmIntensity = dot(blendedLM, vec3(0.299, 0.587, 0.114));
       totalSpec *= lmIntensity;
       totalStaticLight = totalStaticLight * blendedLM;
+      totalStaticLight -= totalSubtractedLight;
+      totalStaticLight = clamp(totalStaticLight, vec3(0.0), totalStaticLight);
+      totalStaticLight = applyReinhard(totalStaticLight, threshold);
       vec3 totalLight = totalStaticLight + totalDynamicLight;
 
       LightColor.rgb = totalLight;

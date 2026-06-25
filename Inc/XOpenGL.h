@@ -1,4 +1,5 @@
 /*=============================================================================
+
 	XOpenGLDrv.h: Unreal OpenGL support header.
 
 	Copyright 2014-2021 Oldunreal
@@ -19,6 +20,8 @@
 // multithreading support for occlusion map generation
 #include <queue>
 #include <atomic>
+
+#include "GLStateManager.h"
 
 #ifdef _MSC_VER
 #pragma warning(disable: 4351)
@@ -59,6 +62,7 @@
 #include "XOpenGLTemplate.h" //thanks han!
 
 #include "FBO.h"
+#include "HeroLight.h"
 
 #if ENGINE_VERSION==436 || ENGINE_VERSION==430
 #define clockFast(Timer)   {Timer -= appCycles();}
@@ -105,8 +109,8 @@
 
 #define DRAWSIMPLE_SIZE 1024
 #define DRAWTILE_SIZE 1024
-#define DRAWCOMPLEX_SIZE 1024
-#define DRAWGOURAUDPOLY_SIZE 1024
+#define DRAWCOMPLEX_SIZE 4096
+#define DRAWGOURAUDPOLY_SIZE 4096
 #define NUMBUFFERS 8
 
 # define MAX_LIGHTS 8192 // maxes out at 512 if UBO
@@ -494,6 +498,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	BITFIELD AmbientOcclusion;
 	BITFIELD IndirectIllumination;
 	BITFIELD HDLightMap;
+	BITFIELD ShadowMaps;
 	BITFIELD CoronaScaling;
 
 	FLOAT GammaMultiplier;
@@ -1022,7 +1027,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 			// stijn: NOTE: nvidia persistent buffers seem to be coherent by default!
 			constexpr GLbitfield PersistentBufferFlags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 
-			SubBufferSize = BufferSize;
+			SubBufferSize = BufferSize;// / sizeof(T);  // convert bytes -> elements
 			BufferType = Target;
 			ExpectedUsage = _ExpectedUsage;
 				
@@ -1159,6 +1164,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 		Tile_Prog,
 		Gouraud_Prog,
 		Complex_Prog,
+		ShadowMap_Prog,
+		ShadowMapSplats_Prog,
 		Prepass_Prog,
 		SSAO_Prog,
 		SsaoBlur_Prog,
@@ -1202,6 +1209,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 			DF_ReadDepth	  = 1 << 18,
 			DF_AmbientOcclusion	  = 1 << 19,
 			DF_HDLightMap	  = 1 << 20,
+			DF_ShadowMaps	  = 1 << 21,
 		};
 	};
     
@@ -1241,7 +1249,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 			OPT_AmbientOcclusion   = 1 << 17,
 			OPT_IndirectIllumination = 1 << 18,
 			OPT_MSAA               = 1 << 19,
-			OPT_HDLightMap		   = 1 << 20
+			OPT_HDLightMap		   = 1 << 20,
+			OPT_ShadowMaps		   = 1 << 21
 		};
 
 
@@ -1449,6 +1458,12 @@ class UXOpenGLRenderDevice : public URenderDevice
 				// slot of the parameters buffer after rotating
 				//auto In = ParametersBuffer.GetElementPtr(static_cast<GLuint>((ParametersBuffer.Size() > 0) ? (ParametersBuffer.Size() - 1) : 0));
 				//memcpy(&DrawCallParams, In, sizeof(DrawCallParamsType));
+				INT last = (ParametersBuffer.NextElemIndex > 0)
+					 ? ParametersBuffer.NextElemIndex - 1
+					 : ParametersBuffer.GetSubBufferSize() - 1;
+
+				auto In = ParametersBuffer.GetElementPtr(last);
+				memcpy(&DrawCallParams, In, sizeof(DrawCallParamsType));
 				if (ParametersBuffer.NextElemIndex > 0)
 				{
 					auto In = ParametersBuffer.GetElementPtr(ParametersBuffer.NextElemIndex - 1);
@@ -1472,7 +1487,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 				ParametersBuffer.BufferData(false);
 
 				// Upload index/meta rings if present
-				if (FacetIndexRing.GetSubBufferSize() > 0)
+				/*if (FacetIndexRing.GetSubBufferSize() > 0)
 				{
 					FacetIndexRing.Bind();
 					FacetIndexRing.BufferData(false);
@@ -1481,7 +1496,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 				{
 					FacetMetaRing.Bind();
 					FacetMetaRing.BufferData(false);
-				}
+				}*/
 
 				// Issue the draw call
 				DrawBuffer.Draw(DrawMode, RenDev);
@@ -1617,7 +1632,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 		SimpleTriangleParametersIndex	= 9,
 		DistanceFogInfoIndex			= 10,
 		FacetMetaIndex                  = 11, // uvec2(start,count) per drawID
-		FacetIndexDataIndex             = 12  // uint indices array
+		FacetIndexDataIndex             = 12,  // uint indices array
+		ShadowMapParametersIndex        = 13,
+		ShadowMapSplatsParametersIndex  = 14
 	};
 
 	enum TextureIndices
@@ -1832,6 +1849,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 	void UXOpenGLRenderDevice::NewLevelPP();
 	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
 
+	// util functions used also by eg. HeroLightstatic UBOOL UXOpenGLRenderDevice::PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N)
+	UBOOL UXOpenGLRenderDevice::PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N);
+   	FVector UXOpenGLRenderDevice::ClosestPointOnTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C);
+
 	// list of lights with coronas so we can shrink them based on distance
 	struct FCoronaLight
 	{
@@ -1843,6 +1864,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TArray<FCoronaLight> CoronaLights;
 
 	// occlusion map stuff
+	static bool BSPVisibilityRay(UModel* Model, INT OriginSurfIndex, const FVector& Start, const FVector& End);
 	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf);
 	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>& Lights, INT iSurf, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model, bool TwoSided, bool IsMover);
 	FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(const TArray<AActor*>* Lights, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model);
@@ -1857,6 +1879,42 @@ class UXOpenGLRenderDevice : public URenderDevice
 	GLuint GStaticLightmapAtlasTex = 0;
 	GLuint64 GStaticLightmapAtlasHandle = 0;
 
+	// shadowmapping resources
+	void UXOpenGLRenderDevice::PickHeroLights(ULevel* Level, const TArray<AActor*>& StaticLevelLights, TArray<ALight*>& OutHeroLights, INT DesiredCount = 8);
+	// hero lights to use for shadowmapping
+	TArray<UXOpenGLHeroLight*> HeroLights;
+	TMap<AActor*, UXOpenGLHeroLight*> ActiveHeroMap;
+	UBOOL ShadowMapDone = false;
+	void UXOpenGLRenderDevice::DrawShadowmapDebugOverlay();
+
+	// splatting stuff.  global cache for splat topology and per frame world positions
+	// runtime, data for rendering
+	struct FCapsuleSplat
+	{
+		FVector P0;     // World-space endpoint A
+		FVector P1;     // World-space endpoint B
+		float   Radius; // Capsule radius
+	};
+	struct CachedActorSplatArray
+	{
+		INT                  LastCachedFrame; // GL->LocalFrameCounter validation token
+		TArray<FCapsuleSplat> Splats;          // Pre-calculated, world-space splats
+	};
+	struct FShadowTriangle
+	{
+		FVector V0, V1, V2;
+	};
+	struct CachedStaticMeshGeometry
+	{
+		TArray<FShadowTriangle> Triangles; // Fully transformed world-space triangles
+	};
+	// per frame worldpos data
+	TMap<AActor*, CachedActorSplatArray> PerFrameActorSplatCache;
+	TMap<AActor*, CachedStaticMeshGeometry> PerFrameStaticMeshCache;
+	void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TArray<FCapsuleSplat>& OutCapsules);
+	void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, TArray<FShadowTriangle>& OutTris);
+	void UXOpenGLRenderDevice::ExtractSkeletalMeshTriangles(USkeletalMesh* S, AActor* Actor, TArray<FShadowTriangle>& OutTris);
+	void UXOpenGLRenderDevice::ExtractUMeshTriangles(UMesh* M, AActor* Actor, TArray<FShadowTriangle>& OutTris);
 
 	// BSP smoothing stuff
 	INT UXOpenGLRenderDevice::LocalFrameCounter = 0;
@@ -1865,6 +1923,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	// Map surface index -> FSurfInfoInternal (built by BuildSmoothVertexNormalsForLevel)
 	TMap<INT, FSurfInfo> SurfaceInfoMap;
+	FSurfInfo* GetSurfInfoByID(INT SurfIndex)
+    {
+        return SurfaceInfoMap.Find(SurfIndex);
+    }
 
 	void UXOpenGLRenderDevice::DumpSurfInfo(INT iSurf, const FSurfInfo& SI);
 
@@ -1883,6 +1945,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// --- Scene render target (MSAA or not) ---
 	Fbo* SceneFbo = nullptr;
     Fbo* ResolveFbo = nullptr; // if MSAA is enabled, we need a separate FBO to resolve the scene into for postprocessing and/or presenting. If not, this will just be a reference to SceneFbo.
+
 	Fbo* CompositeFbo = nullptr; // for post processing.  can't read from and write to resolve at the same time
 
 	// --- Prepass / GBuffer (depth + normal, maybe more later) ---
@@ -2041,8 +2104,98 @@ class UXOpenGLRenderDevice : public URenderDevice
 	};
 	static_assert(sizeof(DrawComplexVertex) == 80, "Invalid complex buffered vertex size");
 
-	// ============================== DRAWPREPASS ==============================
+	// ============================== DRAWSHADOWMAP ==============================
+	void BeginShadowMapFace(
+        INT FaceIndex,
+        const FMatrix& ViewMatrix, 
+        const FMatrix& ProjMatrix, 
+        const FVector& LightPos, 
+        FLOAT LightRadius
+	);
+	void EndShadowMapFace(INT FaceVertexCount);
+	void HandleShadowMapOverflow(INT& FaceVertexCounter);
 
+	void UXOpenGLRenderDevice::DrawShadowMapSurface(
+		const FSceneNode* Frame,
+		UXOpenGLRenderDevice::FSurfInfo& SI,
+		INT& FaceVertexCounter
+	);
+
+	void UXOpenGLRenderDevice::DrawShadowMapMesh(
+		const FSceneNode* Frame,
+		AActor* Actor,
+		INT& FaceVertexCounter
+	);
+
+	struct DrawShadowMapVertex
+	{
+		glm::vec3 Coords;   // 12 bytes (Offset 0)
+		glm::uint DrawID;   // 4 bytes  (Offset 12)
+		glm::uint Class; // 4 bytes  (Offset 16)
+		glm::uint Padding; // 4 bytes  (Offset 20) -> Maintains 24-byte alignment stride
+	};
+	static_assert(sizeof(DrawShadowMapVertex) == 24, "Invalid shadow map vertex size");
+
+	struct DrawShadowMapParameters
+	{
+		glm::mat4 ModelMatrix;      // 64 bytes
+		glm::mat4 ViewMatrix;       // 64 bytes
+		glm::mat4 ProjMatrix;       // 64 bytes
+		glm::vec4 LightWorldPos;    // 16 bytes
+		glm::float32 LightRadius;   // 4 bytes
+		glm::uint32 IsDynamicActor; // 4 bytes
+		glm::vec2 Padding;          // 8 bytes (Forces struct size divisible by 16)
+	};
+	static const ShaderProgram::DrawCallParameterInfo DrawShadowMapParametersInfo[];
+	static_assert(sizeof(DrawShadowMapParameters) == 224, "Invalid shadow map drawcall parameters size");
+
+	void BeginShadowMapSplatsFace(
+        INT FaceIndex,
+        const FMatrix& ViewMatrix, 
+        const FMatrix& ProjMatrix, 
+        const FVector& LightPos, 
+        FLOAT LightRadius
+	);
+	void EndShadowMapSplatsFace(INT FaceVertexCount);
+	void HandleShadowMapSplatsOverflow(INT& FaceVertexCounter);
+
+	void UXOpenGLRenderDevice::DrawShadowMapSplats(
+		const FSceneNode* Frame,
+		AActor* Actor,
+		INT& FaceVertexCounter
+	);
+
+	/*struct DrawShadowMapSplatsVertex
+	{
+		glm::vec3 Center;  // location = 0
+		float     Radius;  // location = 1
+		uint32_t  DrawID;  // location = 2
+	};
+	static_assert(sizeof(DrawShadowMapSplatsVertex) == 20, "Invalid shadow map splats vertex size");
+	*/
+	struct DrawShadowMapSplatsVertex
+	{
+		glm::vec3 P0;     // end A in world space
+		glm::vec3 P1;     // end B in world space
+		float     Radius; // capsule radius
+		uint32_t  DrawID;
+	};
+	static_assert(sizeof(DrawShadowMapSplatsVertex) == 32, "Invalid capsule vertex size");
+
+	struct DrawShadowMapSplatsParameters
+	{
+		glm::mat4 ModelMatrix;      // 64 bytes
+		glm::mat4 ViewMatrix;       // 64 bytes
+		glm::mat4 ProjMatrix;       // 64 bytes
+		glm::vec4 LightWorldPos;    // 16 bytes
+		glm::float32 LightRadius;   // 4 bytes
+		glm::uint32 IsDynamicActor; // 4 bytes
+		glm::vec2 Padding;          // 8 bytes (Forces struct size divisible by 16)
+	};
+	static const ShaderProgram::DrawCallParameterInfo DrawShadowMapSplatsParametersInfo[];
+	static_assert(sizeof(DrawShadowMapSplatsParameters) == 224, "Invalid shadow map drawcall parameters size");
+
+	// ============================== DRAWPREPASS ==============================
 	void UXOpenGLRenderDevice::DrawPrepassSurface(const FSceneNode* Frame, /*const FSurfaceInfo& Surface,*/ FSurfInfo& SI);
 
 	struct DrawPrepassVertex
@@ -2163,7 +2316,31 @@ class UXOpenGLRenderDevice : public URenderDevice
 		// Cached texture Info
 		FTEXTURE_PTR BumpMapInfo{};
 	};
-	
+
+	//
+	// Shadowmap Shader
+	//
+	class DrawShadowMapProgram : public ShaderProgramImpl<DrawShadowMapVertex, DrawShadowMapParameters>
+	{
+	public:
+		DrawShadowMapProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
+		void CreateInputLayout();
+
+		static void BuildVertexShader(GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out);
+		static void BuildFragmentShader(GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out);
+	};
+	// splats version
+	class DrawShadowMapSplatsProgram : public ShaderProgramImpl<DrawShadowMapSplatsVertex, DrawShadowMapSplatsParameters>
+	{
+	public:
+		DrawShadowMapSplatsProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
+		void CreateInputLayout();
+
+		static void BuildVertexShader(GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out);
+		static void BuildGeometryShader(GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out);
+		static void BuildFragmentShader(GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out);
+	};
+
 	//
 	// Prepass Shader
 	//

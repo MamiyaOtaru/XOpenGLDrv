@@ -1,5 +1,5 @@
 /*=============================================================================
-	DrawDepthOnly.cpp: Unreal XOpenGL DrawDepthOnly routines.
+	DrawPrepass.cpp: Unreal XOpenGL DrawDepthOnly prepass routines.
 	Used for BSP depth only pass.
 
 	Revision history:

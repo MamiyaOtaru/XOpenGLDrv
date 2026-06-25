@@ -116,6 +116,7 @@ precision lowp int;
 	Out << "#define DF_ReadDepth " << ShaderDrawFlags::DF_ReadDepth << "u" << END_LINE;
 	Out << "#define DF_AmbientOcclusion " << ShaderDrawFlags::DF_AmbientOcclusion << "u" << END_LINE;
 	Out << "#define DF_HDLightMap " << ShaderDrawFlags::DF_HDLightMap << "u" << END_LINE;
+	Out << "#define DF_ShadowMaps " << ShaderDrawFlags::DF_ShadowMaps << "u" << END_LINE;
 	Out << "#define DF_Masked " << ShaderDrawFlags::DF_Masked << "u" << END_LINE;
 	Out << "#define DF_Unlit " << ShaderDrawFlags::DF_Unlit << "u" << END_LINE;
 	Out << "#define DF_Modulated " << ShaderDrawFlags::DF_Modulated << "u" << END_LINE;
@@ -680,6 +681,8 @@ void UXOpenGLRenderDevice::InitShaders()
 		: static_cast<ShaderProgram*>(new DrawTileESProgram(TEXT("DrawTile"), this));
 	Shaders[Gouraud_Prog]			= new DrawGouraudProgram(TEXT("DrawGouraud"), this);
 	Shaders[Complex_Prog]			= new DrawComplexProgram(TEXT("DrawComplex"), this);
+	Shaders[ShadowMap_Prog]			= new DrawShadowMapProgram(TEXT("DrawShadowMap"), this);
+	Shaders[ShadowMapSplats_Prog]	= new DrawShadowMapSplatsProgram(TEXT("DrawShadowMapSplats"), this);
 	Shaders[Prepass_Prog]			= new DrawPrepassProgram(TEXT("DrawPrepass"), this);
 	Shaders[SSAO_Prog]				= new SSAOProgram(TEXT("DrawSSAO"), this);
 	Shaders[SsaoBlur_Prog]			= new SsaoBlurProgram(TEXT("DrawSSAOBlur"), this);
@@ -987,6 +990,8 @@ void UXOpenGLRenderDevice::ShaderCompilationOptions::SetOptionsForRendererConfig
 		SetOption(OPT_IndirectIllumination);
 	if (RenDev->HDLightMap)
 		SetOption(OPT_HDLightMap);
+	if (RenDev->ShadowMaps)
+		SetOption(OPT_ShadowMaps);
 	if (RenDev->UseAA)
 		SetOption(OPT_MSAA);
 	if (RenDev->SimulateMultiPass)
@@ -1027,6 +1032,7 @@ AddOptionFunc(Result, L ## #x, (OptionsMask & x) ? true : false);
 	ADD_OPTION(OPT_AmbientOcclusion)
 	ADD_OPTION(OPT_IndirectIllumination)
 	ADD_OPTION(OPT_HDLightMap)
+	ADD_OPTION(OPT_ShadowMaps)
 	ADD_OPTION(OPT_MSAA)
 	ADD_OPTION(OPT_EnvironmentMaps)
     ADD_OPTION(OPT_DistanceFog)

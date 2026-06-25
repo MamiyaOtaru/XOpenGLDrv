@@ -77,10 +77,60 @@ void UXOpenGLRenderDevice::DumpSurfInfo(INT iSurf, const FSurfInfo& SI)
 		}
 		debugf(TEXT("    TriIdx: %s"), *triStr);
 	}
-
-
 }
 
+INT UploadLights(UXOpenGLRenderDevice::FSurfInfo* SI,
+	UXOpenGLRenderDevice::DrawComplexProgram* Shader,
+	BOOL BumpMaps,
+	BOOL HDLightMap,
+	TArray<glm::uint> facetIndices,
+	INT staticCount,
+	INT dynamicCount,
+	UXOpenGLRenderDevice::EOcclusionState GOcclusionState)
+{
+	GLuint metaIndex = Shader->FacetMetaRing.SubBufferOffset + Shader->FacetMetaRing.NextElemIndex;
+	// Compute the facet record pointer ONCE
+	UXOpenGLRenderDevice::FFacetData* facetPtr = Shader->FacetMetaRing.GetCurrentElementPtr();
+	facetPtr->LightMeta = glm::uvec4(0, 0, 0, 0);
+	facetPtr->StaticUVMinMax = glm::vec4(0);
+
+	// Write light list meta (if BumpMaps enabled)
+	if (BumpMaps)
+	{
+		INT startIndex = 0;
+		INT count = static_cast<GLuint>(facetIndices.Num());
+
+		if (count > 0)
+		{
+			// absolute start index in the big SSBO
+			startIndex = Shader->FacetIndexRing.SubBufferOffset + Shader->FacetIndexRing.NextElemIndex;
+
+			// copy indices
+			glm::uint* dst = Shader->FacetIndexRing.GetCurrentElementPtr();
+			for (UINT k = 0; k < count; ++k)
+				dst[k] = facetIndices(k);
+
+			Shader->FacetIndexRing.Advance(count);
+
+			facetPtr->LightMeta = glm::uvec4(startIndex, staticCount, dynamicCount, 0);
+		}
+	}
+	if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+	{
+		const UXOpenGLRenderDevice::FSurfaceLightmap& LM = SI->HDLightmap;
+		facetPtr->StaticUVMinMax = glm::vec4(LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
+	}
+	// Advance ONCE per facet
+	Shader->FacetMetaRing.Advance(1);
+	return metaIndex;
+}
+
+void UploadOcclusionMap(UXOpenGLRenderDevice::FSurfInfo* SI,
+	UXOpenGLRenderDevice::FFacetData* facetPtr)
+{
+	const UXOpenGLRenderDevice::FSurfaceLightmap& LM = SI->HDLightmap;
+	facetPtr->StaticUVMinMax = glm::vec4(LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
+}
 
 /*-----------------------------------------------------------------------------
 	RenDev Interface
@@ -127,6 +177,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	SetProgram(Complex_Prog);
 
 	TArray<glm::uint> facetIndices;
+	GLuint startIndex = 0;
+	GLuint count = 0;
 	int staticCount = 0;
 	int dynamicCount = 0;
 
@@ -215,43 +267,16 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		SetBlend(NextPolyFlags);
 	}
 
-	GLuint metaIndex = Shader->FacetMetaRing.SubBufferOffset + Shader->FacetMetaRing.NextElemIndex;
-	// Compute the facet record pointer ONCE
-	FFacetData* facetPtr = Shader->FacetMetaRing.GetCurrentElementPtr();
-	facetPtr->LightMeta      = glm::uvec4(0, 0, 0, 0);
-	facetPtr->StaticUVMinMax = glm::vec4(0);
-
-	// Write light list meta (if BumpMaps enabled)
-	if (BumpMaps)
-	{
-		GLuint startIndex = 0;
-		GLuint count = static_cast<GLuint>(facetIndices.Num());
-
-		if (count > 0)
-		{
-			// absolute start index in the big SSBO
-			startIndex = Shader->FacetIndexRing.SubBufferOffset + Shader->FacetIndexRing.NextElemIndex;
-
-			// copy indices
-			glm::uint* dst = Shader->FacetIndexRing.GetCurrentElementPtr();
-			for (UINT k = 0; k < count; ++k)
-				dst[k] = facetIndices(k);
-
-			Shader->FacetIndexRing.Advance(count);
-
-			facetPtr->LightMeta = glm::uvec4(startIndex, staticCount, dynamicCount, 0);
-		}
-	}
-
 	// Write static lightmap params (if present).  Only do mover if we have a Node match
-	if (HDLightMap && GOcclusionState == EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+	INT facetIDForVerts;
+	if (BumpMaps ||
+		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
 	{
-		const FSurfaceLightmap& LM = SI->HDLightmap;
-		facetPtr->StaticUVMinMax = glm::vec4(LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
-		DrawFlags |= ShaderDrawFlags::DF_HDLightMap;
+		// absolute index into FacetMeta SSBO
+		facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
+		if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+			DrawFlags |= ShaderDrawFlags::DF_HDLightMap;
 	}
-	// Advance ONCE per facet
-	Shader->FacetMetaRing.Advance(1);
 	
 	DrawComplexParameters* DrawCallParams = Shader->ParametersBuffer.GetCurrentElementPtr();
 
@@ -446,7 +471,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	Shader->DrawBuffer.StartDrawCall();
 	auto DrawID = Shader->DrawBuffer.GetDrawID();
-	auto facetIDForVerts = metaIndex; // absolute index into FacetMeta SSBO
 
 	INT FacetVertexCount = 0;
 	TArray<glm::vec3> PolyVertices;
@@ -519,6 +543,13 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				Shader->Flush(true);
 				Shader->DrawBuffer.StartDrawCall();
 				DrawID = Shader->DrawBuffer.GetDrawID();
+
+				if (BumpMaps ||
+					HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+				{
+					// absolute index into FacetMeta SSBO
+					facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
+				}
 
 				if (neededVerts >= Shader->VertexBufferSize)
 				{
@@ -671,6 +702,14 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				Shader->DrawBuffer.StartDrawCall();
 				DrawID = Shader->DrawBuffer.GetDrawID();
 
+				INT facetIDForVerts;
+				if (BumpMaps ||
+					HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+				{
+					// absolute index into FacetMeta SSBO
+					facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
+				}
+
 				// just in case...
 				if ((NumPts - 2) * 3 >= Shader->VertexBufferSize)
 				{
@@ -743,6 +782,13 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				Shader->Flush(true);
 				Shader->DrawBuffer.StartDrawCall();
 				DrawID = Shader->DrawBuffer.GetDrawID();
+
+				if (BumpMaps ||
+					HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+				{
+					// absolute index into FacetMeta SSBO
+					facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
+				}
 
 				// just in case...
 				if ((NumPts - 2) * 3 >= Shader->VertexBufferSize)

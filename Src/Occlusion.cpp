@@ -289,16 +289,14 @@ static bool EmergedFromTransparent(
     return false;
 }
 
-bool BSPVisibilityRay(
+// used in creating the occlusion map, and also in picking hero lights in PerPixel
+bool UXOpenGLRenderDevice::BSPVisibilityRay(
     UModel* Model,
     INT OriginSurfIndex,
     const FVector& Start,
     const FVector& End)
 {
-    FLOAT skipMagnitude = 8.0;
-
-    const FBspSurf& OriginSurf = Model->Surfs(OriginSurfIndex);
-    bool isMover = (OriginSurf.Actor && OriginSurf.Actor->IsA(AMover::StaticClass()));
+    FLOAT skipMagnitude = 8.0f;
 
     FVector Dir          = (End - Start).SafeNormal();
     FVector CurrentStart = Start;
@@ -306,6 +304,19 @@ bool BSPVisibilityRay(
     bool bInitialCheck    = true;
     bool bEscapedOrigin   = false;
     bool bLastTranslucent = false;
+    bool isMover          = false;
+    FBspSurf* OriginSurf  = nullptr;
+
+    if (OriginSurfIndex >= 0 && OriginSurfIndex < Model->Surfs.Num())
+    {
+        OriginSurf = &Model->Surfs(OriginSurfIndex); 
+        isMover = (OriginSurf->Actor && OriginSurf->Actor->IsA(AMover::StaticClass()));
+    }
+    else
+    {
+        // Treat as starting out in free air, escaping the origin immediately
+        bEscapedOrigin = true; 
+    }
 
     bool occluded = true; // default pessimistic
 
@@ -399,7 +410,7 @@ bool BSPVisibilityRay(
                 DWORD PF = Surf.PolyFlags;
                 bTransSurf = (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
                                     PF_Masked | PF_AlphaTexture | PF_Portal)) != 0;
-                bSameSurface = isMover && Surf.Actor == OriginSurf.Actor;
+                bSameSurface = isMover && OriginSurf && Surf.Actor == OriginSurf->Actor;
                 //bSameSurface |= SameSurface(Model, OriginSurf, HitSurf, NodeIndex);
             }
             else
@@ -580,7 +591,7 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     float hdLightmapIntensity = 2.0; // must match the value in the shader for consistent final results
     Unshadowed.X *= hdLightmapIntensity * vanillaLightmapIntensity;   Unshadowed.Y *= hdLightmapIntensity * vanillaLightmapIntensity;   Unshadowed.Z *= hdLightmapIntensity * vanillaLightmapIntensity;
     Shadowed.X   *= hdLightmapIntensity * vanillaLightmapIntensity;   Shadowed.Y   *= hdLightmapIntensity * vanillaLightmapIntensity;   Shadowed.Z   *= hdLightmapIntensity * vanillaLightmapIntensity;
-
+    /*
     float GPU_Threshold = 1.34f; // <- must match the clamp in the shader!
     // Apply flat Ceiling Pass to total light to preserve channels potential intensity
     // apply color preserving clamp to final, which is where we want to end up
@@ -601,7 +612,7 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     Shadowed.X = clampChannel(Shadowed.X);
     Shadowed.Y = clampChannel(Shadowed.Y);
     Shadowed.Z = clampChannel(Shadowed.Z);
-
+    */
     // Now compute final color-accurate RGB ratio safely
     float FinalR = Shadowed.X / (Unshadowed.X + eps);
     float FinalG = Shadowed.Y / (Unshadowed.Y + eps);

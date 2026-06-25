@@ -405,6 +405,10 @@
     <ClCompile Include="DrawDepthOnly_GLSL.cpp" />
     <ClCompile Include="DrawGouraud.cpp" />
     <ClCompile Include="DrawGouraud_GLSL.cpp" />
+    <ClCompile Include="DrawShadowmap.cpp" />
+    <ClCompile Include="DrawShadowmapSplats.cpp" />
+    <ClCompile Include="DrawShadowmapSplats_GLSL.cpp" />
+    <ClCompile Include="DrawShadowmap_GLSL.cpp" />
     <ClCompile Include="DrawSimple.cpp" />
     <ClCompile Include="DrawSimple_GLSL.cpp" />
     <ClCompile Include="DrawTile.cpp" />
@@ -413,12 +417,15 @@
     <ClCompile Include="ExternalTextureLoader.cpp" />
     <ClCompile Include="FBO.cpp" />
     <ClCompile Include="glad.cpp" />
+    <ClCompile Include="GLStateManager.cpp" />
+    <ClCompile Include="HeroLight.cpp" />
     <ClCompile Include="Occlusion.cpp" />
     <ClCompile Include="PerPixel.cpp" />
     <ClCompile Include="PostProcess.cpp" />
     <ClCompile Include="SetTexture.cpp" />
     <ClCompile Include="ShaderLoader.cpp" />
     <ClCompile Include="ShaderProgram.cpp" />
+    <ClCompile Include="ShadowMapping.cpp" />
     <ClCompile Include="SSAOPass.cpp" />
     <ClCompile Include="SSGIPass.cpp" />
     <ClCompile Include="StbImpl.cpp" />
@@ -437,6 +444,8 @@
     <ClInclude Include="..\Inc\XOpenGL.h" />
     <ClInclude Include="..\Inc\XOpenGLDrv.h" />
     <ClInclude Include="..\Inc\XOpenGLTemplate.h" />
+    <ClInclude Include="..\Inc\GLStateManager.h" />
+    <ClInclude Include="..\Inc\HeroLight.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>

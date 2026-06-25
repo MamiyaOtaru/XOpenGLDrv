@@ -11,6 +11,8 @@ typedef int           GLsizei;
 class Fbo
 {
 public:
+    bool isCubemap = false; 
+
     GLuint fboID = 0;
     GLuint depthTexID = 0;
     GLuint depthRboID = 0;
@@ -32,10 +34,14 @@ public:
         bool bDepthRbo,
         GLenum colorFormat = 0);
 
+    // specialized constructor for cubemaps to keep clean structural separation
+    Fbo(int size, int numColorAttachments, GLenum colorFormat);
+
     ~Fbo();
 
     void Bind();
     void Unbind();
+    void BindColorCubemap(GLuint attachmentIndex, GLuint textureUnit);
     void Dispose();
 
     // Declarations only – implementations go in FBO.cpp
