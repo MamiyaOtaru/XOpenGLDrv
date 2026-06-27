@@ -1873,6 +1873,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	void UXOpenGLRenderDevice::WorkerThread(std::queue<int>& nodeQueue, ULevel* Level);
 	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
 	void UXOpenGLRenderDevice::BuildingPoll();
+	bool UXOpenGLRenderDevice::UploadKTX2AtlasToGPU(const FString& InKTX2Path);
 	bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta);
 	void UXOpenGLRenderDevice::NewLevelOC();
 

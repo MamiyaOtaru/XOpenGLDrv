@@ -889,6 +889,181 @@ void DumpAtlasToDDS(const TArray<FPlane>& Atlas, INT AtlasWidth, INT AtlasHeight
     debugf(TEXT("XOpenGL: Wrote DDS atlas (BC3): %s"), *AtlasDDS);
 }
 
+#pragma pack(push, 1)
+
+// Strict 80-byte Packed KTX2 Combined Header Layout
+struct FKTX2Header
+{
+    uint8_t  identifier[12];     
+    uint32_t vkFormat;           // 137 = VK_FORMAT_BC3_UNORM_BLOCK (DXT5)
+    uint32_t typeSize;           // 1
+    uint32_t pixelWidth;
+    uint32_t pixelHeight;
+    uint32_t pixelDepth;
+    uint32_t layerCount;
+    uint32_t faceCount;
+    uint32_t levelCount;
+    uint32_t supercompressionScheme;
+
+    uint32_t dfdByteOffset;      // Locked exactly to 104
+    uint32_t dfdByteLength;      // Locked exactly to 60
+
+    uint32_t kvdByteOffset;
+    uint32_t kvdByteLength;
+    uint64_t sgdByteOffset;
+    uint64_t sgdByteLength;
+};
+
+// Strict 24-byte Level Index Layout
+struct FKTX2LevelIndex
+{
+    uint64_t byteOffset;             // Locked exactly to 176 to satisfy alignment
+    uint64_t byteLength;   
+    uint64_t uncompressedByteLength; 
+};
+
+// Precise, 60-Byte Data Format Descriptor (DFD) Block for BC3
+struct FKTX2_DFD_BC3
+{
+    uint32_t dfdTotalSize;           // 60
+    uint32_t vendorAndType;          // 0 (vendorId: 17 bits, descriptorType: 15 bits)
+    uint16_t versionNumber;          // 2
+    uint16_t descriptorBlockSize;    // 56
+
+    uint8_t  colorModel;             // 130 = KHR_DF_MODEL_BC3
+    uint8_t  colorPrimaries;         // 1 = KHR_DF_FLAG_PRIMARIES_BT709
+    uint8_t  transferFunction;       // 1 = KHR_DF_TRANSFER_LINEAR
+    uint8_t  flagsChannel;           // 0 = KHR_DF_FLAG_ALPHA_STRAIGHT
+
+    // Separated into explicit standalone primitive bytes to bypass compiler array shifts
+    uint8_t  texelBlockDimensionW;   // 3 (4 - 1)
+    uint8_t  texelBlockDimensionH;   // 3 (4 - 1)
+    uint8_t  texelBlockDimensionD;   // 0
+    uint8_t  texelBlockDimensionR;   // 0
+
+    uint8_t  bytesPlane0;            // 16 (BC3 payload block allocation size)
+    uint8_t  bytesPlane1to7[7];      // All remaining planes initialized cleanly to 0
+
+    // Exactly 2 Samples * 4 elements each = 8 elements total (32 bytes)
+    uint32_t sampleInfo[8];      
+};
+
+#pragma pack(pop)
+
+
+const BYTE KTX2_Magic_Identifier[12] = { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
+
+void DumpAtlasToKTX2(const TArray<FPlane>& InAtlas, INT AtlasWidth, INT AtlasHeight, const FString& OutKTX2Path)
+{
+    if (AtlasWidth <= 0 || AtlasHeight <= 0 || InAtlas.Num() == 0)
+        return;
+
+    FArchive* Ar = GFileManager->CreateFileWriter(*OutKTX2Path);
+    if (!Ar) return;
+
+    // --- 1. Populate and Serialize KTX2 Header Struct Block (80 Bytes) ---
+    FKTX2Header Header = {};
+    appMemcpy(Header.identifier, KTX2_Magic_Identifier, 12);
+    Header.vkFormat               = 137; // VK_FORMAT_BC3_UNORM_BLOCK (DXT5)
+    Header.typeSize               = 1;
+    Header.pixelWidth             = (uint32_t)AtlasWidth;
+    Header.pixelHeight            = (uint32_t)AtlasHeight;
+    Header.faceCount              = 1;
+    Header.levelCount             = 1;
+    Header.supercompressionScheme = 0;
+
+    Header.dfdByteOffset          = 104; 
+    Header.dfdByteLength          = sizeof(FKTX2_DFD_BC3); // Exactly 60 bytes
+
+    Ar->Serialize(&Header, sizeof(FKTX2Header));
+
+    // --- 2. Populate and Serialize Level Index Struct Block (24 Bytes) ---
+    FKTX2LevelIndex LevelIndex = {};
+    // SPEC MANDATE REMINDER: 80 (Header) + 24 (Level Index) + 60 (DFD) + 12 (Alignment Padding) = 176
+    LevelIndex.byteOffset             = 176; // Strictly 16-byte aligned hardware payload boundary target
+    LevelIndex.byteLength             = (uint64_t)((AtlasWidth + 3) / 4) * ((AtlasHeight + 3) / 4) * 16;
+    LevelIndex.uncompressedByteLength = LevelIndex.byteLength;
+
+    Ar->Serialize(&LevelIndex, sizeof(FKTX2LevelIndex));
+
+    // --- 3. Populate and Serialize Data Format Descriptor Struct Block (60 Bytes) ---
+    FKTX2_DFD_BC3 DFD = {};
+    DFD.dfdTotalSize        = sizeof(FKTX2_DFD_BC3); // Exactly 60 bytes
+    DFD.vendorAndType       = 0;
+    DFD.versionNumber       = 2;
+    DFD.descriptorBlockSize = DFD.dfdTotalSize - 4; // Exactly 56
+
+    DFD.colorModel          = 130; // KHR_DF_MODEL_BC3 = 130
+    DFD.colorPrimaries      = 1;
+    DFD.transferFunction    = 1;
+    DFD.flagsChannel        = 0;
+
+    DFD.texelBlockDimensionW = 3; // KDF rule: size - 1 (4 - 1 = 3)
+    DFD.texelBlockDimensionH = 3; 
+    DFD.texelBlockDimensionD = 0;
+    DFD.texelBlockDimensionR = 0;
+
+    DFD.bytesPlane0 = 16; // 16 bytes per BC3 block allocation size
+    appMemset(DFD.bytesPlane1to7, 0, 7);
+
+    // FIXED: Explicit index targeting guarantees every DWORD lands in the correct struct slot
+    // Sample 0 (Indices 0-3): Alpha Channel Layout Descriptor
+    DFD.sampleInfo[0] = 0x0F3F0000; // FIXED BITMASK: channelId=15 (Alpha), bitLength=63, bitOffset=0, qualifierLinear=0
+    DFD.sampleInfo[1] = 0x00000000; // samplePosition0-3 = 0
+    DFD.sampleInfo[2] = 0x00000000; // lower limit = 0
+    DFD.sampleInfo[3] = 0xFFFFFFFF; // upper limit = 4294967295
+
+    // Sample 1 (Indices 4-7): Color Channel Layout Descriptor
+    DFD.sampleInfo[4] = 0x003F0040; // FIXED BITMASK: channelId=0 (Color), bitLength=63, bitOffset=64 (0x40), qualifierLinear=0
+    DFD.sampleInfo[5] = 0x00000000; // samplePosition0-3 = 0
+    DFD.sampleInfo[6] = 0x00000000; // lower limit = 0
+    DFD.sampleInfo[7] = 0xFFFFFFFF; // upper limit = 4294967295
+
+    Ar->Serialize(&DFD, sizeof(FKTX2_DFD_BC3)); // Serializes pristine struct whole starting at byte 104
+
+    // --- 3b. Inject 12 Bytes of Hardware Mip Alignment Padding ---
+    // File position is exactly 164 bytes here. We serialize 12 zero padding bytes to safely 
+    // advance the physical file cursor to byte 176, matching your LevelIndex.byteOffset.
+    BYTE MipPadding[12];
+    appMemset(MipPadding, 0, 12);
+    Ar->Serialize(MipPadding, 12);
+
+    // --- 4. Stream Raw BC3 block payloads (File position: starts exactly at byte 176) ---
+    BYTE rgba[64]; // Brackets securely preserved!
+    BYTE bc3[16];  // Brackets securely preserved!
+
+    for (INT by = 0; by < AtlasHeight; by += 4)
+    {
+        for (INT bx = 0; bx < AtlasWidth; bx += 4)
+        {
+            for (INT y = 0; y < 4; y++)
+            {
+                for (INT x = 0; x < 4; x++)
+                {
+                    INT sx = Clamp(bx + x, 0, AtlasWidth - 1);
+                    INT sy = Clamp(by + y, 0, AtlasHeight - 1);
+
+                    const FPlane& P = InAtlas(sy * AtlasWidth + sx);
+                    INT idx = (y * 4 + x) * 4;
+
+                    rgba[idx+0] = (BYTE)(Clamp(appFloor(P.X * 255.f + 0.5f), 0, 255));
+                    rgba[idx+1] = (BYTE)(Clamp(appFloor(P.Y * 255.f + 0.5f), 0, 255));
+                    rgba[idx+2] = (BYTE)(Clamp(appFloor(P.Z * 255.f + 0.5f), 0, 255));
+                    rgba[idx+3] = (BYTE)(Clamp(appFloor(P.W * 255.f + 0.5f), 0, 255));
+                }
+            }
+
+            stb_compress_dxt_block(bc3, rgba, 1, STB_DXT_NORMAL);
+            Ar->Serialize(bc3, 16);
+        }
+    }
+
+    Ar->Close();
+    delete Ar;
+}
+
+
+
 void DumpAtlasToDisk(
     const TArray<FPlane>& Atlas,
     INT AtlasWidth,
@@ -1600,33 +1775,16 @@ void UXOpenGLRenderDevice::BuildingPoll()
             const FString PNG  = AtlasPNG;
             const FString Meta = AtlasMeta;
 
-            DumpAtlasToDisk(Atlas, AtlasW, AtlasH, AtlasPNG);
-            //DumpAtlasToDDS(Atlas, AtlasWidth, AtlasHeight, AtlasPNG, EDDSType::BC1);
+            //DumpAtlasToDisk(Atlas, AtlasW, AtlasH, AtlasPNG);
+            FString AtlasKTX2 = AtlasPNG.Replace(TEXT(".png"), TEXT(".ktx2"));
+            DumpAtlasToKTX2(Atlas, AtlasW, AtlasH, AtlasKTX2);
+            //DumpAtlasToDDS(Atlas, AtlasW, AtlasH, AtlasPNG, EDDSType::BC1);
             DumpAtlasMetadata(PendingLightmaps, AtlasMeta);
             AtlasFinished.store(true, std::memory_order_release);
            
             // Now upload the texture
-            glGenTextures(1, &GStaticLightmapAtlasTex);
-            glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
+            UploadKTX2AtlasToGPU(AtlasKTX2);
 
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F,
-                         AtlasW, AtlasH,
-                         0, GL_RGBA, GL_FLOAT,
-                         Atlas.GetData());
-
-            glGenerateMipmap(GL_TEXTURE_2D);
-
-            if (UsingBindlessTextures)
-            {
-                GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
-                glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
-            }
-            
             GOcclusionState = EOcclusionState::Ready;
             StatusMessage   = TEXT("");
 
@@ -1648,6 +1806,84 @@ static UBOOL FileExistsUE1(const FString& Path)
     return GFileManager->FileSize(*Path) >= 0;
 }
 
+bool UXOpenGLRenderDevice::UploadKTX2AtlasToGPU(const FString& InKTX2Path)
+{
+    FArchive* Ar = GFileManager->CreateFileReader(*InKTX2Path);
+    if (!Ar) return false;
+
+    // 1. Extract the unified 80-byte identification header block structure
+    FKTX2Header HeaderFile;
+    Ar->Serialize(&HeaderFile, sizeof(FKTX2Header));
+
+    // 2. Clear security and specification layout verification boundaries
+    if (appMemcmp(HeaderFile.identifier, KTX2_Magic_Identifier, 12) != 0 ||
+        HeaderFile.vkFormat != 137 || HeaderFile.levelCount != 1)
+    {
+        Ar->Close();
+        delete Ar;
+        return false;
+    }
+
+    INT W = HeaderFile.pixelWidth;
+    INT H = HeaderFile.pixelHeight;
+
+    // 3. Extract the 24-byte Level Index metadata table element
+    FKTX2LevelIndex LevelIdxTable;
+    Ar->Serialize(&LevelIdxTable, sizeof(FKTX2LevelIndex));
+
+    // 4. Seek cleanly to the 16-byte aligned hardware payload address target (176)
+    Ar->Seek((INT)LevelIdxTable.byteOffset);
+
+    TArray<BYTE> CompressedBuffer;
+    CompressedBuffer.AddZeroed((INT)LevelIdxTable.byteLength);
+    Ar->Serialize(CompressedBuffer.GetData(), (INT)LevelIdxTable.byteLength);
+
+    Ar->Close();
+    delete Ar;
+
+    // 5. Stream texture data payload straight to the GPU allocation handle
+    glGenTextures(1, &GStaticLightmapAtlasTex);
+    glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
+
+    // no mips
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // 0x8DB5 = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT (BC3)
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    GLenum internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+    glCompressedTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        internalFormat, 
+        W, H,
+        0,
+        (INT)LevelIdxTable.byteLength,
+        CompressedBuffer.GetData()
+    );
+
+    CompressedBuffer.Empty();
+
+    if (UsingBindlessTextures)
+    {
+        GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
+        glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
+    }
+
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR)
+    {
+        debugf(TEXT("KTX2 upload GL error: %d"), err);
+    }
+
+    return true;
+}
+
 bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta)
 {
     // Clean up any existing atlas (belt-and-suspenders; NewLevelOC also does this)
@@ -1664,9 +1900,10 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
     }
 
     // Make sure files exist
-    if (!FileExistsUE1(AtlasMeta) || !FileExistsUE1(AtlasPNG))
+    FString AtlasKTX2 = AtlasPNG.Replace(TEXT(".png"), TEXT(".ktx2"));
+    if (!FileExistsUE1(AtlasMeta) || !FileExistsUE1(AtlasKTX2))
     {
-        debugf(TEXT("XOpenGL: Atlas files missing: %s / %s"), *AtlasPNG, *AtlasMeta);
+        debugf(TEXT("XOpenGL: Atlas files missing: %s / %s"), *AtlasKTX2, *AtlasMeta);
         return false;
     }
 
@@ -1754,48 +1991,9 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
         return false;
     }
 
-    // Load PNG as float RGBA via stb_image (or your equivalent)
-    int W = 0, H = 0, Comp = 0;
-    // FORCE stb_image to treat the PNG bytes as pure linear data, skipping the 2.2 gamma crash
-    stbi_ldr_to_hdr_gamma(1.0f);
-    float* Pixels = stbi_loadf(TCHAR_TO_ANSI(*AtlasPNG), &W, &H, &Comp, 4);
-    if (!Pixels)
+    if (!UploadKTX2AtlasToGPU(AtlasKTX2))
     {
-        debugf(TEXT("XOpenGL: Failed to load atlas PNG: %s"), *AtlasPNG);
         return false;
-    }
-
-    debugf(TEXT("XOpenGL: Loaded atlas PNG %s (%dx%d)"), *AtlasPNG, W, H);
-
-    // Upload to GL
-    glGenTextures(1, &GStaticLightmapAtlasTex);
-    glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glTexImage2D(
-        GL_TEXTURE_2D,
-        0,
-        GL_RGBA16F,
-        W, H,
-        0,
-        GL_RGBA,
-        GL_FLOAT,
-        Pixels
-    );
-
-    glGenerateMipmap(GL_TEXTURE_2D);
-
-    stbi_image_free(Pixels);
-
-    // Bindless handle
-    if (UsingBindlessTextures)
-    {
-        GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
-        glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
     }
 
     // Apply atlas UVs AND reconstruct per-vertex lightmap UVs
@@ -1874,7 +2072,8 @@ void UXOpenGLRenderDevice::NewLevelOC()
     FString AtlasPNG, AtlasMeta;
     GetAtlasPathsForLevel(LastLevel->GetOuter()->GetName(), AtlasPNG, AtlasMeta);
     //FString liff = LastLevel->GetLevelInfo()->Title;
-    if (FileExistsUE1(AtlasPNG) && FileExistsUE1(AtlasMeta))
+    FString AtlasKTX2 = AtlasPNG.Replace(TEXT(".png"), TEXT(".ktx2"));
+    if (FileExistsUE1(AtlasKTX2) && FileExistsUE1(AtlasMeta))
     {
         if (LoadStaticLightmapAtlas(LastLevel, AtlasPNG, AtlasMeta))
         {

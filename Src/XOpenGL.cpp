@@ -1895,7 +1895,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 				// load them, is now safe
 				// search the static lights for likely hero lights for shadow mapping
 				TArray<ALight*> ChosenActors;
-				PickHeroLights(LastLevel, StaticLevelLights, ChosenActors, 280); // can use a DesiredCount variable
+				PickHeroLights(LastLevel, StaticLevelLights, ChosenActors, 80); // can use a DesiredCount variable
 				for (INT i = 0; i < ChosenActors.Num(); ++i)
 				{
 					// The class object encapsulates its own complete data pass natively on creation
