@@ -183,6 +183,15 @@ void UXOpenGLRenderDevice::DrawGouraudPolygon(FSceneNode* Frame, FTextureInfo& I
 	if (NoDrawGouraud)
 		return;
 
+	if (ShadowMaps && Info.Texture)
+	{
+		FName TextureName = Info.Texture->GetFName();
+		if ((PolyFlags & PF_Modulated) && TextureName == FName(TEXT("energymark")))
+		{
+			return; // Drop the blob shadow polygon completely
+		}
+	}
+
 	auto Shader = dynamic_cast<DrawGouraudProgram*>(Shaders[Gouraud_Prog]);
 
     STAT(clockFast(Stats.GouraudPolyCycles));

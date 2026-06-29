@@ -1887,6 +1887,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TMap<AActor*, UXOpenGLHeroLight*> ActiveHeroMap;
 	UBOOL ShadowMapDone = false;
 	void UXOpenGLRenderDevice::DrawShadowmapDebugOverlay();
+	void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame);
 
 	// splatting stuff.  global cache for splat topology and per frame world positions
 	// runtime, data for rendering

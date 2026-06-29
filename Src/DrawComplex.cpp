@@ -458,7 +458,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	if (PhongShading && BumpMaps && (SI && !SI->IsMover)) // phong only works in per pixel lighting mode
 		DrawFlags |= ShaderDrawFlags::DF_PhongShading;
 	bool safeToReadDepth = !(Surface.PolyFlags & PF_Occlude);
-	if (safeToReadDepth && !IsSolidBSP && (Surface.PolyFlags & (PF_AlphaTexture | PF_Translucent)) && !(Surface.PolyFlags & PF_Semisolid))// && IsDepthFadeFX(Surface.Texture->Texture)) // don't fade out "non solid" that is really just unlit
+	if (safeToReadDepth && !IsSolidBSP && (Surface.PolyFlags & (PF_AlphaTexture | PF_Translucent)) && !(Surface.PolyFlags & PF_Semisolid) && IsDepthFadeFX(Surface.Texture->Texture))// && IsDepthFadeFX(Surface.Texture->Texture)) // don't fade out "non solid" that is really just unlit
 	{
 		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
 		PrepareDepthTexture();

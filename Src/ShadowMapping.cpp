@@ -187,6 +187,10 @@ void UXOpenGLRenderDevice::PickHeroLights(
             // Interaction zone based on typical room scale (approx 2000 units)
             float InfluenceRadius = Max(2000.0f, BestRadius + Target->WorldLightRadius());
 
+            /*
+            // this fully eliminates lights from contention
+            // could be good for processing speed if we recalculate this per frame or something
+            // but for now it is a one time thing on level load
             if (Dist < InfluenceRadius)
             {
                 // Smooth Gaussian decay curve
@@ -195,6 +199,20 @@ void UXOpenGLRenderDevice::PickHeroLights(
                 float Penalty = Factor * Factor; 
 
                 Candidates(i).CurrentScore *= Penalty;
+            }*/
+
+            if (Dist < InfluenceRadius)
+            {
+                // --- SUBTRACTIVE GRANULAR PENALTY ---
+                // Linear penalty factor: 1.0 at overlapping center, sliding to 0.0 at the boundary edge
+                float Factor = 1.0f - (Dist / InfluenceRadius);
+                
+                // We penalize the CURRENT score by reducing it by a fraction of its own BASE score.
+                // The max penalty is capped at 75%, ensuring a 25% minimum score floor remains.
+                // This pushes crowded lights down the sorting queue without ever erasing them completely!
+                float Penalty = Candidates(i).BaseScore * Factor * 0.75f;
+                
+                Candidates(i).CurrentScore = Max(0.005f, Candidates(i).CurrentScore - Penalty);
             }
         }
     }
@@ -435,7 +453,7 @@ static FVector TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, AActor* 
     W.Y = R.X * AX.Y + R.Y * AY.Y + R.Z * AZ.Y;
     W.Z = R.X * AX.Z + R.Y * AY.Z + R.Z * AZ.Z;
 
-    return W + Actor->Location;
+    return W + Actor->Location + Actor->PrePivot;
 }
 
 void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TArray<FCapsuleSplat>& OutCapsules)
@@ -778,3 +796,168 @@ void UXOpenGLRenderDevice::ExtractUMeshTriangles(UMesh* M, AActor* Actor, TArray
         OutTris.AddItem(T);
     }
 }
+
+// game loop
+INT    UserGuaranteed        = 30;   // user preference for number of guaranteed lights
+INT    Guaranteed            = UserGuaranteed; // Dynamically scales between a user-configured floor and a hardware ceiling
+INT    ActivePoolSize        = Guaranteed * 3;   // Mathematically locked to UserGuaranteed * 2
+INT    GSuccessFramesCounter = 0;   // Counts consecutive frames with clean headroom
+INT    GFailureFramesCounter = 0;   // Counts consecutive frames running on a tight budget
+INT    GRoundRobinCurrentIndex = 0;  // Sliding window pointer
+LARGE_INTEGER GLastFrameEndTimestamp = {0};
+double GOtherStuffDurationMS = 0.0;
+
+void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
+{
+    PerFrameActorSplatCache.Empty();
+    PerFrameStaticMeshCache.Empty();
+
+    INT TotalLights = HeroLights.Num();
+    if (TotalLights <= 0) return;
+
+    Guaranteed = Clamp(Guaranteed, UserGuaranteed, TotalLights);
+    
+    // THE 2-FRAME REFRESH RULE: The total pool is locked to exactly treble the guaranteed size.
+    // This mathematically guarantees that the round-robin remainder queue completely sweeps every 2 frames!
+    ActivePoolSize = Guaranteed * 3;
+    ActivePoolSize = Min(ActivePoolSize, TotalLights);
+
+    INT HighPriorityCount = Min(Guaranteed, ActivePoolSize);
+    INT RemainderCount    = ActivePoolSize - HighPriorityCount;
+    INT RoundRobinCount   = Min(Guaranteed, RemainderCount);
+
+    // Core Hardware Pass State Overrides
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_BLEND);
+    glBlendEquationSeparate(GL_MIN, GL_MAX);
+    glBlendFunc(GL_ONE, GL_ONE);
+    glDisable(GL_CULL_FACE);
+
+    // ========================================================
+    // PHASE 1: THE UNCONDITIONAL HIGH-PRIORITY PASS
+    // ========================================================
+    for (INT i = 0; i < HighPriorityCount; ++i)
+    {
+        if (HeroLights(i)) HeroLights(i)->UpdateShadowMap(Frame, this);
+    }
+
+    // ========================================================
+    // PHASE 2: THE UNCONDITIONAL SLIDING ROUND-ROBIN PASS
+    // ========================================================
+    INT RoundRobinTicked = 0;
+
+    if (RemainderCount > 0)
+    {
+        // Sanity Check: Keep the cursor pointer within valid bounds
+        if (GRoundRobinCurrentIndex < HighPriorityCount || GRoundRobinCurrentIndex >= ActivePoolSize)
+        {
+            GRoundRobinCurrentIndex = HighPriorityCount;
+        }
+
+        while (RoundRobinTicked < RoundRobinCount)
+        {
+            if (HeroLights(GRoundRobinCurrentIndex))
+            {
+                HeroLights(GRoundRobinCurrentIndex)->UpdateShadowMap(Frame, this);
+            }
+
+            RoundRobinTicked++;
+            GRoundRobinCurrentIndex++;
+
+            if (GRoundRobinCurrentIndex >= ActivePoolSize)
+            {
+                GRoundRobinCurrentIndex = HighPriorityCount;
+            }
+        }
+    }
+
+    // ========================================================
+    // PHASE 3: THE HEADROOM SENSOR & PREDICTIVE SCALING
+    // ========================================================
+    // We only execute performance timers and trend scaling on large maps that exceed our minimum floor
+    if (TotalLights > (UserGuaranteed * 3))
+    {
+        LARGE_INTEGER Frequency, StartTime, CurrentTime;
+        QueryPerformanceFrequency(&Frequency);
+        QueryPerformanceCounter(&StartTime);
+
+        // Exponential Moving Average Hysteresis Calculation
+        if (GLastFrameEndTimestamp.QuadPart > 0)
+        {
+            double ImmediateOtherStuffMS = (double)(StartTime.QuadPart - GLastFrameEndTimestamp.QuadPart) / Frequency.QuadPart * 1000.0;
+            const double Alpha = 0.15;
+            GOtherStuffDurationMS = (Alpha * ImmediateOtherStuffMS) + ((1.0 - Alpha) * GOtherStuffDurationMS);
+        }
+        else
+        {
+            GOtherStuffDurationMS = 8.0;
+        }
+
+        // Measure our dynamic frame budget headroom
+        double DynamicBudgetMS = Min(5.0, Max(0.0, 16.6 - GOtherStuffDurationMS));
+
+        if (DynamicBudgetMS > 1.5)
+        {
+            // SUCCESS TREND: The current frame overhead is low and we have spare time!
+            GFailureFramesCounter = 0;
+            GSuccessFramesCounter++;
+
+            // If we maintain a clean run for 4 consecutive frames, gradually expand our base capacities
+            if (GSuccessFramesCounter >= 4)
+            {
+                Guaranteed = Min(Guaranteed + 5, TotalLights);
+                GSuccessFramesCounter = 0;
+                //debugf(TEXT("XOpenGL: Room detected! Gradually scaling up baseline settings to %d."), Guaranteed);
+            }
+        }
+        else if (DynamicBudgetMS <= 0.5)
+        {
+            // FAILURE TREND: The scene is getting heavy and performance is dipping!
+            GSuccessFramesCounter = 0;
+            GFailureFramesCounter++;
+
+            // If we run on a tight budget for 2 consecutive frames, contract sizes immediately
+            if (GFailureFramesCounter >= 1)
+            {
+                INT OldCeiling = ActivePoolSize;
+                
+                // Asymmetrical Step: Scale down by 10 to shed load quickly and protect the framerate
+                Guaranteed = Max(Guaranteed - 15, UserGuaranteed);
+                INT NewCeiling = Guaranteed * 3;
+                NewCeiling = Min(NewCeiling, TotalLights);
+
+                // --- THE GARBAGE HYGIENE HOOK ---
+                // Grab the demotees that just fell out of the active pool ceiling 
+                // and clear their GPU textures to prevent ghost shadows
+                for (INT k = NewCeiling; k < OldCeiling; ++k)
+                {
+                    if (k < HeroLights.Num() && HeroLights(k))
+                    {
+                        HeroLights(k)->ClearShadowMapTexture();
+                    }
+                }
+
+                GFailureFramesCounter = 0;
+                //debugf(TEXT("XOpenGL: Starvation detected! Gradually scaling down baseline settings to %d."), Guaranteed);
+            }
+        }
+
+        QueryPerformanceCounter(&GLastFrameEndTimestamp);
+    }
+    else
+    {
+        GLastFrameEndTimestamp.QuadPart = 0;
+        GSuccessFramesCounter = 0;
+        GFailureFramesCounter = 0;
+    }
+
+    // Restore Context Restrictions for Main Viewport Scene Painting
+    glDepthFunc(GL_LEQUAL);
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    SceneFbo->Bind();
+    glViewport(0, 0, SceneWidth, SceneHeight);
+}
+

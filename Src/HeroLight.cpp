@@ -385,7 +385,7 @@ BOOL IsStaticMesh(AActor* Actor)
 
 // ------------------------------------------------------------
 // Internal Face Projection & Matrix Pass
-// ------------------------------------------------------------
+// ----------------------RenderFaceGeometry--------------------------------------
 void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT FaceIndex, TArray<CachedActorState> ActiveActors, UXOpenGLRenderDevice* GL)
 {
      guard(UXOpenGLHeroLight::RenderFaceGeometry);
@@ -414,7 +414,7 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
         {
             INT iSurf = AffectedFaceBSPSurfaces[FaceIndex](s);
             UXOpenGLRenderDevice::FSurfInfo* pSI = GL->GetSurfInfoByID(iSurf);
-            if (pSI)
+            if (pSI && !(pSI->PolyFlags & (PF_Translucent | PF_Invisible | PF_NotSolid | PF_Masked | PF_AlphaTexture | PF_Portal)))
             {
                 GL->DrawShadowMapSurface(Frame, *pSI, ActiveFaceVertexCount);
             }
@@ -486,7 +486,7 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 
     CurrentFaceMask = 0;
 
-    if (!Frame)// || !SphereInFrustum(Frame, LightActor->Location, Radius))
+    if (!Frame || !SphereInFrustum(Frame, LightActor->Location, Radius))
         return;
 
     // =========================================================================
@@ -705,6 +705,52 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
     glViewport(PrevViewport[0], PrevViewport[1], PrevViewport[2], PrevViewport[3]);
     ShadowFbo->Unbind();
 }
+
+void UXOpenGLHeroLight::ClearShadowMapTexture()
+{
+    if (HasActiveShadowMap())
+    {
+        /*
+        // 1. Bind our private Framebuffer Object context
+        ShadowFbo->Bind();
+
+        // Stash the active viewport configuration so we don't disrupt the main viewport loop
+        GLint PrevViewport[4];
+        glGetIntegerv(GL_VIEWPORT, PrevViewport);
+        glViewport(0, 0, 512, 512);
+
+        GLenum DrawBuffers[] = { GL_COLOR_ATTACHMENT0 };
+
+        // 2. Loop through all 6 structural cube map faces
+        for (INT face = 0; face < 6; face++)
+        {
+            if (CurrentFaceMask & (1 << face))
+            {
+                // Attach this specific face layer to the framebuffer target
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, ShadowFbo->colorTexIDs[0], 0);
+                glDrawBuffers(1, DrawBuffers);
+
+                // Baseline Clear Matrix Values: Red (Depth) = 1.0f, Green (Mask) = 0.0f
+                GLfloat ClearValues[] = { 1.0f, 0.0f, 0.0f, 0.0f };
+                glClearBufferfv(GL_COLOR, 0, ClearValues);
+
+                // Clear the hardware depth buffer attachment if present on the FBO
+                glClear(GL_DEPTH_BUFFER_BIT);
+            }
+        }
+
+        // 3. Detach and restore standard main context viewport properties to prevent state leakage
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, 0);
+        glViewport(PrevViewport[0], PrevViewport[1], PrevViewport[2], PrevViewport[3]);
+        ShadowFbo->Unbind();
+
+        // 4. Force state reset indicators so the next activation pass knows it must rebuild completely
+        */
+        CurrentFaceMask = 0;
+        LastFrameActors.Empty(); // Ensure fresh render if/when this comes back into scope
+    }
+}
+
 
 // ------------------------------------------------------------
 // Uniform Pipeline Binder

@@ -1895,7 +1895,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 				// load them, is now safe
 				// search the static lights for likely hero lights for shadow mapping
 				TArray<ALight*> ChosenActors;
-				PickHeroLights(LastLevel, StaticLevelLights, ChosenActors, 80); // can use a DesiredCount variable
+				PickHeroLights(LastLevel, StaticLevelLights, ChosenActors, MAX_LIGHTS); // can use a DesiredCount variable
 				for (INT i = 0; i < ChosenActors.Num(); ++i)
 				{
 					// The class object encapsulates its own complete data pass natively on creation
@@ -1907,45 +1907,9 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		// might have deleted them if we detected level change
 		if (HeroLights.Num() > 0)
 		{
-			PerFrameActorSplatCache.Empty();
-			PerFrameStaticMeshCache.Empty();
-
-			// Core Hardware Pass State Overrides
-			// Force standard depth configurations. The individual cubemap face update 
-			// loops will handle binding target textures internally as they update.
-			glEnable(GL_DEPTH_TEST);
-			glDepthFunc(GL_LESS);
-			glDepthMask(GL_TRUE);
-			glEnable(GL_BLEND);
-    
-			// DECOUPLE CHANNELS VIA HARDWARE BLENDING ---
-			// Channel 0 (Red / Depth): We use MIN logic. The closest BSP geometry depth always wins.
-			// Channel 1 (Green / Mask): We use MAX logic. Any dynamic bot splat footprints stack up natively.
-			glBlendEquationSeparate(GL_MIN, GL_MAX);
-    
-			// Ensure standard factor tracking applies cleanly to both operations
-			glBlendFunc(GL_ONE, GL_ONE);
-
-			glDisable(GL_CULL_FACE);  // Force all triangles to draw regardless of winding direction.  leave it on afterwards as decals croak without it
-
-			// Fire individual dynamic culling, evaluation, and on-demand FBO draw passes
-			for (INT i = 0; i < HeroLights.Num(); ++i)
-			{
-				if (HeroLights(i))
-				{
-					HeroLights(i)->UpdateShadowMap(Frame, this);
-				}
-			}
-
-			// Restore Context Restrictions for Main Viewport Scene Painting
-			glDepthFunc(GL_LEQUAL);
-			glBlendEquation(GL_FUNC_ADD);
-			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-			SceneFbo->Bind();
-			glViewport(0, 0, SceneWidth, SceneHeight);
-
-			ShadowMapDone = true;
+			DrawShadowMaps(Frame);
 		} // end if HeroLights.Num is (still) > 0
+		ShadowMapDone = true;
 	} // end if should do shadowmapping
 
 	// Push light data to the GPU. We only need this if we enable HW lighting or bumpmaps.

@@ -57,11 +57,6 @@ public:
 
     UBOOL HasValidShadowMap() const { return (ShadowFbo != nullptr); }
 
-    // The core pipeline call: Evaluates the scene state and 
-    // updates the textures only when absolutely necessary.
-    // Returns TRUE if a valid shadowmap exists for the final shader.
-    UBOOL PrepareShadowMap(ULevel* Level, FSceneNode* Frame, BYTE& OutActiveFaces);
-
     // High-utility master call: Checks visibility, tests caches, 
     // and loops through FBO attachments internally if updates are required.
     void UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice* GL);
@@ -72,6 +67,8 @@ public:
 
     GLuint64 GetBindlessMaskHandle() const { return BindlessMaskHandle; }
     UBOOL HasActiveShadowMap() const { return (ShadowFbo != nullptr && BindlessMaskHandle != 0 && CurrentFaceMask > 0); }
+
+    void ClearShadowMapTexture();
 
     // Replaces your old multi-slot BindTextures function entirely
     void MakeTextureResident();

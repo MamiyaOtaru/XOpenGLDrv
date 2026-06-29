@@ -19,9 +19,95 @@
 #include <algorithm>   // std::shuffle
 #include <random>      // std::mt19937, std::random_device
 
+FPlane* AtlasData = nullptr;
+SIZE_T  AtlasSizeBytes = 0;
+struct FMappedAtlas
+{
+    SIZE_T Size = 0;
+#if _WIN32
+    HANDLE FileHandle = INVALID_HANDLE_VALUE;
+#else
+    int FileDescriptor = -1;
+#endif
+
+    bool Create(SIZE_T InSize, const TCHAR* ScratchFilePath)
+    {
+        Size = InSize;
+
+#if _WIN32
+        // Clean up mixed slashes just in case
+        FString FixedPath = FString(ScratchFilePath).Replace(TEXT("/"), TEXT("\\"));
+
+        FileHandle = CreateFile(
+            *FixedPath,
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, 
+            nullptr,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_TEMPORARY, 
+            nullptr
+        );
+
+        if (FileHandle == INVALID_HANDLE_VALUE)
+        {
+            debugf(TEXT("XOpenGL: CreateFile failed! Error: %d"), GetLastError());
+            return false;
+        }
+
+        // Force physical size allocation via 64-bit offsets
+        LARGE_INTEGER LiSize;
+        LiSize.QuadPart = (LONGLONG)Size;
+
+        if (!SetFilePointerEx(FileHandle, LiSize, nullptr, FILE_BEGIN) || !SetEndOfFile(FileHandle))
+        {
+            debugf(TEXT("XOpenGL: File expansion failed! Error: %d"), GetLastError());
+            CloseHandle(FileHandle);
+            FileHandle = INVALID_HANDLE_VALUE;
+            return false;
+        }
+
+        return true;
+#else
+        // Linux standard file creation code goes here...
+        return true;
+#endif
+    }
+
+    void Destroy()
+    {
+#if _WIN32
+        if (FileHandle != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(FileHandle);
+            FileHandle = INVALID_HANDLE_VALUE;
+        }
+#endif
+    }
+};
+FMappedAtlas MappedAtlas;
+bool bAtlasMapped = false;
+#if _WIN32
+#include <windows.h>
+
+class FWin32CriticalSection : public FSynchronize
+{
+private:
+    CRITICAL_SECTION Mutex;
+public:
+    FWin32CriticalSection()  { InitializeCriticalSection(&Mutex); }
+    ~FWin32CriticalSection() { DeleteCriticalSection(&Mutex); }
+    
+    // Abstract interface overrides required by FSynchronize
+    virtual void Lock() override   { EnterCriticalSection(&Mutex); }
+    virtual void Unlock() override { LeaveCriticalSection(&Mutex); }
+};
+
+// Now we can safely instantiate a concrete, globally accessible lock object!
+FWin32CriticalSection* FileWriteMutex = nullptr;
+#endif
+
 std::thread AtlasThread;
 std::atomic<bool> AtlasFinished{false};
-TArray<FPlane> Atlas;
 FString AtlasPNG = TEXT("");
 FString AtlasMeta = TEXT("");
 INT AtlasW, AtlasH;
@@ -460,7 +546,7 @@ inline FVector GammaLiftLum(const FVector& v, float gamma)
     return chroma * Lg;
 }
 
-// build an occlusion map for a given surface
+// get shadow factor for a single surface point by point by testing visibility to each light and accumulating contribution
 FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     const TArray<AActor*>& Lights,
     INT iSurf,
@@ -953,99 +1039,147 @@ struct FKTX2_DFD_BC3
 
 const BYTE KTX2_Magic_Identifier[12] = { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
 
-void DumpAtlasToKTX2(const TArray<FPlane>& InAtlas, INT AtlasWidth, INT AtlasHeight, const FString& OutKTX2Path)
+void DumpAtlasToKTX2(const FString& OutKTX2Path)
 {
-    if (AtlasWidth <= 0 || AtlasHeight <= 0 || InAtlas.Num() == 0)
+    if (AtlasW <= 0 || AtlasH <= 0 || !bAtlasMapped)
         return;
 
-    FArchive* Ar = GFileManager->CreateFileWriter(*OutKTX2Path);
-    if (!Ar) return;
+    // Reconstruct and normalize the scratch file path string
+    FString TargetScratchFile = AtlasMeta.Replace(TEXT(".txt"), TEXT("_scratch.tmp")).Replace(TEXT("/"), TEXT("\\"));
 
-    // --- 1. Populate and Serialize KTX2 Header Struct Block (80 Bytes) ---
+    FArchive* Ar = GFileManager->CreateFileWriter(*OutKTX2Path);
+    if (!Ar) 
+        return;
+
+    // --- 1. Populate and Serialize KTX2 Header Block (80 Bytes) ---
     FKTX2Header Header = {};
     appMemcpy(Header.identifier, KTX2_Magic_Identifier, 12);
-    Header.vkFormat               = 137; // VK_FORMAT_BC3_UNORM_BLOCK (DXT5)
-    Header.typeSize               = 1;
-    Header.pixelWidth             = (uint32_t)AtlasWidth;
-    Header.pixelHeight            = (uint32_t)AtlasHeight;
-    Header.faceCount              = 1;
-    Header.levelCount             = 1;
+    Header.vkFormat = 137; // VK_FORMAT_BC3_UNORM_BLOCK (DXT5)
+    Header.typeSize = 1;
+    Header.pixelWidth = (uint32_t)AtlasW;
+    Header.pixelHeight = (uint32_t)AtlasH;
+    Header.faceCount = 1;
+    Header.levelCount = 1;
     Header.supercompressionScheme = 0;
-
-    Header.dfdByteOffset          = 104; 
-    Header.dfdByteLength          = sizeof(FKTX2_DFD_BC3); // Exactly 60 bytes
-
+    Header.dfdByteOffset = 104; 
+    Header.dfdByteLength = sizeof(FKTX2_DFD_BC3);
     Ar->Serialize(&Header, sizeof(FKTX2Header));
 
-    // --- 2. Populate and Serialize Level Index Struct Block (24 Bytes) ---
+    // --- 2. Populate and Serialize Level Index Block (24 Bytes) ---
     FKTX2LevelIndex LevelIndex = {};
-    // SPEC MANDATE REMINDER: 80 (Header) + 24 (Level Index) + 60 (DFD) + 12 (Alignment Padding) = 176
-    LevelIndex.byteOffset             = 176; // Strictly 16-byte aligned hardware payload boundary target
-    LevelIndex.byteLength             = (uint64_t)((AtlasWidth + 3) / 4) * ((AtlasHeight + 3) / 4) * 16;
+    LevelIndex.byteOffset = 176; 
+    LevelIndex.byteLength = (uint64_t)((AtlasW + 3) / 4) * ((AtlasH + 3) / 4) * 16;
     LevelIndex.uncompressedByteLength = LevelIndex.byteLength;
-
     Ar->Serialize(&LevelIndex, sizeof(FKTX2LevelIndex));
 
-    // --- 3. Populate and Serialize Data Format Descriptor Struct Block (60 Bytes) ---
+    // --- 3. Populate and Serialize DFD Block (60 Bytes) ---
     FKTX2_DFD_BC3 DFD = {};
-    DFD.dfdTotalSize        = sizeof(FKTX2_DFD_BC3); // Exactly 60 bytes
-    DFD.vendorAndType       = 0;
-    DFD.versionNumber       = 2;
-    DFD.descriptorBlockSize = DFD.dfdTotalSize - 4; // Exactly 56
+    Ar->Serialize(&DFD, sizeof(FKTX2_DFD_BC3));
 
-    DFD.colorModel          = 130; // KHR_DF_MODEL_BC3 = 130
-    DFD.colorPrimaries      = 1;
-    DFD.transferFunction    = 1;
-    DFD.flagsChannel        = 0;
-
-    DFD.texelBlockDimensionW = 3; // KDF rule: size - 1 (4 - 1 = 3)
-    DFD.texelBlockDimensionH = 3; 
-    DFD.texelBlockDimensionD = 0;
-    DFD.texelBlockDimensionR = 0;
-
-    DFD.bytesPlane0 = 16; // 16 bytes per BC3 block allocation size
-    appMemset(DFD.bytesPlane1to7, 0, 7);
-
-    // FIXED: Explicit index targeting guarantees every DWORD lands in the correct struct slot
-    // Sample 0 (Indices 0-3): Alpha Channel Layout Descriptor
-    DFD.sampleInfo[0] = 0x0F3F0000; // FIXED BITMASK: channelId=15 (Alpha), bitLength=63, bitOffset=0, qualifierLinear=0
-    DFD.sampleInfo[1] = 0x00000000; // samplePosition0-3 = 0
-    DFD.sampleInfo[2] = 0x00000000; // lower limit = 0
-    DFD.sampleInfo[3] = 0xFFFFFFFF; // upper limit = 4294967295
-
-    // Sample 1 (Indices 4-7): Color Channel Layout Descriptor
-    DFD.sampleInfo[4] = 0x003F0040; // FIXED BITMASK: channelId=0 (Color), bitLength=63, bitOffset=64 (0x40), qualifierLinear=0
-    DFD.sampleInfo[5] = 0x00000000; // samplePosition0-3 = 0
-    DFD.sampleInfo[6] = 0x00000000; // lower limit = 0
-    DFD.sampleInfo[7] = 0xFFFFFFFF; // upper limit = 4294967295
-
-    Ar->Serialize(&DFD, sizeof(FKTX2_DFD_BC3)); // Serializes pristine struct whole starting at byte 104
-
-    // --- 3b. Inject 12 Bytes of Hardware Mip Alignment Padding ---
-    // File position is exactly 164 bytes here. We serialize 12 zero padding bytes to safely 
-    // advance the physical file cursor to byte 176, matching your LevelIndex.byteOffset.
+    // --- 3b. Inject 12 Bytes Alignment Padding ---
     BYTE MipPadding[12];
     appMemset(MipPadding, 0, 12);
     Ar->Serialize(MipPadding, 12);
 
-    // --- 4. Stream Raw BC3 block payloads (File position: starts exactly at byte 176) ---
-    BYTE rgba[64]; // Brackets securely preserved!
-    BYTE bc3[16];  // Brackets securely preserved!
+    // --- 4. Streaming and BC3 Payload Variables ---
+    BYTE rgba[64]; 
+    BYTE bc3[16]; 
 
-    for (INT by = 0; by < AtlasHeight; by += 4)
+    SIZE_T RowStrideBytes = (SIZE_T)AtlasW * sizeof(FPlane);
+    SIZE_T Stripe4RowsBytes = RowStrideBytes * 4;
+
+    // --- SYNCHRONIZATION AND HANDLE ISOLATION FIX ---
+    // Force the operating system to completely lock down active thread background sectors
+    FlushFileBuffers(MappedAtlas.FileHandle);
+
+    // Open an independent local tracking handle purely for processing the read stream.
+    // This resets the internal OS file pointer completely, clearing any Error 38 handle states.
+    HANDLE LocalReadHandle = CreateFile(
+        *TargetScratchFile,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_TEMPORARY,
+        nullptr
+    );
+
+    if (LocalReadHandle == INVALID_HANDLE_VALUE)
     {
-        for (INT bx = 0; bx < AtlasWidth; bx += 4)
+        debugf(TEXT("XOpenGL: Failed to open scratch file for isolated reading! Error: %d"), GetLastError());
+        Ar->Close();
+        delete Ar;
+        return;
+    }
+
+    TArray<FPlane> LocalStripeCache;
+    if (bAtlasMapped)
+    {
+        LocalStripeCache.Add(AtlasW * 4);
+    }
+
+    // Outer loop steps 4 vertical rows at a time
+    for (INT by = 0; by < AtlasH; by += 4)
+    {
+        FPlane* StripeWindow = nullptr;
+
+        if (bAtlasMapped)
+        {
+            // --- NEW WAY: Read from disk utilizing explicit synchronous pointers ---
+            SIZE_T TargetFileOffset = (SIZE_T)by * RowStrideBytes;
+            
+            SIZE_T ReadLengthBytes = Stripe4RowsBytes;
+            if (TargetFileOffset + ReadLengthBytes > AtlasSizeBytes)
+            {
+                ReadLengthBytes = AtlasSizeBytes - TargetFileOffset;
+            }
+
+            LARGE_INTEGER LiReadOffset;
+            LiReadOffset.QuadPart = (LONGLONG)TargetFileOffset;
+
+            // Explicitly set the read cursor position
+            SetFilePointerEx(LocalReadHandle, LiReadOffset, nullptr, FILE_BEGIN);
+
+            DWORD BytesRead = 0;
+            // Execute a clean, standard synchronous read operation
+            BOOL bReadSuccess = ReadFile(
+                LocalReadHandle, 
+                &LocalStripeCache(0), 
+                ReadLengthBytes, 
+                &BytesRead, 
+                nullptr // <-- Pass NULL to specify synchronous execution
+            );
+
+            if (!bReadSuccess || BytesRead != ReadLengthBytes)
+            {
+                debugf(TEXT("XOpenGL: File stream read failure during KTX2 compilation at row %d. OS Error: %d, Read %d of %d"), 
+                    by, GetLastError(), BytesRead, ReadLengthBytes);
+                break;
+            }
+
+            StripeWindow = &LocalStripeCache(0);
+        }
+        else
+        {
+            StripeWindow = &AtlasData[by * AtlasW];
+        }
+
+        // Process all horizontal blocks within this 4-row stripe (COMPLETELY UNCHANGED)
+        for (INT bx = 0; bx < AtlasW; bx += 4)
         {
             for (INT y = 0; y < 4; y++)
             {
+                INT LocalY = y;
+                if (by + y >= AtlasH) 
+                    LocalY = (AtlasH - 1) - by;
+
                 for (INT x = 0; x < 4; x++)
                 {
-                    INT sx = Clamp(bx + x, 0, AtlasWidth - 1);
-                    INT sy = Clamp(by + y, 0, AtlasHeight - 1);
-
-                    const FPlane& P = InAtlas(sy * AtlasWidth + sx);
+                    INT sx = Clamp(bx + x, 0, AtlasW - 1);
+                    
+                    const FPlane& P = StripeWindow[LocalY * AtlasW + sx];
+                    
                     INT idx = (y * 4 + x) * 4;
-
                     rgba[idx+0] = (BYTE)(Clamp(appFloor(P.X * 255.f + 0.5f), 0, 255));
                     rgba[idx+1] = (BYTE)(Clamp(appFloor(P.Y * 255.f + 0.5f), 0, 255));
                     rgba[idx+2] = (BYTE)(Clamp(appFloor(P.Z * 255.f + 0.5f), 0, 255));
@@ -1058,11 +1192,13 @@ void DumpAtlasToKTX2(const TArray<FPlane>& InAtlas, INT AtlasWidth, INT AtlasHei
         }
     }
 
+    // Clean up our local reading workspace handle
+    CloseHandle(LocalReadHandle);
+    LocalStripeCache.Empty(); 
+
     Ar->Close();
     delete Ar;
 }
-
-
 
 void DumpAtlasToDisk(
     const TArray<FPlane>& Atlas,
@@ -1225,7 +1361,320 @@ bool IsHighlightTexture(const UTexture* Tex)
         || strcmp(LowerName, "sail1a") == 0;
 }
 
-// get shadow factor for a single surface point by point by testing visibility to each light and accumulating contribution
+inline float Luma(const FPlane& p)
+{
+    // perceptual luminance
+    return 0.299f * p.X + 0.587f * p.Y + 0.114f * p.Z;
+}
+
+//scalefx version
+void ApplyAntialias(FPlane* pixels, int W, int H)
+{
+    // ScaleFX demands a minimum 7x7 neighborhood to track long shallow slopes
+    if (W < 7 || H < 7) return;
+
+    SIZE_T PixelCount = (SIZE_T)W * H;
+    
+    // Allocate our temporary pass buffer natively
+    TArray<FPlane> original;
+    original.AddZeroed(PixelCount);
+    appMemcpy(original.GetData(), pixels, PixelCount * sizeof(FPlane));
+
+    // Allocate an explicit vector tracking matrix array for Pass 1 data
+    // X = Horizontal Gradient, Y = Vertical Gradient, Z = Local Contrast Range
+    TArray<FPlane> EdgeVectors;
+    EdgeVectors.AddZeroed(PixelCount);
+
+    auto at = [&](int x, int y) -> const FPlane&
+    {
+        return original(Clamp(y, 0, H - 1) * W + Clamp(x, 0, W - 1));
+    };
+
+    const float SCALEFX_THRESHOLD = 0.08f; // Triggers easily on soft shadow transitions
+
+    // ==========================================
+    // PASS 1: LONG-RANGE EDGE VECTOR ANALYSIS
+    // ==========================================
+    for (int y = 0; y < H; ++y)
+    {
+        for (int x = 0; x < W; ++x)
+        {
+            float m = Luma(at(x, y));
+
+            // Sample a broad 7x7 cross layout pattern to calculate long-range vectors
+            float l3 = Luma(at(x-3, y)); float l2 = Luma(at(x-2, y)); float l1 = Luma(at(x-1, y));
+            float r3 = Luma(at(x+3, y)); float r2 = Luma(at(x+2, y)); float r1 = Luma(at(x+1, y));
+            float t3 = Luma(at(x, y-3)); float t2 = Luma(at(x, y-2)); float t1 = Luma(at(x, y-1));
+            float b3 = Luma(at(x, y+3)); float b2 = Luma(at(x, y+2)); float b1 = Luma(at(x, y+1));
+
+            // Compute ScaleFX directional gradients
+            float gradH = (r1 - l1) * 4.0f + (r2 - l2) * 2.0f + (r3 - l3);
+            float gradV = (b1 - t1) * 4.0f + (b2 - t2) * 2.0f + (b3 - t3);
+
+            float lumaMin = Min(m, Min(Min(Min(l1, r1), Min(t1, b1)), Min(Min(l2, r2), Min(t2, b2))));
+            float lumaMax = Max(m, Max(Max(Max(l1, r1), Max(t1, b1)), Max(Max(l2, r2), Max(t2, b2))));
+            float range   = lumaMax - lumaMin;
+
+            // Store the vector properties safely inside our tracking array
+            FPlane& EV = EdgeVectors(y * W + x);
+            EV.X = gradH;
+            EV.Y = gradV;
+            EV.Z = range;
+        }
+    }
+
+    // ==========================================
+    // PASS 2: STRAIGHT LINE SUBPIXEL BLENDING
+    // ==========================================
+    for (int y = 0; y < H; ++y)
+    {
+        for (int x = 0; x < W; ++x)
+        {
+            const FPlane& EV = EdgeVectors(y * W + x);
+            float contrastRange = EV.Z;
+
+            // Bypass flat areas instantly to preserve core lightmap sharpness
+            if (contrastRange < SCALEFX_THRESHOLD)
+                continue;
+
+            float gradH = EV.X;
+            float gradV = EV.Y;
+
+            // Calculate the exact mathematical angle of the straight shadow line
+            float absGradH = Abs(gradH);
+            float absGradV = Abs(gradV);
+            float sumGrad  = absGradH + absGradV;
+
+            if (sumGrad < 0.001f) continue;
+
+            // Determine fractional vector components for blending
+            float weightH = absGradH / sumGrad;
+            float weightV = absGradV / sumGrad;
+
+            // Trace directions
+            int stepX = (gradH > 0.f) ? 1 : -1;
+            int stepY = (gradV > 0.f) ? 1 : -1;
+
+            // Fetch cross-boundary samples along the perpendicular vector path
+            const FPlane& center = at(x, y);
+            const FPlane& sideH  = at(x + stepX, y);
+            const FPlane& sideV  = at(x, y + stepY);
+            const FPlane& diag   = at(x + stepX, y + stepY);
+
+            // Execute a true linear sub-pixel interpolation match
+            // This is ScaleFX's exact line-smoothing trick: it uses the calculated
+            // gradient angles to blend smoothly across shallow steps like an 8x1 line.
+            FPlane blended;
+            blended.X = center.X * (1.0f - weightH * 0.5f - weightV * 0.5f) +
+                        sideH.X  * (weightH * 0.35f) +
+                        sideV.X  * (weightV * 0.35f) +
+                        diag.X   * (weightH * 0.15f + weightV * 0.15f);
+
+            blended.Y = center.Y * (1.0f - weightH * 0.5f - weightV * 0.5f) +
+                        sideH.Y  * (weightH * 0.35f) +
+                        sideV.Y  * (weightV * 0.35f) +
+                        diag.Y   * (weightH * 0.15f + weightV * 0.15f);
+
+            blended.Z = center.Z * (1.0f - weightH * 0.5f - weightV * 0.5f) +
+                        sideH.Z  * (weightH * 0.35f) +
+                        sideV.Z  * (weightV * 0.35f) +
+                        diag.Z   * (weightH * 0.15f + weightV * 0.15f);
+
+            blended.W = center.W; // Absolute alpha channel mask protection
+
+            // Write the final anti-aliased pixels back to the main buffer
+            pixels[y * W + x] = blended;
+        }
+    }
+
+    // Clean up temporary workspace structures
+    EdgeVectors.Empty();
+    original.Empty();
+}
+
+//scale3x/gimp aa version
+/*
+void ApplyAntialias(FPlane* pixels, int W, int H)
+{
+    if (W < 3 || H < 3) return;
+
+    // Create a pristine copy of our source data to read from
+    TArray<FPlane> original;
+    original.AddZeroed(W * H);
+    appMemcpy(original.GetData(), pixels, W * H * sizeof(FPlane));
+
+    auto at = [&](int x, int y) -> const FPlane&
+    {
+        return original(Clamp(y, 0, H - 1) * W + Clamp(x, 0, W - 1));
+    };
+
+    // Allocate an intermediate 3x3 sub-pixel matrix block
+    FPlane subPixels[9];
+
+    for (int y = 0; y < H; ++y)
+    {
+        for (int x = 0; x < W; ++x)
+        {
+            // --- 1. Fetch the 3x3 Original Neighborhood Layout ---
+            // [ A ][ B ][ C ]
+            // [ D ][ E ][ F ]
+            // [ G ][ H ][ I ]
+            const FPlane& A = at(x - 1, y - 1);  const FPlane& B = at(x, y - 1);  const FPlane& C = at(x + 1, y - 1);
+            const FPlane& D = at(x - 1, y);      const FPlane& E = at(x, y);      const FPlane& F = at(x + 1, y);
+            const FPlane& G = at(x - 1, y + 1);  const FPlane& H = at(x, y + 1);  const FPlane& I = at(x + 1, y + 1);
+
+            // Pre-populate all 9 sub-pixels with the central color E (the Scale3X baseline fallback)
+            for (int i = 0; i < 9; ++i) subPixels[i] = E;
+
+            // --- 2. Execute the Strict Scale3X Extrapolation Logic Matrix ---
+            // Scale3X maps the 9 sub-pixels (labeled 0 through 8) relative to neighbors.
+            // A sub-pixel matches a neighbor ONLY if its opposite cross-neighbors don't match.
+            if (D == B && D != H && B != F) subPixels[0] = D; // Top-Left subpixel
+            if ((D == B && D != H && B != F && E != A) || (B == F && B != D && F != H && E != C)) subPixels[1] = B; // Top-Center
+            if (B == F && B != D && F != H) subPixels[2] = F; // Top-Right
+
+            if ((D == B && D != H && B != F && E != G) || (D == H && D != B && H != F && E != A)) subPixels[3] = D; // Mid-Left
+            // subPixels[4] is the center point and ALWAYS remains the original core color E
+            if ((B == F && B != D && F != H && E != I) || (H == F && H != D && F != B && E != C)) subPixels[5] = F; // Mid-Right
+
+            if (D == H && D != B && H != F) subPixels[6] = D; // Bottom-Left
+            if ((D == H && D != B && H != F && E != G) || (H == F && H != D && F != B && E != I)) subPixels[7] = H; // Bottom-Center
+            if (H == F && H != D && F != B) subPixels[8] = F; // Bottom-Right
+
+            // --- 3. Subsample the 9 New Pixels into a Weighted Average ---
+            // GIMP typically applies a box or Gaussian weight to downsample Scale3X sub-pixels.
+            // Giving the center pixel higher weight preserves core sharpness, while corners smooth the jaggies.
+            FPlane sum(0.f, 0.f, 0.f, 0.f);
+            
+            // Weight Distribution: Center = 4.f, Cross Edges = 2.f, Corners = 1.f
+            float weights[9] = {
+                1.0f, 2.0f, 1.0f,
+                2.0f, 4.0f, 2.0f,
+                1.0f, 2.0f, 1.0f
+            };
+            float totalWeight = 16.0f;
+
+            for (int i = 0; i < 9; ++i)
+            {
+                sum.X += subPixels[i].X * weights[i];
+                sum.Y += subPixels[i].Y * weights[i];
+                sum.Z += subPixels[i].Z * weights[i];
+                sum.W += subPixels[i].W * weights[i];
+            }
+
+            FPlane finalPixel;
+            finalPixel.X = sum.X / totalWeight;
+            finalPixel.Y = sum.Y / totalWeight;
+            finalPixel.Z = sum.Z / totalWeight;
+            finalPixel.W = E.W; // Guarantee absolute alpha channel mask protection
+
+            // Write back to our active surface buffer pointer
+            pixels[y * W + x] = finalPixel;
+        }
+    }
+}
+*/
+
+// fxaa version
+/*
+void ApplyAntialias(FPlane* pixels, int W, int H)
+{
+    // Safety check for tiny surfaces
+    if (W < 3 || H < 3) return;
+
+    TArray<FPlane> original;
+    original.AddZeroed(W * H);
+    appMemcpy(original.GetData(), pixels, W * H * sizeof(FPlane));
+
+    auto at = [&](int x, int y) -> const FPlane&
+    {
+        return original(Clamp(y, 0, H - 1) * W + Clamp(x, 0, W - 1));
+    };
+
+    // FXAA Threshold Tuning Constants
+    const float FXAA_EDGE_THRESHOLD_MIN = 0.0312f; // Triggers on faint shadows
+    const float FXAA_EDGE_THRESHOLD_MAX = 0.1250f; // High-contrast edge sensitivity
+
+    for (int y = 0; y < H; ++y)
+    {
+        for (int x = 0; x < W; ++x)
+        {
+            const FPlane& M = at(x, y);
+            float lumaM = Luma(M);
+
+            // Fetch immediate cross neighbors
+            float lumaN = Luma(at(x,   y-1));
+            float lumaS = Luma(at(x,   y+1));
+            float lumaE = Luma(at(x+1, y));
+            float lumaW = Luma(at(x-1, y));
+
+            // Find local luminance range
+            float lumaMin = Min(lumaM, Min(Min(lumaN, lumaS), Min(lumaE, lumaW)));
+            float lumaMax = Max(lumaM, Max(Max(lumaN, lumaS), Max(lumaE, lumaW)));
+            float lumaRange = lumaMax - lumaMin;
+
+            // Early exit if local contrast is too low to avoid blurring flat lighting regions
+            if (lumaRange < Max(FXAA_EDGE_THRESHOLD_MIN, lumaMax * FXAA_EDGE_THRESHOLD_MAX))
+                continue;
+
+            // Fetch diagonal corner neighbors for edge direction calculation
+            float lumaNW = Luma(at(x-1, y-1));
+            float lumaNE = Luma(at(x+1, y-1));
+            float lumaSW = Luma(at(x-1, y+1));
+            float lumaSE = Luma(at(x+1, y+1));
+
+            // Combine lumas to compute structural gradients
+            float edgeVert = Abs((lumaNW + lumaSW) - 2.0f * lumaW) +
+                             Abs((lumaN  + lumaS)  - 2.0f * lumaM) +
+                             Abs((lumaNE + lumaSE) - 2.0f * lumaE);
+
+            float edgeHoriz = Abs((lumaNW + lumaNE) - 2.0f * lumaN) +
+                              Abs((lumaW  + lumaE)  - 2.0f * lumaM) +
+                              Abs((lumaSW + lumaSE) - 2.0f * lumaS);
+
+            // Determine if the jagged edge line runs horizontally or vertically
+            bool isHorizontal = (edgeHoriz >= edgeVert);
+
+            // Calculate directional gradients perpendicular to the edge direction
+            float luma1 = isHorizontal ? lumaN : lumaW;
+            float luma2 = isHorizontal ? lumaS : lumaE;
+            
+            float gradient1 = Abs(luma1 - lumaM);
+            float gradient2 = Abs(luma2 - lumaM);
+
+            // Trace the highest contrast delta path
+            bool is1Sign = gradient1 >= gradient2;
+            float subPixelOffset = 0.0f;
+
+            // Compute sub-pixel blend weight using a 3x3 low-pass filter matrix
+            float lumaL = (lumaN + lumaS + lumaE + lumaW) * 0.25f;
+            float pixelBlend = Max(0.0f, Abs(lumaL - lumaM) / lumaRange);
+            subPixelOffset = Clamp(pixelBlend * pixelBlend * 0.75f, 0.0f, 0.5f);
+
+            // Calculate final fractional pixel sampling offset coordinate mapping
+            FPlane blended;
+            if (isHorizontal)
+            {
+                const FPlane& Nbr = at(x, y + (is1Sign ? -1 : 1));
+                blended.X = Lerp(M.X, Nbr.X, subPixelOffset);
+                blended.Y = Lerp(M.Y, Nbr.Y, subPixelOffset);
+                blended.Z = Lerp(M.Z, Nbr.Z, subPixelOffset);
+            }
+            else
+            {
+                const FPlane& Nbr = at(x + (is1Sign ? -1 : 1), y);
+                blended.X = Lerp(M.X, Nbr.X, subPixelOffset);
+                blended.Y = Lerp(M.Y, Nbr.Y, subPixelOffset);
+                blended.Z = Lerp(M.Z, Nbr.Z, subPixelOffset);
+            }
+            blended.W = M.W; // Preserve original alpha channel mask
+
+            pixels[y * W + x] = blended;
+        }
+    }
+}
+*/
+// build an occlusion map for a given surface
 void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
 {
     UModel* Model = Level->Model;
@@ -1381,53 +1830,125 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
             GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
         }
 
+        ApplyAntialias(reinterpret_cast<FPlane*>(Pixels.GetData()), W, H);
+
         FSurfaceLightmap LM;
         appMemzero(&LM, sizeof(LM));
         SI->HDLightmap = LM;
         SI->HasHDLightmap = true;
 
         // After Pixels has been filled (W x H)
-        INT AtlasWidth  = AtlasW; // class member
-        INT AtlasHeight = AtlasH; // class member
-
-        INT DestX = Pending.AtlasX; // interior (already +1 from dry run)
+        INT AtlasWidth  = AtlasW;
+        INT AtlasHeight = AtlasH;
+        INT DestX = Pending.AtlasX;
         INT DestY = Pending.AtlasY;
+        SIZE_T RowStride = (SIZE_T)AtlasWidth * sizeof(FPlane);
 
-        // Copy interior into atlas
-        for (INT y = 0; y < H; ++y)
+        if (bAtlasMapped)
         {
-            FPlane* Dest = &Atlas((DestY + y) * AtlasWidth + DestX);
-            FPlane* Src  = &Pixels(y * W);
-            appMemcpy(Dest, Src, W * sizeof(FPlane));
+#if _WIN32
+            SIZE_T RowBytes = W * sizeof(FPlane);
+
+            // --- UNBROKEN COMPILER-SAFE LOCK ---
+            // This safely accepts our custom pointer because it satisfies the FSynchronize inheritance check!
+            if (FileWriteMutex)
+            {
+                FScopeLock Lock(FileWriteMutex); 
+
+                // 1. Copy the interior rows to disk
+                for (INT y = 0; y < H; ++y)
+                {
+                    SIZE_T FileOffset = (SIZE_T)(DestY + y) * RowStride + ((SIZE_T)DestX * sizeof(FPlane));
+                    LARGE_INTEGER LiOffset;
+                    LiOffset.QuadPart = (LONGLONG)FileOffset;
+
+                    SetFilePointerEx(MappedAtlas.FileHandle, LiOffset, nullptr, FILE_BEGIN);
+                    DWORD BytesWritten = 0;
+                    WriteFile(MappedAtlas.FileHandle, &Pixels(y * W), RowBytes, &BytesWritten, nullptr);
+                }
+
+                // 2. Duplicate top and bottom border rows
+                {
+                    SIZE_T TopDstOffset = (SIZE_T)(DestY - 1) * RowStride + ((SIZE_T)DestX * sizeof(FPlane));
+                    LARGE_INTEGER LiTop;
+                    LiTop.QuadPart = (LONGLONG)TopDstOffset;
+                    
+                    SetFilePointerEx(MappedAtlas.FileHandle, LiTop, nullptr, FILE_BEGIN);
+                    DWORD BytesWritten = 0;
+                    WriteFile(MappedAtlas.FileHandle, &Pixels(0 * W), RowBytes, &BytesWritten, nullptr);
+
+                    SIZE_T BotDstOffset = (SIZE_T)(DestY + H) * RowStride + ((SIZE_T)DestX * sizeof(FPlane));
+                    LARGE_INTEGER LiBot;
+                    LiBot.QuadPart = (LONGLONG)BotDstOffset;
+                    
+                    SetFilePointerEx(MappedAtlas.FileHandle, LiBot, nullptr, FILE_BEGIN);
+                    WriteFile(MappedAtlas.FileHandle, &Pixels((H - 1) * W), RowBytes, &BytesWritten, nullptr);
+                }
+
+                // 3. Duplicate left and right columns (including borders)
+                for (INT y = -1; y < H + 1; ++y)
+                {
+                    INT Ay = DestY + y;
+                    INT ClampY = Clamp(y, 0, H - 1);
+                    
+                    FPlane BorderPixelLeft = Pixels(ClampY * W + 0);
+                    SIZE_T LeftOffset = (SIZE_T)Ay * RowStride + ((SIZE_T)(DestX - 1) * sizeof(FPlane));
+                    LARGE_INTEGER LiLeft;
+                    LiLeft.QuadPart = (LONGLONG)LeftOffset;
+                    
+                    SetFilePointerEx(MappedAtlas.FileHandle, LiLeft, nullptr, FILE_BEGIN);
+                    DWORD BytesWritten = 0;
+                    WriteFile(MappedAtlas.FileHandle, &BorderPixelLeft, sizeof(FPlane), &BytesWritten, nullptr);
+
+                    FPlane BorderPixelRight = Pixels(ClampY * W + (W - 1));
+                    SIZE_T RightOffset = (SIZE_T)Ay * RowStride + ((SIZE_T)(DestX + W) * sizeof(FPlane));
+                    LARGE_INTEGER LiRight;
+                    LiRight.QuadPart = (LONGLONG)RightOffset;
+                    
+                    SetFilePointerEx(MappedAtlas.FileHandle, LiRight, nullptr, FILE_BEGIN);
+                    WriteFile(MappedAtlas.FileHandle, &BorderPixelRight, sizeof(FPlane), &BytesWritten, nullptr);
+                }
+            } // Lock is cleanly destroyed here, letting the next worker thread take over
+#endif
         }
-
-        // Duplicate top and bottom rows
+        else
         {
-            // Top border row: copy from first interior row
-            FPlane* SrcTop = &Atlas((DestY + 0) * AtlasWidth + DestX);
-            FPlane* DstTop = &Atlas((DestY - 1) * AtlasWidth + DestX);
-            appMemcpy(DstTop, SrcTop, W * sizeof(FPlane));
+            // --- OLD WAY: Fallback path directly targeting standard heap memory ---
+            FPlane* TargetAtlas = nullptr;
+            void* LocalViewBase = nullptr; // Track file view for conditional unmapping
+            TargetAtlas = AtlasData;
 
-            // Bottom border row: copy from last interior row
-            FPlane* SrcBot = &Atlas((DestY + H - 1) * AtlasWidth + DestX);
-            FPlane* DstBot = &Atlas((DestY + H) * AtlasWidth + DestX);
-            appMemcpy(DstBot, SrcBot, W * sizeof(FPlane));
-        }
+            for (INT y = 0; y < H; ++y)
+            {
+                FPlane* Dest = &TargetAtlas[(DestY + y) * AtlasWidth + DestX];
+                const FPlane* Src  = &Pixels(y * W);
+                appMemcpy(Dest, Src, W * sizeof(FPlane));
+            }
 
-        // Duplicate left and right columns (including borders)
-        for (INT y = -1; y < H + 1; ++y)
-        {
-            INT Ay = DestY + y;
+            // Duplicate top and bottom rows
+            {
+                FPlane* SrcTop = &TargetAtlas[(DestY + 0) * AtlasWidth + DestX];
+                FPlane* DstTop = &TargetAtlas[(DestY - 1) * AtlasWidth + DestX];
+                appMemcpy(DstTop, SrcTop, W * sizeof(FPlane));
 
-            // Left border: copy from x = 0
-            FPlane* SrcL = &Atlas(Ay * AtlasWidth + DestX);
-            FPlane* DstL = &Atlas(Ay * AtlasWidth + (DestX - 1));
-            *DstL = *SrcL;
+                FPlane* SrcBot = &TargetAtlas[(DestY + H - 1) * AtlasWidth + DestX];
+                FPlane* DstBot = &TargetAtlas[(DestY + H) * AtlasWidth + DestX];
+                appMemcpy(DstBot, SrcBot, W * sizeof(FPlane));
+            }
 
-            // Right border: copy from x = W-1
-            FPlane* SrcR = &Atlas(Ay * AtlasWidth + (DestX + W - 1));
-            FPlane* DstR = &Atlas(Ay * AtlasWidth + (DestX + W));
-            *DstR = *SrcR;
+            // Duplicate left and right columns (including borders)
+            for (INT y = -1; y < H + 1; ++y)
+            {
+                INT Ay = DestY + y;
+
+                FPlane* SrcL = &TargetAtlas[Ay * AtlasWidth + DestX];
+                FPlane* DstL = &TargetAtlas[Ay * AtlasWidth + (DestX - 1)];
+                *DstL = *SrcL;
+
+                FPlane* SrcR = &TargetAtlas[Ay * AtlasWidth + (DestX + W - 1)];
+                FPlane* DstR = &TargetAtlas[Ay * AtlasWidth + (DestX + W)];
+                *DstR = *SrcR;
+            }
         }
 
         // Done with per-surface pixels
@@ -1699,6 +2220,9 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
         // Dry run
         DryRunAtlas(AtlasW, AtlasH);
 
+        if (AtlasW <= 0 || AtlasH <= 0)
+            return;
+
         if (AtlasW <= 8192 && (INT64)AtlasW * AtlasH <= 43260000) // slightly more than the largest success I have seen (8192x5280)
             break;
 
@@ -1715,8 +2239,38 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
         }
     }
 
-    Atlas.Empty();
-    Atlas.AddZeroed(AtlasW * AtlasH);
+    AtlasSizeBytes = (SIZE_T)AtlasW * (SIZE_T)AtlasH * sizeof(FPlane);
+    bAtlasMapped = false;
+
+    // Generate a safe scratch file path in your xopengl directory
+    FString ScratchFile = AtlasMeta.Replace(TEXT(".txt"), TEXT("_scratch.tmp"));
+
+    // Try memory-mapped disk file
+    if (MappedAtlas.Create(AtlasSizeBytes, *ScratchFile))
+    {
+        // Notice: AtlasData is no longer a persistent global pointer! 
+        // Workers and Savers will map their own windowed local pointers instead.
+        bAtlasMapped = true;
+
+        // --- INITIALIZE LOCK TRACK ---
+#if _WIN32
+        if (!FileWriteMutex)
+        {
+            FileWriteMutex = new FWin32CriticalSection();
+        }
+#endif
+    }
+    else
+    {
+        // Fallback: heap (Keep this exactly as you have it just in case disk creation fails)
+        AtlasData = (FPlane*)appMalloc(AtlasSizeBytes, TEXT("OcclusionAtlas"));
+        if (!AtlasData)
+        {
+            GOcclusionState = EOcclusionState::Failed;
+            return;
+        }
+        appMemzero(AtlasData, AtlasSizeBytes);
+    }
 
     // Fill the job’s shared queue
     {
@@ -1771,13 +2325,18 @@ void UXOpenGLRenderDevice::BuildingPoll()
             StatusMessage   = TEXT("Assembling Atlas");
 
             AtlasFinished.store(false, std::memory_order_relaxed);
-
+            if (bAtlasMapped)
+            {
+                // Forces the OS file cache to physically commit all multi-threaded
+                // WriteFile blocks down to the actual disk sectors all at once.
+                FlushFileBuffers(MappedAtlas.FileHandle);
+            }
             const FString PNG  = AtlasPNG;
             const FString Meta = AtlasMeta;
 
             //DumpAtlasToDisk(Atlas, AtlasW, AtlasH, AtlasPNG);
             FString AtlasKTX2 = AtlasPNG.Replace(TEXT(".png"), TEXT(".ktx2"));
-            DumpAtlasToKTX2(Atlas, AtlasW, AtlasH, AtlasKTX2);
+            DumpAtlasToKTX2(AtlasKTX2);
             //DumpAtlasToDDS(Atlas, AtlasW, AtlasH, AtlasPNG, EDDSType::BC1);
             DumpAtlasMetadata(PendingLightmaps, AtlasMeta);
             AtlasFinished.store(true, std::memory_order_release);
@@ -1789,9 +2348,33 @@ void UXOpenGLRenderDevice::BuildingPoll()
             StatusMessage   = TEXT("");
 
             // cleanup
-            PendingLightmaps.Empty();  // drops per-lightmap pixel buffers etc.
-            Atlas.Empty();             // releases all FPlane elements
-            Atlas.Shrink();            // returns excess capacity to the allocator
+            PendingLightmaps.Empty();  
+            
+#if _WIN32
+            if (bAtlasMapped)
+            {
+                MappedAtlas.Destroy();
+                FString TargetScratchFile = AtlasMeta.Replace(TEXT(".txt"), TEXT("_scratch.tmp"));
+                
+                // --- CLEAN DEALLOCATION ---
+                if (FileWriteMutex)
+                {
+                    delete FileWriteMutex; // Destructor natively handles DeleteCriticalSection
+                    FileWriteMutex = nullptr;
+                }
+                DeleteFileW(*TargetScratchFile);
+            }
+#endif
+            if (AtlasData)
+            {
+                // 64-bit Linux/Mac platforms safely clear their massive heap arrays right here
+                appFree(AtlasData);
+                AtlasData = nullptr;
+            }
+
+            AtlasData      = nullptr;
+            AtlasSizeBytes = 0;
+            bAtlasMapped   = false; // returns excess capacity to the allocator
         }
         else
         {
@@ -2067,7 +2650,6 @@ void UXOpenGLRenderDevice::NewLevelOC()
         glDeleteTextures(1, &GStaticLightmapAtlasTex);
         GStaticLightmapAtlasTex = 0;
     }
-
 
     FString AtlasPNG, AtlasMeta;
     GetAtlasPathsForLevel(LastLevel->GetOuter()->GetName(), AtlasPNG, AtlasMeta);

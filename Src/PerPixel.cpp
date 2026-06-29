@@ -928,20 +928,22 @@ INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle)
 
 
 static const char* DepthFadeKeys[] = {
-    //"ancflame1", // ??
-    //"ancflame2", // yellow flame in DM-ArcaneTemple
-    //"ancsconc", // DOM-Cryptic
+    "ancflame1", // ??
+    "ancflame2", // yellow flame in DM-ArcaneTemple
+    "ancsconc", // DOM-Cryptic
     "asaring",
     "asasring",
-    //"cststeam", // green steam in DM-Conveyor
-    //"donfire", // DM-Barricade
-    //"lightning6", // blue flame in DM-ArcaneTemple
+    "cststeam", // green steam in DM-Conveyor
+    "donfire", // DM-Barricade
+    "lightning6", // blue flame in DM-ArcaneTemple
+    "liquid9", // water eg DM-Codex
     "pbluering",
     "ppurplering",
-    //"smallfireh3", // DM-Peak, DOM-Sesmar
-    //"smoke1", // ??
-    //"torches2", // DOM-Olden
-    //"torches3", // DM-Agony
+    "smallfireh3", // DM-Peak, DOM-Sesmar
+    "smoke1", // ??
+    "torches2", // DOM-Olden
+    "torches3", // DM-Agony
+    "water4", // ??
 };
 
 bool BinarySearchDepthFade(const char* key)
