@@ -430,7 +430,8 @@ bool UXOpenGLRenderDevice::BSPVisibilityRay(
 
             if (!bEscapedOrigin && !bInitialCheck)
             {
-                if (!BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurfIndex))
+                // allow movers to escape through another surface.  help hidden by default doors (eg DM-Pressure)
+                if (!isMover && !BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurfIndex))
                 {
                     occluded = true;
                     break;
@@ -465,7 +466,8 @@ bool UXOpenGLRenderDevice::BSPVisibilityRay(
             // origin-emergence backcheck happens the first time we leave the origin (if we started in it at all)
             if (!bEscapedOrigin && !bInitialCheck)
             {
-                if (!BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurfIndex))
+                // allow movers to escape through another surface.  help hidden by default doors (eg DM-Pressure)
+                if (!isMover && !BacktraceEmergesFromOrigin(Model, Start, CurrentStart, OriginSurfIndex))
                 {
                     occluded = true;
                     break;

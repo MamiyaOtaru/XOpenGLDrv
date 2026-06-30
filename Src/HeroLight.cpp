@@ -370,7 +370,6 @@ static bool SphereInFrustum(const FSceneNode* Frame, const FVector& Center, floa
     return true;
 }
 
-
 BOOL IsStaticMesh(AActor* Actor)
 {
     if (!Actor || !Actor->Mesh) return false;
@@ -632,6 +631,11 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
                     Curr.AnimFrame == Prev.AnimFrame)
                 {
                     bChanged = FALSE; 
+                }
+                else
+                {
+                    // ensure face it WAS in is marked dirty.  May be the same it is in now, no harm
+                    ChangedFaceMask |= Prev.FaceMask;
                 }
             }
 
