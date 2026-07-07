@@ -173,33 +173,101 @@ void UXOpenGLRenderDevice::FinishGouraudCall(FTextureInfo& Info, DWORD DrawFlags
 }
 
 // -----------------------------------------------------------------------------
-// Checks if the polygon is an explicitly scaled footprint blob shadow by finding 
-// the largest single-axis distance between its vertices.
+// Simplified UV-Linear Scaler: Reconstructs the absolute full-scale size of the mark 
+// by dividing the maximum single-axis distance by its linear UV texture fraction.
+// Designed explicitly for DrawGouraudPolygon's double-pointer array structure!
 // -----------------------------------------------------------------------------
-inline UBOOL IsBlobShadow(const FVector& P0, const FVector& P1, const FVector& P2)
+static FName GLastActiveTextureName = NAME_None;
+static QWORD GShadowCacheIDLock     = 0;
+inline UBOOL IsBlobShadow(const FTextureInfo& Info, FTransTexture* const* Pts)
 {
-	// Find the strict bounding boundaries across the three points
-	FLOAT MinX = min(P0.X, min(P1.X, P2.X));
-	FLOAT MaxX = max(P0.X, max(P1.X, P2.X));
-	FLOAT MinY = min(P0.Y, min(P1.Y, P2.Y));
-	FLOAT MaxY = max(P0.Y, max(P1.Y, P2.Y));
-	FLOAT MinZ = min(P0.Z, min(P1.Z, P2.Z));
-	FLOAT MaxZ = max(P0.Z, max(P1.Z, P2.Z));
+	// STATE TRACKING LAYER:
+    // If the engine provided a valid texture pointer, update our primary name tracker.
+    if (Info.Texture)
+    {
+        GLastActiveTextureName = Info.Texture->GetFName();
+        
+        // If this is explicitly the footprint shadow texture, lock its active CacheID!
+        if (GLastActiveTextureName == FName(TEXT("energymark")))
+        {
+            GShadowCacheIDLock = Info.CacheID;
+        }
+    }
 
-	// Compute absolute 3D width, length, and vertical thickness spans
-	FLOAT DeltaX = MaxX - MinX;
-	FLOAT DeltaY = MaxY - MinY;
-	FLOAT DeltaZ = MaxZ - MinZ;
+    // STATE MACHINE GATEWAY:
+    // We determine if this call is our target shadow mesh using two strict conditions:
+    // A: The texture pointer is valid and named "energymark".
+    // B: The texture pointer is missing, but the incoming CacheID matches our locked shadow CacheID!
+    UBOOL bIsShadowMeshCall = FALSE;
+    
+    if (Info.Texture && GLastActiveTextureName == FName(TEXT("energymark")))
+    {
+        bIsShadowMeshCall = TRUE;
+    }
+    else if (!Info.Texture && Info.CacheID == GShadowCacheIDLock && GShadowCacheIDLock != 0)
+    {
+        bIsShadowMeshCall = TRUE;
+    }
 
-	// SIZE CHECK
-	// shadows are bigger.  If above a threshold, flag as a shadow
-	if (DeltaX > 45.0f || DeltaY > 45.0f || DeltaZ > 45.0f)
-	{
-		return TRUE; // Confirmed footprint blob shadow!
-	}
+	// If it fails both checks, it is undeniably a different texture/skin sequence. Exit instantly!
+    if (!bIsShadowMeshCall)
+    {
+        return FALSE;
+    }
 
-	return FALSE; // Small weapon particle hit or vertical surface decal
+    // Fetch the first three vertices cleanly out of the scattered pointer structure
+    const FTransTexture& V0 = *Pts[0];
+    const FTransTexture& V1 = *Pts[1];
+    const FTransTexture& V2 = *Pts[2];
+
+    // 1. Gather the absolute minimum and maximum coordinates across the 3 target vertices
+    FLOAT MinX = min(V0.Point.X, min(V1.Point.X, V2.Point.X));
+    FLOAT MaxX = max(V0.Point.X, max(V1.Point.X, V2.Point.X));
+    FLOAT MinY = min(V0.Point.Y, min(V1.Point.Y, V2.Point.Y));
+    FLOAT MaxY = max(V0.Point.Y, max(V1.Point.Y, V2.Point.Y));
+    FLOAT MinZ = min(V0.Point.Z, min(V1.Point.Z, V2.Point.Z));
+    FLOAT MaxZ = max(V0.Point.Z, max(V1.Point.Z, V2.Point.Z));
+
+    FLOAT MinU = min(V0.U, min(V1.U, V2.U));
+    FLOAT MaxU = max(V0.U, max(V1.U, V2.U));
+    FLOAT MinV = min(V0.V, min(V1.V, V2.V));
+    FLOAT MaxV = max(V0.V, max(V1.V, V2.V));
+
+    // 2. Compute the straight-line physical widths and texture-pixel deltas
+    FLOAT DeltaX = MaxX - MinX;
+    FLOAT DeltaY = MaxY - MinY;
+    FLOAT DeltaZ = MaxZ - MinZ;
+    FLOAT DeltaU = MaxU - MinU;
+    FLOAT DeltaV = MaxV - MinV;
+
+    // Capture the largest physical distance span found on any of the 3 space channels
+    FLOAT MaxPhysicalSpan = max(DeltaX, max(DeltaY, DeltaZ));
+
+    // Convert the texture-pixel delta spans into an absolute 0.0 to 1.0 linear fraction
+    FLOAT MaxUVFraction = max(DeltaU / (FLOAT)Info.USize, DeltaV / (FLOAT)Info.VSize);
+
+    // Security boundary clamp to protect against tiny rounding noise producing infinite divisions
+    if (MaxUVFraction < 0.01f)
+        MaxUVFraction = 0.01f;
+
+    // 3. --- THE STRUCTURAL EXTRAPOLATION ---
+    // Divide the physical span straight by the linear fraction to find out how 
+    // large the entire mark is in world units if it were uncut!
+    FLOAT FullUncutWorldSize = MaxPhysicalSpan / MaxUVFraction;
+
+    // THE ABSOLUTE WORLD SIZE THRESHOLD FILTER:
+    // Enforce your verified 35.0f baseline limit
+    FLOAT FullAssetWorldThreshold = 35.0f;
+
+    if (FullUncutWorldSize > FullAssetWorldThreshold)
+    {
+        return TRUE; // Confirmed as part of a massive footprint blob shadow structure!
+    }
+
+    return FALSE; // Small weapon impact effect decal
 }
+
+
 
 /*-----------------------------------------------------------------------------
 	RenDev Interface
@@ -212,17 +280,9 @@ void UXOpenGLRenderDevice::DrawGouraudPolygon(FSceneNode* Frame, FTextureInfo& I
 	if (NoDrawGouraud)
 		return;
 
-	if (ShadowMaps && Info.Texture)
+	if (ShadowMaps && IsBlobShadow(Info, Pts))
 	{
-		FName TextureName = Info.Texture->GetFName();
-		if (TextureName == FName(TEXT("energymark")))
-		{
-			// Safe double-pointer dereference to feed the pure view-space vectors
-			if (NumPts >= 3 && IsBlobShadow(Pts[0]->Point, Pts[1]->Point, Pts[2]->Point))
-			{
-				return; // Drop individual blob shadow instance immediately!
-			}
-		}
+		return; // Drop individual blob shadow instance immediately!
 	}
 
 	auto Shader = dynamic_cast<DrawGouraudProgram*>(Shaders[Gouraud_Prog]);
@@ -306,17 +366,6 @@ void UXOpenGLRenderDevice::DrawGouraudPolyList(FSceneNode* Frame, FTextureInfo& 
 	if (NumPts < 3 /*|| Frame->Recursion > MAX_FRAME_RECURSION*/) //reject invalid.
 		return;
 
-	// TARGET TEXTURE VERIFICATION (EVALUATED EXACTLY ONCE AT THE TOP GATE)
-	UBOOL bIsTargetTexture = FALSE;
-	if (ShadowMaps && Info.Texture)
-	{
-		FName TextureName = Info.Texture->GetFName();
-		if (TextureName == FName(TEXT("energymark")))
-		{
-			bIsTargetTexture = TRUE;
-		}
-	}
-
 #if ENGINE_VERSION==227
 	if (Info.Modifier)
 	{
@@ -345,46 +394,29 @@ void UXOpenGLRenderDevice::DrawGouraudPolyList(FSceneNode* Frame, FTextureInfo& 
 		}
 	}
 
-		// TRIANGLE-BY-TRIANGLE MAIN STEPPING STREAM (i += 3)
-	for (INT i = 0; i < NumPts; i += 3)
+	for (INT i = 0; i < NumPts; i++)
 	{
-		// Safety boundary to prevent buffer leaks if the mesh data ends short
-		if (i + 2 >= NumPts)
-			break;
-
-		// Pure flat contiguous array indexing passed directly by vector value reference
-		if (ShadowMaps && bIsTargetTexture && IsBlobShadow(Pts[i].Point, Pts[i + 1].Point, Pts[i + 2].Point))
+		// Polylists can be bigger than the vertex buffer so check here if we
+		// need to split the mesh up into separate drawcalls
+		if ((i % 3 == 0) && (Out + 2 > End))
 		{
-			continue; // Discard this giant horizontal shadow triangle!
+			Shader->DrawBuffer.EndDrawCall(PolyListSize);
+			Shader->VertBuffer.Advance(PolyListSize);
+			Shader->ParametersBuffer.Advance(1); // advance so Flush automatically restores the drawcall params of the _current_ drawcall
+
+			Shader->Flush(true);
+			//debugf(NAME_DevGraphics, TEXT("DrawGouraudPolyList overflow!"));
+
+			Shader->DrawBuffer.StartDrawCall();
+			Out = Shader->VertBuffer.GetCurrentElementPtr();
+			End = Shader->VertBuffer.GetLastElementPtr();
+			DrawID = Shader->DrawBuffer.GetDrawID();
+
+			PolyListSize = 0;
 		}
 
-		// --- PRESERVED INDIVIDUAL VERTEX STREAM BUFFERING PASS ---
-		for (INT v = 0; v < 3; v++)
-		{
-			INT CurrentIdx = i + v;
-
-			// Polylists can be bigger than the vertex buffer so check here if we
-			// need to split the mesh up into separate drawcalls
-			if ((PolyListSize % 3 == 0) && (Out + 2 > End))
-			{
-				Shader->DrawBuffer.EndDrawCall(PolyListSize);
-				Shader->VertBuffer.Advance(PolyListSize);
-				Shader->ParametersBuffer.Advance(1); // advance so Flush automatically restores the drawcall params of the _current_ drawcall
-
-				Shader->Flush(true);
-				//debugf(NAME_DevGraphics, TEXT("DrawGouraudPolyList overflow!"));
-
-				Shader->DrawBuffer.StartDrawCall();
-				Out = Shader->VertBuffer.GetCurrentElementPtr();
-				End = Shader->VertBuffer.GetLastElementPtr();
-				DrawID = Shader->DrawBuffer.GetDrawID();
-
-				PolyListSize = 0;
-			}
-
-			BufferVert(Out++, &Pts[CurrentIdx], DrawID);
-			PolyListSize++;
-		}
+		BufferVert(Out++, &Pts[i], DrawID);
+		PolyListSize++;
 	}
 
 	Shader->DrawBuffer.EndDrawCall(PolyListSize);
