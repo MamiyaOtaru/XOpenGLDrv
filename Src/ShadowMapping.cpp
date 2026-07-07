@@ -47,9 +47,8 @@ static float ComputeBrightnessFactor(ALight* L)
 
 static bool IsPointVisibleFromLight(UModel* Model, const FVector& LightLoc, const FVector& TargetPoint)
 {
-    // Apply -50.f to Y because -Y is Up (and +Y is Down) in this framework!
-    // Keeping X and Z flat ensures the ray stays perfectly centered horizontally.
-    FVector AdjustedTarget = TargetPoint + FVector(0.f, -50.f, 0.f);
+    // Keeping X and Y flat ensures the ray stays perfectly centered horizontally.
+    FVector AdjustedTarget = TargetPoint + FVector(0.f, 0.f, 50.f);
 
     // Pass -1 to signal a generic free-space visibility ray test
     return UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, AdjustedTarget, LightLoc);
@@ -112,6 +111,63 @@ static float ComputeHeroBaseScore(UModel* Model, ALight* L, const TArray<FVector
 }
 
 // ------------------------------------------------------------
+// Attempt to exclude the bottom point light in a fake spotlight pair
+// ------------------------------------------------------------
+static bool IsFakeSpotlightFloorLight(
+    ALight* L1,
+    const TArray<AActor*>& AllLights,
+    UModel* Model)
+{
+    // --- 1. Must be near the floor ---
+    FVector Down = L1->Location + FVector(0,0,-48);
+    bool HasFloor = !UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, L1->Location, Down);
+
+    if (!HasFloor)
+        return false; // not near the ground
+
+    // --- 2. Find a vertically stacked partner above ---
+    for (INT i = 0; i < AllLights.Num(); ++i)
+    {
+        ALight* L2 = Cast<ALight>(AllLights(i));
+        if (!L2 || L2 == L1) continue;
+
+        // Rough XY alignment.  12 is too tight for Deck
+        if (Abs(L1->Location.X - L2->Location.X) > 16.f) continue;
+        if (Abs(L1->Location.Y - L2->Location.Y) > 16.f) continue;
+
+        // Must be above
+        if (L2->Location.Z <= L1->Location.Z) continue;
+
+        // --- 3. Colors must match closely ---
+        FPlane C1 = FGetHSV(L1->LightHue, L1->LightSaturation, L1->LightBrightness);
+        FPlane C2 = FGetHSV(L2->LightHue, L2->LightSaturation, L2->LightBrightness);
+
+        float ColorDist =
+            Abs(C1.X - C2.X) +
+            Abs(C1.Y - C2.Y) +
+            Abs(C1.Z - C2.Z);
+
+        if (ColorDist > 20.f) continue;
+
+        // --- 4. Must have unobstructed line-of-sight ---
+        if (!UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, L1->Location, L2->Location))
+            continue;
+
+        // --- 5. Upper light must NOT be near the floor ---
+        FVector Down2 = L2->Location + FVector(0,0,-128);
+        bool UpperHasFloor = !UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, L2->Location, Down2);
+
+        if (UpperHasFloor)
+            continue; // upper is TOO near floor
+        
+        // If we reach here, L1 is a fake spotlight floor light
+        return true;
+    }
+
+    return false;
+}
+
+// ------------------------------------------------------------
 // Main hero-light selection
 // ------------------------------------------------------------
 void UXOpenGLRenderDevice::PickHeroLights(
@@ -143,6 +199,8 @@ void UXOpenGLRenderDevice::PickHeroLights(
         if (L->WorldLightRadius() < 128.0f) continue; // Raised slightly to ignore tiny trim lights
         if (L->LightBrightness < 32) continue;
         if (L->bSpecialLit) continue;
+        if (IsFakeSpotlightFloorLight(L, StaticLevelLights, Level->Model))
+            continue;
 
         float BaseScore = ComputeHeroBaseScore(Level->Model, L, NavPoints);
         if (BaseScore <= 0.0f) continue; // Disqualified
@@ -218,6 +276,124 @@ void UXOpenGLRenderDevice::PickHeroLights(
     }
 } // end function PickHeroLights
 
+// cached topology stuff for ULodMesh
+UBOOL LoadTopologyFromDisk(FString MeshName, UXOpenGLRenderDevice::FMeshConnectivity& OutTopology)
+{
+    guard(UXOpenGLRenderDevice::LoadTopologyFromDisk);
+
+    // Points straight to your local asset cache folder
+    // e.g., "..\System\ShadowCache\Commando.bin"
+    FString CachePath = FString::Printf(TEXT("..\\System\\xopengl\\topology\\%s.bin"), *MeshName);
+
+    // Create a native engine file reader archive
+    FArchive* Ar = GFileManager->CreateFileReader(*CachePath);
+    if (!Ar)
+    {
+        return FALSE; // Cache Miss: File doesn't exist yet
+    }
+
+    // STAGE 1: Read the first 4 bytes (The total index count written by PowerShell)
+    INT IndexCount = 0;
+    *Ar << IndexCount;
+
+    // Security check to guarantee we don't allocate corrupt out-of-bounds heap segments
+    if (IndexCount > 0 && IndexCount < 200000) 
+    {
+        // Allocate space inside the TArray smoothly all at once
+        OutTopology.TriangleIndices.AddZeroed(IndexCount);
+
+        // STAGE 2: Bulk-copy the entire binary file payload straight into memory!
+        // This takes virtually zero CPU cycles because it avoids any string manipulation.
+        Ar->Serialize(&OutTopology.TriangleIndices(0), IndexCount * sizeof(INT));
+    }
+
+    // Cleanly unbind and close the file stream archive handle
+    delete Ar;
+
+    debugf(TEXT("SUCCESSFULLY LOADED GEOMETRIC SHADOW CACHE FOR: %s (%d Indices)"), *MeshName, IndexCount);
+    return TRUE;
+    
+    unguard;
+}
+
+BOOL UXOpenGLRenderDevice::HasMappedTopology(AActor* Actor)
+{
+    FString MeshKey = Actor->Mesh->GetName();
+    INT* pStatus = GMappedMeshes.Find(MeshKey);
+    if (pStatus == NULL)
+    {
+        // Attempt to bulk-copy the pre-calculated binary index stream from disk
+        FMeshConnectivity NewTopology;
+        if (LoadTopologyFromDisk(MeshKey, NewTopology))
+        {
+            GDiscoveredTopologies.Set(*MeshKey, NewTopology);
+            GMappedMeshes.Set(*MeshKey, 444); // Locked in as 100% complete shadow geometry!
+            //debugf(TEXT("Shadow Topology Cache Hit for mesh %s."), *MeshKey);
+            return true;
+        }
+        else
+        {
+            // Cache Miss: Mark with a fallback flag so we don't try to read disk every frame
+            GMappedMeshes.Set(*MeshKey, 1); 
+            //debugf(TEXT("Shadow Topology Cache Miss for mesh %s. Falling back to capsule splats."), *MeshKey);
+            return false;
+        }
+    }
+    else
+    {
+        return (*pStatus == 444);
+    }
+}
+
+// call from GenerateCapsulesForMesh in the event we ever get new
+// player ULodMesh assets for which we need to build offline topology (autoAligner.ps1)
+void DumpEngineBasePose(ULodMesh* L)
+{
+    guard(UXOpenGLRenderDevice::DumpEngineBasePose);
+    
+    if (!L || L->Verts.Num() == 0) return;
+
+    // Build path: "..\System\Commando_Engine_Verts.txt"
+    FString CleanMeshName = L->GetName();
+    FString FilePath = FString::Printf(TEXT("..\\System\\%s_Engine_Verts.txt"), *CleanMeshName);
+
+    FArchive* Ar = GFileManager->CreateFileReader(*FilePath);
+    if (Ar)
+    {
+        // Prevent file thrashing if it's already been dumped
+        delete Ar;
+        return; 
+    }
+
+    Ar = GFileManager->CreateFileWriter(*FilePath);
+    if (!Ar) return;
+
+    // Frame 0 spans from 0 to MemoryStride-1
+    const INT MemoryStride = (L->FrameVerts > 0) ? L->FrameVerts : L->ModelVerts;
+
+    for (INT v = 0; v < MemoryStride; ++v)
+    {
+        // Decompress the raw 11-11-10 integer bitfield vector data out of memory
+        FVector P = L->Verts(v).Vector();
+
+        // UNIVERSAL MATHEMATICAL BRIDGE: Replaces the hardcoded /8, /8, /4 script math
+        // by dynamically evaluating the mesh asset's native Scale fields.
+        // happens to work for commando, not for skaarj
+        //P.X *= L->Scale.X * 2.0f;
+        //P.Y *= L->Scale.Y * 2.0f;
+        //P.Z *= L->Scale.Z * 2.0f;
+
+        // Write out the perfectly scaled coordinates to match the modeling workspace
+        FString Line = FString::Printf(TEXT("%f %f %f\n"), P.X, P.Y, P.Z);
+        Ar->Serialize((void*)*Line, Line.Len() * sizeof(TCHAR));
+    }
+
+    delete Ar;
+    debugf(TEXT("DUMPED BASE POSE FOR %s TO DISK. PROCEED WITH TEXT ALIGNMENT CHECKS."), *CleanMeshName);
+    
+    unguard;
+}
+
 // splatting stuff, uses global cache for pose data and per frame position data
 // stored, cachable capsule info (connectivity)
 struct BoneCapsuleInfo
@@ -240,6 +416,8 @@ void GenerateCapsulesForMesh(ULodMesh* L, MeshCapsuleCache& Out)
 
     if (!L || L->Verts.Num() == 0)
         return;
+
+    //DumpEngineBasePose(L);
 
     const INT FrameVerts = (L->FrameVerts > 0) ? L->FrameVerts : L->ModelVerts;
     if (FrameVerts <= 1)
@@ -428,7 +606,7 @@ inline void GetAxes(FRotator R, FVector& X, FVector& Y, FVector& Z)
 }
 
 // helper: mesh-space -> world-space (no animation here)
-static FVector TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, AActor* Actor)
+FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, AActor* Actor)
 {
     FVector S = P;
     S.X *= L->Scale.X;
@@ -562,6 +740,101 @@ void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TA
     }
 }
 
+void UXOpenGLRenderDevice::ExtractMappedAnimatedTriangles(
+    ULodMesh* L, 
+    AActor* Actor, 
+    const FMeshConnectivity& Blueprint, 
+    TArray<FShadowTriangle>& OutTris)
+{
+    if (!L || !Actor || Blueprint.TriangleIndices.Num() == 0 || L->Verts.Num() == 0) return;
+
+    const INT MemoryStride = (L->FrameVerts > 0) ? L->FrameVerts : L->ModelVerts;
+    
+    TArray<FVector> PosedVerts;
+    PosedVerts.AddZeroed(MemoryStride);
+
+    FMeshAnimSeq* Seq = L->GetAnimSeq(Actor->AnimSequence);
+    check(Seq); // Guaranteed to be valid via the caller's bStaticMesh check
+
+    INT FrameA_Index = 0, FrameB_Index = 0;
+    FLOAT Alpha = 0.0f;
+
+    // --- Core Animation Interp Sampling ---
+    if (Actor->AnimFrame >= 0.0f)
+    {
+        if (Actor->AnimFrame < 1.0f)
+        {
+            FLOAT FloatFrame = Seq->StartFrame + (Actor->AnimFrame * (FLOAT)Seq->NumFrames);
+            FrameA_Index = appFloor(FloatFrame);
+            FrameB_Index = FrameA_Index + 1;
+            Alpha = FloatFrame - (FLOAT)FrameA_Index;
+        }
+        else
+        {
+            FrameA_Index = Seq->StartFrame + appFloor(Actor->AnimFrame);
+            FrameB_Index = FrameA_Index + 1;
+            Alpha = Actor->AnimFrame - appFloor(Actor->AnimFrame);
+        }
+
+        INT MaxSeqFrame = Seq->StartFrame + Seq->NumFrames - 1;
+        if (FrameA_Index > MaxSeqFrame)  FrameA_Index = MaxSeqFrame;
+        if (FrameB_Index > MaxSeqFrame)  FrameB_Index = Seq->StartFrame;
+    }
+    else
+    {
+        FrameA_Index = Seq->StartFrame;
+        FrameB_Index = Seq->StartFrame;
+        Alpha = 0.0f;
+    }
+
+    INT FrameA_Offset = FrameA_Index * MemoryStride;
+    INT FrameB_Offset = FrameB_Index * MemoryStride;
+
+    // Decompress the vertices for the active frame interpolation state
+    for (INT i = 0; i < MemoryStride; i++)
+    {
+        INT VertA_Addr = FrameA_Offset + i;
+        INT VertB_Addr = FrameB_Offset + i;
+
+        if (VertA_Addr >= L->Verts.Num() || VertB_Addr >= L->Verts.Num())
+            continue;
+
+        PosedVerts(i) = L->Verts(VertA_Addr).Vector() + 
+                       (L->Verts(VertB_Addr).Vector() - L->Verts(VertA_Addr).Vector()) * Alpha;
+    }
+
+    // Apply the spatial transformation matrix directly to the animated points
+    for (INT i = 0; i < MemoryStride; i++)
+    {
+        PosedVerts(i) = TransformMeshSpaceToWorld(PosedVerts(i), L, Actor);
+    }
+
+    // --- Blueprint Unrolling ---
+    INT NumIndices = Blueprint.TriangleIndices.Num();
+    for (INT i = 0; i < NumIndices; i += 3)
+    {
+        if (i + 2 >= NumIndices) break;
+
+        INT v0 = Blueprint.TriangleIndices(i);
+        INT v1 = Blueprint.TriangleIndices(i+1);
+        INT v2 = Blueprint.TriangleIndices(i+2);
+
+        if (v0 >= MemoryStride || v1 >= MemoryStride || v2 >= MemoryStride)
+            continue;
+
+        if ((PosedVerts(v0) - PosedVerts(v1)).IsNearlyZero() || 
+            (PosedVerts(v1) - PosedVerts(v2)).IsNearlyZero())
+            continue;
+
+        FShadowTriangle T;
+        T.V0 = PosedVerts(v0);
+        T.V1 = PosedVerts(v1);
+        T.V2 = PosedVerts(v2);
+
+        OutTris.AddItem(T);
+    }
+}
+
 void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, TArray<FShadowTriangle>& OutTris)
 {
     if (!L || !Actor || L->Faces.Num() == 0 || L->Verts.Num() == 0) return;
@@ -689,9 +962,6 @@ void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, T
         INT v0 = L->Wedges(Face.iWedge[0]).iVertex;
         INT v1 = L->Wedges(Face.iWedge[1]).iVertex;
         INT v2 = L->Wedges(Face.iWedge[2]).iVertex;
-        //INT v0 = ResolveLodMeshVertex(L, Face.iWedge[0], 1);
-        //INT v1 = ResolveLodMeshVertex(L, Face.iWedge[1], 1);
-        //INT v2 = ResolveLodMeshVertex(L, Face.iWedge[2], 1);
 
         if (v0 >= DrawVerts || v1 >= DrawVerts || v2 >= DrawVerts)
             continue;
@@ -709,72 +979,549 @@ void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, T
     }
 }
 
-void UXOpenGLRenderDevice::ExtractSkeletalMeshTriangles(USkeletalMesh* S, AActor* Actor, TArray<FShadowTriangle>& OutTris)
+// -----------------------------------------------------------------------------
+// Explicitly chains a child local joint matrix onto an outcoded parent matrix
+// -----------------------------------------------------------------------------
+inline FCoords CombineBones(const FCoords& ChildLocal, const FCoords& ParentGlobal)
 {
+    FCoords Temp;
+
+    // 1. FIXED UN-TRANSPOSED ROW PROJECTION
+    // Projects the child's local translation components down each individual parent axis row in sequence.
+    // This rotates the joint offset vector perfectly into parent space without introducing any slanted axis drift!
+    Temp.Origin.X = ParentGlobal.Origin.X + (ChildLocal.Origin.X * ParentGlobal.XAxis.X + ChildLocal.Origin.Y * ParentGlobal.YAxis.X + ChildLocal.Origin.Z * ParentGlobal.ZAxis.X);
+    Temp.Origin.Y = ParentGlobal.Origin.Y + (ChildLocal.Origin.X * ParentGlobal.XAxis.Y + ChildLocal.Origin.Y * ParentGlobal.YAxis.Y + ChildLocal.Origin.Z * ParentGlobal.ZAxis.Y);
+    Temp.Origin.Z = ParentGlobal.Origin.Z + (ChildLocal.Origin.X * ParentGlobal.XAxis.Z + ChildLocal.Origin.Y * ParentGlobal.YAxis.Z + ChildLocal.Origin.Z * ParentGlobal.ZAxis.Z);
+
+    // 2. VERIFIED ROW-BY-COLUMN ORIENTATION AXES CHAIN
+    // Result.XAxis = Parent * Child.XAxis
+    Temp.XAxis.X = ChildLocal.XAxis.X * ParentGlobal.XAxis.X +
+                   ChildLocal.XAxis.Y * ParentGlobal.YAxis.X +
+                   ChildLocal.XAxis.Z * ParentGlobal.ZAxis.X;
+    Temp.XAxis.Y = ChildLocal.XAxis.X * ParentGlobal.XAxis.Y +
+                   ChildLocal.XAxis.Y * ParentGlobal.YAxis.Y +
+                   ChildLocal.XAxis.Z * ParentGlobal.ZAxis.Y;
+    Temp.XAxis.Z = ChildLocal.XAxis.X * ParentGlobal.XAxis.Z +
+                   ChildLocal.XAxis.Y * ParentGlobal.YAxis.Z +
+                   ChildLocal.XAxis.Z * ParentGlobal.ZAxis.Z;
+
+    // Result.YAxis = Parent * Child.YAxis
+    Temp.YAxis.X = ChildLocal.YAxis.X * ParentGlobal.XAxis.X +
+                   ChildLocal.YAxis.Y * ParentGlobal.YAxis.X +
+                   ChildLocal.YAxis.Z * ParentGlobal.ZAxis.X;
+    Temp.YAxis.Y = ChildLocal.YAxis.X * ParentGlobal.XAxis.Y +
+                   ChildLocal.YAxis.Y * ParentGlobal.YAxis.Y +
+                   ChildLocal.YAxis.Z * ParentGlobal.ZAxis.Y;
+    Temp.YAxis.Z = ChildLocal.YAxis.X * ParentGlobal.XAxis.Z +
+                   ChildLocal.YAxis.Y * ParentGlobal.YAxis.Z +
+                   ChildLocal.YAxis.Z * ParentGlobal.ZAxis.Z;
+
+    // Result.ZAxis = Parent * Child.ZAxis
+    Temp.ZAxis.X = ChildLocal.ZAxis.X * ParentGlobal.XAxis.X +
+                   ChildLocal.ZAxis.Y * ParentGlobal.YAxis.X +
+                   ChildLocal.ZAxis.Z * ParentGlobal.ZAxis.X;
+    Temp.ZAxis.Y = ChildLocal.ZAxis.X * ParentGlobal.XAxis.Y +
+                   ChildLocal.ZAxis.Y * ParentGlobal.YAxis.Y +
+                   ChildLocal.ZAxis.Z * ParentGlobal.ZAxis.Y;
+    Temp.ZAxis.Z = ChildLocal.ZAxis.X * ParentGlobal.XAxis.Z +
+                   ChildLocal.ZAxis.Y * ParentGlobal.YAxis.Z +
+                   ChildLocal.ZAxis.Z * ParentGlobal.ZAxis.Z;
+
+    return Temp;
+}
+
+FVector TransformPoint(const FCoords& C, const FVector& P)
+{
+    FVector R;
+    R.X = P.X * C.XAxis.X + P.Y * C.YAxis.X + P.Z * C.ZAxis.X + C.Origin.X;
+    R.Y = P.X * C.XAxis.Y + P.Y * C.YAxis.Y + P.Z * C.ZAxis.Y + C.Origin.Y;
+    R.Z = P.X * C.XAxis.Z + P.Y * C.YAxis.Z + P.Z * C.ZAxis.Z + C.Origin.Z;
+    return R;
+}
+
+// operator-isolated Quaternion to Row-Major FCoords converter
+inline FCoords QuaternionToRowMajorCoords(const FQuat& Q, const FVector& Translation)
+{
+    FCoords Local;
+    Local.Origin = Translation;
+
+    // Pre-calculate squared quaternion components for high-precision unrolling
+    FLOAT xx = Q.X * Q.X; FLOAT yy = Q.Y * Q.Y; FLOAT zz = Q.Z * Q.Z;
+    FLOAT xy = Q.X * Q.Y; FLOAT xz = Q.X * Q.Z; FLOAT yz = Q.Y * Q.Z;
+    FLOAT wx = Q.W * Q.X; FLOAT wy = Q.W * Q.Y; FLOAT wz = Q.W * Q.Z;
+
+    // Build pure, un-transposed Row-Major basis tracking rows cleanly
+    Local.XAxis.X = 1.0f - 2.0f * (yy + zz);
+    Local.XAxis.Y = 2.0f * (xy - wz);
+    Local.XAxis.Z = 2.0f * (xz + wy);
+
+    Local.YAxis.X = 2.0f * (xy + wz);
+    Local.YAxis.Y = 1.0f - 2.0f * (xx + zz);
+    Local.YAxis.Z = 2.0f * (yz - wx);
+
+    Local.ZAxis.X = 2.0f * (xz - wy);
+    Local.ZAxis.Y = 2.0f * (yz + wx);
+    Local.ZAxis.Z = 1.0f - 2.0f * (xx + yy);
+
+    return Local;
+}
+
+inline FQuat SlerpQuatNew(const FQuat &quat1, const FQuat &quat2, float slerp)
+{
+    FQuat result;
+    float omega, cosom, sininv, scale0, scale1;
+
+    // Get cosine of angle between quats
+    cosom = quat1.X * quat2.X +
+            quat1.Y * quat2.Y +
+            quat1.Z * quat2.Z +
+            quat1.W * quat2.W;
+
+    // --- FIX 1: THE NEIGHBORHOOD SHORT-PATH CHECK ---
+    // If the dot product is negative, the quaternions are pointing in opposite 
+    // directions on the hypersphere. We invert one to force the short-path slerp!
+    FQuat targetQuat2 = quat2;
+    if (cosom < 0.f)
+    {
+        cosom = -cosom;
+        targetQuat2.X = -quat2.X;
+        targetQuat2.Y = -quat2.Y;
+        targetQuat2.Z = -quat2.Z;
+        targetQuat2.W = -quat2.W;
+    }
+
+    // --- FIX 2: RE-SCALE CALIBRATED UPPER LIMIT CLAMP ---
+    if (cosom < 0.9995f)
+    {	
+        omega = appAcos(cosom);
+        sininv = 1.f / appSin(omega);
+        scale0 = appSin((1.f - slerp) * omega) * sininv;
+        scale1 = appSin(slerp * omega) * sininv;
+        
+        result.X = scale0 * quat1.X + scale1 * targetQuat2.X;
+        result.Y = scale0 * quat1.Y + scale1 * targetQuat2.Y;
+        result.Z = scale0 * quat1.Z + scale1 * targetQuat2.Z;
+        result.W = scale0 * quat1.W + scale1 * targetQuat2.W;
+        return result;
+    }
+    else
+    {
+        // Close angles linearize safely to prevent zero division crashes
+        result.X = quat1.X + (targetQuat2.X - quat1.X) * slerp;
+        result.Y = quat1.Y + (targetQuat2.Y - quat1.Y) * slerp;
+        result.Z = quat1.Z + (targetQuat2.Z - quat1.Z) * slerp;
+        result.W = quat1.W + (targetQuat2.W - quat1.W) * slerp;
+        result.Normalize();
+        return result;
+    }
+}
+
+// Find the key index just before the given time
+inline INT FindKeyBefore(const AnalogTrack& Track, FLOAT Time)
+{
+    const INT NumKeys = Track.KeyTime.Num();
+
+    if (NumKeys == 0)
+        return 0;
+
+    if (Time <= Track.KeyTime(0))
+        return 0;
+
+    if (Time >= Track.KeyTime(NumKeys - 1))
+        return NumKeys - 1;
+
+    for (INT i = 0; i < NumKeys - 1; i++)
+    {
+        if (Track.KeyTime(i) <= Time && Time < Track.KeyTime(i + 1))
+            return i;
+    }
+
+    return NumKeys - 1;
+}
+
+// Sample rotation (FRotator) from an AnalogTrack at a given time
+inline FQuat SampleQuat(const AnalogTrack& Track, FLOAT Time)
+{
+    const INT NumKeys = Track.KeyQuat.Num();
+    if (NumKeys == 0)
+        return FQuat(0,0,0,1);
+
+    INT A = FindKeyBefore(Track, Time);
+    INT B = Min(A + 1, NumKeys - 1);
+
+    FLOAT TimeA = Track.KeyTime(A);
+    FLOAT TimeB = Track.KeyTime(B);
+
+    FLOAT Alpha = (TimeB > TimeA) ? (Time - TimeA) / (TimeB - TimeA) : 0.f;
+
+    const FQuat& QA = Track.KeyQuat(A);
+    const FQuat& QB = Track.KeyQuat(B);
+
+    // SLERP (use your fixed quaternion math!)
+    FQuat Q = SlerpQuatNew(QA,QB, Alpha);
+    Q.Normalize();
+
+    return Q;
+}
+
+// Sample translation (FVector) from an AnalogTrack at a given time
+inline FVector SamplePos(const AnalogTrack& Track, FLOAT Time)
+{
+    const INT NumPos  = Track.KeyPos.Num();
+    const INT NumTime = Track.KeyTime.Num();
+
+    // No translation keys ? no movement
+    if (NumPos == 0 || NumTime == 0)
+        return FVector(0,0,0);
+
+    // Only one translation key ? constant offset
+    if (NumPos == 1)
+        return Track.KeyPos(0);
+
+    // Clamp time before first key
+    if (Time <= Track.KeyTime(0))
+        return Track.KeyPos(0);
+
+    // Clamp time after last key
+    if (Time >= Track.KeyTime(NumPos - 1))
+        return Track.KeyPos(NumPos - 1);
+
+    // Find key A such that KeyTime[A] <= Time < KeyTime[A+1]
+    INT A = 0;
+    for (INT i = 0; i < NumPos - 1; i++)
+    {
+        if (Track.KeyTime(i) <= Time && Time < Track.KeyTime(i + 1))
+        {
+            A = i;
+            break;
+        }
+    }
+
+    INT B = A + 1;
+
+    FLOAT TimeA = Track.KeyTime(A);
+    FLOAT TimeB = Track.KeyTime(B);
+
+    FLOAT Alpha = (TimeB > TimeA) ? (Time - TimeA) / (TimeB - TimeA) : 0.f;
+
+    return Track.KeyPos(A) + (Track.KeyPos(B) - Track.KeyPos(A)) * Alpha;
+}
+
+void UXOpenGLRenderDevice::ExtractSkeletalMeshTriangles(
+    USkeletalMesh* S,
+    AActor* Actor,
+    TArray<FShadowTriangle>& OutTris)
+{
+    guard(UXOpenGLRenderDevice::ExtractSkeletalMeshTriangles);
+
     if (!S || !Actor || S->Faces.Num() == 0) return;
 
     const INT TotalVerts = S->Points.Num();
-    if (TotalVerts == 0) return;
+    const INT NumBones   = S->RefSkeleton.Num();
+    if (TotalVerts == 0 || NumBones == 0) return;
 
-    TArray<FVector> PosedVerts;
-    PosedVerts.AddZeroed(TotalVerts);
+    // Workspace
+    TArray<FVector> PosedLocalVerts;
+    PosedLocalVerts.AddZeroed(TotalVerts);
 
-    // Save state variables
-    FLOAT SavedAnimFrame    = Actor->AnimFrame;
-    FName  SavedAnimSequence = Actor->AnimSequence;
+    TArray<FCoords> BindPose;
+    BindPose.AddZeroed(NumBones);
 
-    INT LODRequest = 0;
+    TArray<FCoords> AnimatedPose;
+    AnimatedPose.AddZeroed(NumBones);
 
-    // Evaluates directly using v469 skeletal transformations
-    S->GetFrame(&PosedVerts(0), sizeof(FVector), GMath.UnitCoords, Actor, LODRequest);
+    FVector OX, OY, OZ;
+    GetAxes(S->RotOrigin, OX, OY, OZ);
+    FCoords MeshRot(FVector(0,0,0), OX, OY, OZ);
 
-    // Restore state variables safely
-    Actor->AnimFrame    = SavedAnimFrame;
-    Actor->AnimSequence = SavedAnimSequence;
-
-    // Convert local bone layout vertex maps straight to global matrices
     FVector AX, AY, AZ;
     GetAxes(Actor->Rotation, AX, AY, AZ);
-    FCoords ActorCoords(Actor->Location, AX, AY, AZ);
+    AX *= -1.f; // if you still need the handedness fix here
+    FCoords ActorRot(FVector(0,0,0), AX, AY, AZ);
+    
+    // =========================================================================
+    // STAGE 1: BUILD BIND-POSE BONES
+    // =========================================================================
+    for (INT b = 0; b < NumBones; b++)
+    {
+        const FMeshBone& Bone = S->RefSkeleton(b);
+
+        // A. Read raw right-handed file values natively
+        FQuat   Q = Bone.BonePos.Orientation;         
+        FVector T = Bone.BonePos.Position.Vector(); 
+
+        FCoords Local = QuaternionToRowMajorCoords(Q, T);
+        
+        if (b == 0)
+            BindPose(b) = Local;
+        else
+            BindPose(b) = CombineBones(Local, BindPose(Bone.ParentIndex));
+    }
+
+    // =========================================================================
+    // STAGE 2: BUILD ANIMATED BONES (LIVE TRACKS)
+    // =========================================================================
+    UAnimation* AnimPackage = Actor->SkelAnim ? Actor->SkelAnim : S->DefaultAnimation;
+    MotionChunk* ActiveMove = nullptr;
+    const FMeshAnimSeq* Seq = nullptr;
+
+    if (AnimPackage)
+    {
+        Seq        = AnimPackage->GetAnimSeq(Actor->AnimSequence);
+        ActiveMove = AnimPackage->GetMovement(Actor->AnimSequence);
+    }
+
+    UBOOL bHasActiveMotion = (ActiveMove && Seq && Seq->NumFrames > 0);
+
+    if (bHasActiveMotion)
+    {
+        FLOAT TotalDuration = (FLOAT)Seq->NumFrames / (Seq->Rate > 0.f ? Seq->Rate : 30.f);
+        FLOAT ProgressAlpha = Actor->AnimFrame;
+        if (ProgressAlpha < 0.0f) ProgressAlpha = 0.0f;
+        if (ProgressAlpha > 1.0f) ProgressAlpha = 1.0f;
+
+        FLOAT AnimTime = ProgressAlpha * TotalDuration;
+
+        for (INT b = 0; b < NumBones; b++)
+        {
+            const FMeshBone& Bone = S->RefSkeleton(b);
+
+            FQuat   Q = Bone.BonePos.Orientation;
+            FVector T = Bone.BonePos.Position.Vector();
+
+            INT TrackIndex = -1;
+            // indirect
+            //for (INT ti = 0; ti < ActiveMove->BoneIndices.Num(); ti++)
+            //{
+            //    if (ActiveMove->BoneIndices(ti) == b)
+            //    {
+            //        TrackIndex = ti;
+            //        break;
+            //    }
+            // semi direct
+            if (b < ActiveMove->BoneIndices.Num()) TrackIndex = ActiveMove->BoneIndices(b);
+            // super direct
+            //TrackIndex = b;
+ 
+            if (TrackIndex >= 0 && TrackIndex < ActiveMove->AnimTracks.Num())
+            {
+                AnalogTrack& Track = ActiveMove->AnimTracks(TrackIndex);
+
+                FQuat   AnimQ = SampleQuat(Track, AnimTime);
+                FVector AnimT = SamplePos(Track, AnimTime);
+
+                if (Track.KeyQuat.Num() > 0)
+                {
+                    Q = AnimQ; // Locked absolute overwrite
+                }
+
+                if (Track.KeyPos.Num() > 0)
+                {
+                    T = AnimT;
+                }
+            }
+
+            FCoords Local = QuaternionToRowMajorCoords(Q, T);
+            
+            if (b == 0)
+                AnimatedPose(b) = Local;
+            else
+                AnimatedPose(b) = CombineBones(Local, AnimatedPose(Bone.ParentIndex));
+
+            // some logging
+            /*
+            if (b == 0 || b == 37 || b == 42 || b == 41 || b == 46)
+            {
+                const FMeshBone& Bone = S->RefSkeleton(b);
+                AnalogTrack& Track = ActiveMove->AnimTracks(b);
+
+                // Isolate the raw file keys before they touch any functions
+                FQuat   RawFileQ = Q;
+                FVector RawFileT = T;
+
+                // Read the fully accumulated matrix rows out of AnimatedPose(b)
+                FCoords FinalM = AnimatedPose(b);
+
+                FQuat AnimQ = SampleQuat(Track, AnimTime);
+
+                debugf(TEXT("LEG_TRACE | Bone[%2d] | AnimTime: %6.3f"), b, AnimTime);
+                debugf(TEXT("  -> RawFileT : (X=%9.4f, Y=%9.4f, Z=%9.4f)"), RawFileT.X, RawFileT.Y, RawFileT.Z);
+                debugf(TEXT("  -> RawFileQ : (X=%9.4f, Y=%9.4f, Z=%9.4f, W=%9.4f)"), AnimQ.X, AnimQ.Y, AnimQ.Z, AnimQ.W);
+                debugf(TEXT("  -> FinalPos : (X=%9.4f, Y=%9.4f, Z=%9.4f)"), FinalM.Origin.X, FinalM.Origin.Y, FinalM.Origin.Z);
+                debugf(TEXT("  -> FinalXRow: [X=%9.4f, Y=%9.4f, Z=%9.4f]"), FinalM.XAxis.X, FinalM.XAxis.Y, FinalM.XAxis.Z);
+                debugf(TEXT("  -> FinalYRow: [X=%9.4f, Y=%9.4f, Z=%9.4f]"), FinalM.YAxis.X, FinalM.YAxis.Y, FinalM.YAxis.Z);
+                debugf(TEXT("  -> FinalZRow: [X=%9.4f, Y=%9.4f, Z=%9.4f]"), FinalM.ZAxis.X, FinalM.ZAxis.Y, FinalM.ZAxis.Z);
+            }*/
+        }
+    }
+    else
+    {
+        for (INT b = 0; b < NumBones; b++)
+            AnimatedPose(b) = BindPose(b);
+    }
+
+    // debug draw bones
+    /*
+    for (INT b = 0; b < NumBones; b++)
+    {
+        // TARGET SAMPLES: Read natively from your stable AnimatedPose tree
+        // Both Stage 2 and Stage 3 are completely pristine and un-mutated!
+        const FCoords& Pose = AnimatedPose(b); 
+        FVector RawLocalP = Pose.Origin;
+
+        // A. Scale the completed native local tree position relative to its asset footprint
+        RawLocalP -= S->Origin;
+        RawLocalP *= S->Scale;
+
+        // B. Apply MeshRot cleanly to handle the built-in horizontal asset turning
+        RawLocalP = RawLocalP.TransformVectorBy(MeshRot);
+
+        FVector P = RawLocalP;
+
+        // D. Project the freshly stood-up coordinates out into world space map slots
+        P *= Actor->DrawScale;
+        P = P.TransformVectorBy(ActorRot);
+        P += Actor->Location;
+
+        // --- Emit box node around target coordinate P ---
+        const FLOAT S_Val = 4.0f;
+
+        FVector V0 = P + FVector(-S_Val, -S_Val, -S_Val);
+        FVector V1 = P + FVector( S_Val, -S_Val, -S_Val);
+        FVector V2 = P + FVector( S_Val,  S_Val, -S_Val);
+        FVector V3 = P + FVector(-S_Val,  S_Val, -S_Val);
+
+        FVector V4 = P + FVector(-S_Val, -S_Val,  S_Val);
+        FVector V5 = P + FVector( S_Val, -S_Val,  S_Val);
+        FVector V6 = P + FVector( S_Val,  S_Val,  S_Val);
+        FVector V7 = P + FVector(-S_Val,  S_Val,  S_Val);
+
+        auto EmitTri = [&](const FVector& A, const FVector& B, const FVector& C)
+        {
+            FShadowTriangle T;
+            T.V0 = A;
+            T.V1 = B;
+            T.V2 = C;
+            OutTris.AddItem(T);
+        };
+
+        // Front
+        EmitTri(V0, V1, V2);
+        EmitTri(V0, V2, V3);
+
+        // Back
+        EmitTri(V4, V5, V6);
+        EmitTri(V4, V6, V7);
+
+        // Left
+        EmitTri(V0, V4, V7);
+        EmitTri(V0, V7, V3);
+
+        // Right
+        EmitTri(V1, V5, V6);
+        EmitTri(V1, V6, V2);
+
+        // Top
+        EmitTri(V3, V2, V6);
+        EmitTri(V3, V6, V7);
+
+        // Bottom
+        EmitTri(V0, V1, V5);
+        EmitTri(V0, V5, V4);
+    }*/
+    
+    // =========================================================================
+    // STAGE 3: SKIN USING BIND-POSE OFFSETS + ANIMATED BONES
+    // =========================================================================
+    for (INT b = 0; b < NumBones; b++)
+    {
+        const VBoneInfIndex& InfIdx = S->BoneWeightIdx(b);
+        INT First = InfIdx.WeightIndex;
+        INT Count = InfIdx.Number;
+
+        FCoords BindM     = BindPose(b);
+        FCoords BindM_Inv = BindM.Inverse();
+
+        FCoords AnimM     = AnimatedPose(b);
+
+        for (INT w = 0; w < Count; w++)
+        {
+            INT Addr = First + w;
+            if (Addr >= S->BoneWeights.Num()) break;
+
+            const VBoneInfluence& Infl = S->BoneWeights(Addr);
+            INT VertIdx = Infl.PointIndex;
+            if (VertIdx >= TotalVerts) continue;
+
+            FLOAT Weight = Infl.BoneWeight / 65535.f;
+
+            FVector P = S->Points(VertIdx);
+            P.Y = -P.Y; // fix coronal plane inversion between bones and verts
+            P.X = -P.X;
+            // Bind-pose offset
+            FVector LocalOffset = TransformPoint(BindM_Inv, P);
+
+            // Animated position
+            FVector Skinned = TransformPoint(AnimM, LocalOffset);
+
+            PosedLocalVerts(VertIdx) += Skinned * Weight;
+        }
+    }
+
+    // =========================================================================
+    // STAGE 4: APPLY MESH TRANSFORMS
+    // =========================================================================
+    TArray<FVector> PosedWorldVerts;
+    PosedWorldVerts.AddZeroed(TotalVerts);
 
     for (INT i = 0; i < TotalVerts; i++)
     {
-        FVector P = PosedVerts(i);
+        FVector P = PosedLocalVerts(i);
 
-        if (P.IsZero() && i < S->Points.Num())
-        {
+        if (P.IsZero())
             P = S->Points(i);
-        }
 
+        P -= S->Origin;
         P *= S->Scale;
-        P *= Actor->DrawScale;
-        P = P.TransformPointBy(ActorCoords);
+        P = P.TransformVectorBy(MeshRot);
 
-        PosedVerts(i) = P;
+        PosedWorldVerts(i) = P;
     }
 
+    // =========================================================================
+    // STAGE 5: APPLY ACTOR TRANSFORMS
+    // =========================================================================
+    for (INT i = 0; i < TotalVerts; i++)
+    {
+        FVector P = PosedWorldVerts(i);
+
+        P *= Actor->DrawScale;
+        P = P.TransformVectorBy(ActorRot);
+        P += Actor->Location;
+
+        PosedWorldVerts(i) = P;
+    }
+
+    // =========================================================================
+    // STAGE 6: EMIT TRIANGLES
+    // =========================================================================
     for (INT ti = 0; ti < S->Faces.Num(); ti++)
     {
-        const FMeshFace& Face = S->Faces(ti);
+        const FMeshFace& F = S->Faces(ti);
 
-        INT v0 = S->Wedges(Face.iWedge[0]).iVertex;
-        INT v1 = S->Wedges(Face.iWedge[1]).iVertex;
-        INT v2 = S->Wedges(Face.iWedge[2]).iVertex;
-
-        if (v0 >= TotalVerts || v1 >= TotalVerts || v2 >= TotalVerts)
-            continue;
-
-        if ((PosedVerts(v0) - PosedVerts(v1)).IsNearlyZero() || 
-            (PosedVerts(v1) - PosedVerts(v2)).IsNearlyZero())
-            continue;
+        INT v0 = S->Wedges(F.iWedge[0]).iVertex;
+        INT v1 = S->Wedges(F.iWedge[1]).iVertex;
+        INT v2 = S->Wedges(F.iWedge[2]).iVertex;
 
         FShadowTriangle T;
-        T.V0 = PosedVerts(v0);
-        T.V1 = PosedVerts(v1);
-        T.V2 = PosedVerts(v2);
+        T.V0 = PosedWorldVerts(v0);
+        T.V1 = PosedWorldVerts(v1);
+        T.V2 = PosedWorldVerts(v2);
 
         OutTris.AddItem(T);
     }
+
+    unguard;
 }
 
 void UXOpenGLRenderDevice::ExtractUMeshTriangles(UMesh* M, AActor* Actor, TArray<FShadowTriangle>& OutTris)

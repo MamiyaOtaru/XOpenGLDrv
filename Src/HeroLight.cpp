@@ -134,21 +134,6 @@ FMatrix MakePerspective(float FovDegrees, float Aspect, float NearZ, float FarZ)
     );
 }
 
-/*FMatrix CombineShadowMatrices(const FMatrix& Proj, const FMatrix& View)
-{
-    FMatrix Result;
-    for (INT r = 0; r < 4; ++r) {
-        for (INT c = 0; c < 4; ++c) {
-            Result.M(r, c) = 
-                Proj.M(r, 0) * View.M(0, c) +
-                Proj.M(r, 1) * View.M(1, c) +
-                Proj.M(r, 2) * View.M(2, c) +
-                Proj.M(r, 3) * View.M(3, c);
-        }
-    }
-    return Result;
-}*/
-
 // Helper structure to hold the dynamically clipped polygon slices
 struct FClippedPolygon
 {
@@ -428,7 +413,13 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
             if (!(State.FaceMask & FaceBit))
                 continue;
 
-            if (State.bIsStaticMesh)
+            // Route if it is genuinely a static mesh OR if we have fully mapped its animated blueprint!
+            if (!State.Actor || !State.Actor->Mesh) continue;
+            UBOOL bHasMappedTopology = GL->HasMappedTopology(State.Actor);
+            FString MeshKey = State.Actor->Mesh->GetName();
+            //const TCHAR* DebugMeshName = *MeshKey;
+
+            if (State.bIsStaticMesh || bHasMappedTopology)
             {
                 GL->DrawShadowMapMesh(Frame, State.Actor, ActiveFaceVertexCount);
             }
@@ -442,19 +433,24 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
     // =========================================================
     {
         GL->BeginShadowMapSplatsFace(FaceIndex, ViewMatrix, ProjMatrix, Eye, Radius);
- 
+
         INT ActiveSplatVertexCount = 0;
 
         // Animated / Skeletal Meshes (Pre-filtered Array)
         for (INT i = 0; i < ActiveActors.Num(); ++i)
         {
             const CachedActorState& State = ActiveActors(i);
-            
+
             // Fast Bitmask Check
             if (!(State.FaceMask & FaceBit))
                 continue;
 
-            if (!State.bIsStaticMesh)
+            if (!State.Actor || !State.Actor->Mesh) continue;
+
+            // Skip splats entirely if the geometric index map is taking over!
+            UBOOL bHasMappedTopology = GL->HasMappedTopology(State.Actor);
+ 
+            if (!State.bIsStaticMesh && !bHasMappedTopology)
             {
                 GL->DrawShadowMapSplats(Frame, State.Actor, ActiveSplatVertexCount);
             }

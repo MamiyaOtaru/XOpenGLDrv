@@ -295,18 +295,23 @@ void UXOpenGLRenderDevice::DrawShadowMapMesh(
         FMeshAnimSeq* Seq = BaseMesh->GetAnimSeq(Actor->AnimSequence);
         UBOOL bIsProjectile = Actor->IsA(AProjectile::StaticClass());
         UBOOL bStaticMesh = (Seq == nullptr) || bIsProjectile;
+        FString MeshKey = Actor->Mesh->GetName();
+        //const TCHAR* DebugMeshName = *MeshKey;
 
+        // Branch extraction by mesh asset type
         if (!bStaticMesh)
-            return; // Animated -> Handled in splat pass, skip out
-
-        // Branch by mesh class to build our geometry exactly ONCE
-        if (BaseMesh->IsA(ULodMesh::StaticClass()))
         {
-            ExtractLodMeshTriangles((ULodMesh*)BaseMesh, Actor, NewCache.Triangles);
+            FMeshConnectivity* Blueprint = GDiscoveredTopologies.Find(BaseMesh->GetName());
+            if (!Blueprint) return; // Animated but not yet mapped -> Pass two will be handling it (we should actually never get here)
+            ExtractMappedAnimatedTriangles((ULodMesh*)BaseMesh, Actor, *Blueprint, NewCache.Triangles);
         }
         else if (BaseMesh->IsA(USkeletalMesh::StaticClass()))
         {
             ExtractSkeletalMeshTriangles((USkeletalMesh*)BaseMesh, Actor, NewCache.Triangles);
+        }
+        else if (BaseMesh->IsA(ULodMesh::StaticClass()))
+        {
+            ExtractLodMeshTriangles((ULodMesh*)BaseMesh, Actor, NewCache.Triangles);
         }
         else if (BaseMesh->IsA(UMesh::StaticClass()))
         {

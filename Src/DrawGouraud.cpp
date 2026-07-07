@@ -172,6 +172,35 @@ void UXOpenGLRenderDevice::FinishGouraudCall(FTextureInfo& Info, DWORD DrawFlags
 #endif
 }
 
+// -----------------------------------------------------------------------------
+// Checks if the polygon is an explicitly scaled footprint blob shadow by finding 
+// the largest single-axis distance between its vertices.
+// -----------------------------------------------------------------------------
+inline UBOOL IsBlobShadow(const FVector& P0, const FVector& P1, const FVector& P2)
+{
+	// Find the strict bounding boundaries across the three points
+	FLOAT MinX = min(P0.X, min(P1.X, P2.X));
+	FLOAT MaxX = max(P0.X, max(P1.X, P2.X));
+	FLOAT MinY = min(P0.Y, min(P1.Y, P2.Y));
+	FLOAT MaxY = max(P0.Y, max(P1.Y, P2.Y));
+	FLOAT MinZ = min(P0.Z, min(P1.Z, P2.Z));
+	FLOAT MaxZ = max(P0.Z, max(P1.Z, P2.Z));
+
+	// Compute absolute 3D width, length, and vertical thickness spans
+	FLOAT DeltaX = MaxX - MinX;
+	FLOAT DeltaY = MaxY - MinY;
+	FLOAT DeltaZ = MaxZ - MinZ;
+
+	// SIZE CHECK
+	// shadows are bigger.  If above a threshold, flag as a shadow
+	if (DeltaX > 45.0f || DeltaY > 45.0f || DeltaZ > 45.0f)
+	{
+		return TRUE; // Confirmed footprint blob shadow!
+	}
+
+	return FALSE; // Small weapon particle hit or vertical surface decal
+}
+
 /*-----------------------------------------------------------------------------
 	RenDev Interface
 -----------------------------------------------------------------------------*/
@@ -186,9 +215,13 @@ void UXOpenGLRenderDevice::DrawGouraudPolygon(FSceneNode* Frame, FTextureInfo& I
 	if (ShadowMaps && Info.Texture)
 	{
 		FName TextureName = Info.Texture->GetFName();
-		if ((PolyFlags & PF_Modulated) && TextureName == FName(TEXT("energymark")))
+		if (TextureName == FName(TEXT("energymark")))
 		{
-			return; // Drop the blob shadow polygon completely
+			// Safe double-pointer dereference to feed the pure view-space vectors
+			if (NumPts >= 3 && IsBlobShadow(Pts[0]->Point, Pts[1]->Point, Pts[2]->Point))
+			{
+				return; // Drop individual blob shadow instance immediately!
+			}
 		}
 	}
 
@@ -273,6 +306,17 @@ void UXOpenGLRenderDevice::DrawGouraudPolyList(FSceneNode* Frame, FTextureInfo& 
 	if (NumPts < 3 /*|| Frame->Recursion > MAX_FRAME_RECURSION*/) //reject invalid.
 		return;
 
+	// TARGET TEXTURE VERIFICATION (EVALUATED EXACTLY ONCE AT THE TOP GATE)
+	UBOOL bIsTargetTexture = FALSE;
+	if (ShadowMaps && Info.Texture)
+	{
+		FName TextureName = Info.Texture->GetFName();
+		if (TextureName == FName(TEXT("energymark")))
+		{
+			bIsTargetTexture = TRUE;
+		}
+	}
+
 #if ENGINE_VERSION==227
 	if (Info.Modifier)
 	{
@@ -301,29 +345,46 @@ void UXOpenGLRenderDevice::DrawGouraudPolyList(FSceneNode* Frame, FTextureInfo& 
 		}
 	}
 
-	for (INT i = 0; i < NumPts; i++)
+		// TRIANGLE-BY-TRIANGLE MAIN STEPPING STREAM (i += 3)
+	for (INT i = 0; i < NumPts; i += 3)
 	{
-		// Polylists can be bigger than the vertex buffer so check here if we
-		// need to split the mesh up into separate drawcalls
-		if ((i % 3 == 0) && (Out + 2 > End))
+		// Safety boundary to prevent buffer leaks if the mesh data ends short
+		if (i + 2 >= NumPts)
+			break;
+
+		// Pure flat contiguous array indexing passed directly by vector value reference
+		if (ShadowMaps && bIsTargetTexture && IsBlobShadow(Pts[i].Point, Pts[i + 1].Point, Pts[i + 2].Point))
 		{
-			Shader->DrawBuffer.EndDrawCall(PolyListSize);
-			Shader->VertBuffer.Advance(PolyListSize);
-			Shader->ParametersBuffer.Advance(1); // advance so Flush automatically restores the drawcall params of the _current_ drawcall
-
-			Shader->Flush(true);
-			//debugf(NAME_DevGraphics, TEXT("DrawGouraudPolyList overflow!"));
-
-			Shader->DrawBuffer.StartDrawCall();
-			Out = Shader->VertBuffer.GetCurrentElementPtr();
-			End = Shader->VertBuffer.GetLastElementPtr();
-			DrawID = Shader->DrawBuffer.GetDrawID();
-
-			PolyListSize = 0;
+			continue; // Discard this giant horizontal shadow triangle!
 		}
 
-		BufferVert(Out++, &Pts[i], DrawID);
-		PolyListSize++;
+		// --- PRESERVED INDIVIDUAL VERTEX STREAM BUFFERING PASS ---
+		for (INT v = 0; v < 3; v++)
+		{
+			INT CurrentIdx = i + v;
+
+			// Polylists can be bigger than the vertex buffer so check here if we
+			// need to split the mesh up into separate drawcalls
+			if ((PolyListSize % 3 == 0) && (Out + 2 > End))
+			{
+				Shader->DrawBuffer.EndDrawCall(PolyListSize);
+				Shader->VertBuffer.Advance(PolyListSize);
+				Shader->ParametersBuffer.Advance(1); // advance so Flush automatically restores the drawcall params of the _current_ drawcall
+
+				Shader->Flush(true);
+				//debugf(NAME_DevGraphics, TEXT("DrawGouraudPolyList overflow!"));
+
+				Shader->DrawBuffer.StartDrawCall();
+				Out = Shader->VertBuffer.GetCurrentElementPtr();
+				End = Shader->VertBuffer.GetLastElementPtr();
+				DrawID = Shader->DrawBuffer.GetDrawID();
+
+				PolyListSize = 0;
+			}
+
+			BufferVert(Out++, &Pts[CurrentIdx], DrawID);
+			PolyListSize++;
+		}
 	}
 
 	Shader->DrawBuffer.EndDrawCall(PolyListSize);

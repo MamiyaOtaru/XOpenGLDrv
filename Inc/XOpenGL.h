@@ -1910,13 +1910,27 @@ class UXOpenGLRenderDevice : public URenderDevice
 	{
 		TArray<FShadowTriangle> Triangles; // Fully transformed world-space triangles
 	};
+	// Persistent Global Cache of reconstructed connectivity for animated ULodMesh instances
+	struct FMeshConnectivity
+	{
+		TArray<INT> TriangleIndices; // Pure engine index stream
+	};
+	BOOL UXOpenGLRenderDevice::HasMappedTopology(AActor* Actor);
+
 	// per frame worldpos data
 	TMap<AActor*, CachedActorSplatArray> PerFrameActorSplatCache;
 	TMap<AActor*, CachedStaticMeshGeometry> PerFrameStaticMeshCache;
+	FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, AActor* Actor);
 	void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TArray<FCapsuleSplat>& OutCapsules);
+	void UXOpenGLRenderDevice::ExtractMappedAnimatedTriangles(ULodMesh* L, AActor* Actor, const FMeshConnectivity& Blueprint, TArray<FShadowTriangle>& OutTris);
 	void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, TArray<FShadowTriangle>& OutTris);
 	void UXOpenGLRenderDevice::ExtractSkeletalMeshTriangles(USkeletalMesh* S, AActor* Actor, TArray<FShadowTriangle>& OutTris);
 	void UXOpenGLRenderDevice::ExtractUMeshTriangles(UMesh* M, AActor* Actor, TArray<FShadowTriangle>& OutTris);
+
+	// reconstructing mesh topology stuff
+	// Global persistence maps using engine native types
+	TMap<FString, FMeshConnectivity> GDiscoveredTopologies;
+	TMap<FString, INT> GMappedMeshes;
 
 	// BSP smoothing stuff
 	INT UXOpenGLRenderDevice::LocalFrameCounter = 0;

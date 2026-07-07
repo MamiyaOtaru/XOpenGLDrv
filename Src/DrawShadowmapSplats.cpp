@@ -148,7 +148,7 @@ void UXOpenGLRenderDevice::DrawShadowMapSplats(
 
     CachedActorSplatArray* CachedEntry = PerFrameActorSplatCache.Find(Actor);
 
-    if (!CachedEntry) // || CachedEntry->LastCachedFrame != LocalFrameCounter) // clearing every frame
+    if (!CachedEntry)
     {
         // Cache Miss! This is either the first light processing this actor on this frame,
         // or a completely new frame tick. We allocate and parse the math exactly ONCE.
