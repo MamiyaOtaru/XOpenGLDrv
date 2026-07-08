@@ -175,7 +175,7 @@ void UXOpenGLRenderDevice::FinishGouraudCall(FTextureInfo& Info, DWORD DrawFlags
 // -----------------------------------------------------------------------------
 // Simplified UV-Linear Scaler: Reconstructs the absolute full-scale size of the mark 
 // by dividing the maximum single-axis distance by its linear UV texture fraction.
-// Designed explicitly for DrawGouraudPolygon's double-pointer array structure!
+// compares the world size to a threshold, above which we assume it is a shadow not a plasma mark
 // -----------------------------------------------------------------------------
 static FName GLastActiveTextureName = NAME_None;
 static QWORD GShadowCacheIDLock     = 0;
@@ -220,7 +220,7 @@ inline UBOOL IsBlobShadow(const FTextureInfo& Info, FTransTexture* const* Pts)
     const FTransTexture& V1 = *Pts[1];
     const FTransTexture& V2 = *Pts[2];
 
-    // 1. Gather the absolute minimum and maximum coordinates across the 3 target vertices
+    // Gather the absolute minimum and maximum coordinates across the 3 target vertices
     FLOAT MinX = min(V0.Point.X, min(V1.Point.X, V2.Point.X));
     FLOAT MaxX = max(V0.Point.X, max(V1.Point.X, V2.Point.X));
     FLOAT MinY = min(V0.Point.Y, min(V1.Point.Y, V2.Point.Y));
@@ -233,7 +233,7 @@ inline UBOOL IsBlobShadow(const FTextureInfo& Info, FTransTexture* const* Pts)
     FLOAT MinV = min(V0.V, min(V1.V, V2.V));
     FLOAT MaxV = max(V0.V, max(V1.V, V2.V));
 
-    // 2. Compute the straight-line physical widths and texture-pixel deltas
+    // Compute the straight-line physical widths and texture-pixel deltas
     FLOAT DeltaX = MaxX - MinX;
     FLOAT DeltaY = MaxY - MinY;
     FLOAT DeltaZ = MaxZ - MinZ;
@@ -247,10 +247,10 @@ inline UBOOL IsBlobShadow(const FTextureInfo& Info, FTransTexture* const* Pts)
     FLOAT MaxUVFraction = max(DeltaU / (FLOAT)Info.USize, DeltaV / (FLOAT)Info.VSize);
 
     // Security boundary clamp to protect against tiny rounding noise producing infinite divisions
-    if (MaxUVFraction < 0.01f)
-        MaxUVFraction = 0.01f;
+    if (MaxUVFraction < 0.001f)
+        MaxUVFraction = 0.001f;
 
-    // 3. --- THE STRUCTURAL EXTRAPOLATION ---
+    // --- STRUCTURAL EXTRAPOLATION ---
     // Divide the physical span straight by the linear fraction to find out how 
     // large the entire mark is in world units if it were uncut!
     FLOAT FullUncutWorldSize = MaxPhysicalSpan / MaxUVFraction;
@@ -266,8 +266,6 @@ inline UBOOL IsBlobShadow(const FTextureInfo& Info, FTransTexture* const* Pts)
 
     return FALSE; // Small weapon impact effect decal
 }
-
-
 
 /*-----------------------------------------------------------------------------
 	RenDev Interface

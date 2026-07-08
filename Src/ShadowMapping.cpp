@@ -1545,9 +1545,6 @@ void UXOpenGLRenderDevice::ExtractUMeshTriangles(UMesh* M, AActor* Actor, TArray
 }
 
 // game loop
-INT    UserGuaranteed        = 30;   // user preference for number of guaranteed lights
-INT    Guaranteed            = UserGuaranteed; // Dynamically scales between a user-configured floor and a hardware ceiling
-INT    ActivePoolSize        = Guaranteed * 3;   // Mathematically locked to UserGuaranteed * 2
 INT    GSuccessFramesCounter = 0;   // Counts consecutive frames with clean headroom
 INT    GFailureFramesCounter = 0;   // Counts consecutive frames running on a tight budget
 INT    GRoundRobinCurrentIndex = 0;  // Sliding window pointer
@@ -1561,6 +1558,14 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
 
     INT TotalLights = HeroLights.Num();
     if (TotalLights <= 0) return;
+
+    INT    UserGuaranteed        = 0;   // user preference for number of guaranteed lights
+    if (ShadowMaps == ShadowMaps_Low) UserGuaranteed = 3;
+    else if (ShadowMaps == ShadowMaps_Medium) UserGuaranteed = 10;
+    else if (ShadowMaps == ShadowMaps_High) UserGuaranteed = 30;
+    else if (ShadowMaps == ShadowMaps_HolyShit) UserGuaranteed = 30;
+    INT    Guaranteed            = UserGuaranteed; // Dynamically scales between a user-configured floor and a hardware ceiling
+    INT    ActivePoolSize        = Guaranteed * 3;   // Mathematically locked to UserGuaranteed * 2
 
     Guaranteed = Clamp(Guaranteed, UserGuaranteed, TotalLights);
     
@@ -1624,7 +1629,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     // PHASE 3: THE HEADROOM SENSOR & PREDICTIVE SCALING
     // ========================================================
     // We only execute performance timers and trend scaling on large maps that exceed our minimum floor
-    if (TotalLights > (UserGuaranteed * 3))
+    if (ShadowMaps == ShadowMaps_HolyShit &&  TotalLights > (UserGuaranteed * 3))
     {
         LARGE_INTEGER Frequency, StartTime, CurrentTime;
         QueryPerformanceFrequency(&Frequency);

@@ -160,6 +160,15 @@ enum eParallaxVersion
     Parallax_Relief		= 3,
 };
 
+enum eShadowMappingLevel
+{
+    ShadowMaps_Disabled	= 0,
+    ShadowMaps_Low		= 1,
+    ShadowMaps_Medium	= 2,
+    ShadowMaps_High		= 3,
+	ShadowMaps_HolyShit	= 4,
+};
+
 // stijn: missing defs in UT469 tree
 #ifdef UNREAL_TOURNAMENT_OLDUNREAL
 //#define PF_AlphaBlend 0x20000
@@ -498,8 +507,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	BITFIELD AmbientOcclusion;
 	BITFIELD IndirectIllumination;
 	BITFIELD HDLightMap;
-	BITFIELD ShadowMaps;
 	BITFIELD CoronaScaling;
+	BYTE ShadowMaps;
 
 	FLOAT GammaMultiplier;
 	FLOAT GammaMultiplierUED;

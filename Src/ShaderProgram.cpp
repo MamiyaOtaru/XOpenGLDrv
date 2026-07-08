@@ -990,7 +990,7 @@ void UXOpenGLRenderDevice::ShaderCompilationOptions::SetOptionsForRendererConfig
 		SetOption(OPT_IndirectIllumination);
 	if (RenDev->HDLightMap)
 		SetOption(OPT_HDLightMap);
-	if (RenDev->ShadowMaps)
+	if (RenDev->ShadowMaps != ShadowMaps_Disabled)
 		SetOption(OPT_ShadowMaps);
 	if (RenDev->UseAA)
 		SetOption(OPT_MSAA);
