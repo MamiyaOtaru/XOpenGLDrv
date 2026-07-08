@@ -143,7 +143,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	new(ShadowMapLevels->Names)FName(TEXT("Low"));
 	new(ShadowMapLevels->Names)FName(TEXT("Medium"));
 	new(ShadowMapLevels->Names)FName(TEXT("High"));
-	new(ShadowMapLevels->Names)FName(TEXT("Holy Shit"));
+	new(ShadowMapLevels->Names)FName(TEXT("HolyShit"));
 
 	new(GetClass(), TEXT("OpenGLVersion"), RF_Public)UByteProperty(CPP_PROPERTY(OpenGLVersion), TEXT("Options"), CPF_Config, OpenGLVersions);
 	new(GetClass(), TEXT("UseVSync"), RF_Public)UByteProperty(CPP_PROPERTY(UseVSync), TEXT("Options"), CPF_Config, VSyncs);
@@ -474,7 +474,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	debugf(NAME_DevLoad, TEXT("AmbientOcclusion %i"), AmbientOcclusion);
 	debugf(NAME_DevLoad, TEXT("IndirectIllumiunation %i"), IndirectIllumination);
 	debugf(NAME_DevLoad, TEXT("HDLightMap %i"), HDLightMap);
-	debugf(NAME_DevLoad, TEXT("ShadowMaps %i (%ls)"), ShadowMaps, ShadowMaps == ShadowMaps_Low ? TEXT("Low") : ShadowMaps == ShadowMaps_Medium ? TEXT("Medium") : ShadowMaps == ShadowMaps_High ? TEXT("High") : ShadowMaps == ShadowMaps_HolyShit ? TEXT("Holy Shit"): TEXT("Disabled"));
+	debugf(NAME_DevLoad, TEXT("ShadowMaps %i (%ls)"), ShadowMaps, ShadowMaps == ShadowMaps_Low ? TEXT("Low") : ShadowMaps == ShadowMaps_Medium ? TEXT("Medium") : ShadowMaps == ShadowMaps_High ? TEXT("High") : ShadowMaps == ShadowMaps_HolyShit ? TEXT("HolyShit"): TEXT("Disabled"));
 	debugf(NAME_DevLoad, TEXT("CoronaScaling %i"), CoronaScaling);
 	debugf(NAME_DevLoad, TEXT("EnvironmentMaps %i"), EnvironmentMaps);
 	debugf(NAME_DevLoad, TEXT("NoAATiles %i"), NoAATiles);
@@ -3322,7 +3322,7 @@ void UXOpenGLRenderDevice::Exit()
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("AmbientOcclusion"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(AmbientOcclusion)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("IndirectIllumination"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(IndirectIllumination)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("HDLightMap"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(HDLightMap)));
-	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("ShadowMaps"), *FString::Printf(TEXT("%ls"), ShadowMaps == ShadowMaps_Low ? TEXT("Low") : ShadowMaps == ShadowMaps_Medium ? TEXT("Medium") : ShadowMaps == ShadowMaps_High ? TEXT("High") : ShadowMaps == ShadowMaps_HolyShit ? TEXT("Holy Shit") : TEXT("None")));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("ShadowMaps"), *FString::Printf(TEXT("%ls"), ShadowMaps == ShadowMaps_Low ? TEXT("Low") : ShadowMaps == ShadowMaps_Medium ? TEXT("Medium") : ShadowMaps == ShadowMaps_High ? TEXT("High") : ShadowMaps == ShadowMaps_HolyShit ? TEXT("HolyShit") : TEXT("None")));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("CoronaScaling"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(CoronaScaling)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseAA"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseAA)));
 	//GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("UseAASmoothing"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(UseAASmoothing)));

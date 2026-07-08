@@ -1629,7 +1629,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     // PHASE 3: THE HEADROOM SENSOR & PREDICTIVE SCALING
     // ========================================================
     // We only execute performance timers and trend scaling on large maps that exceed our minimum floor
-    if (ShadowMaps == ShadowMaps_HolyShit &&  TotalLights > (UserGuaranteed * 3))
+    if (ShadowMaps == ShadowMaps_HolyShit && TotalLights > (UserGuaranteed * 3))
     {
         LARGE_INTEGER Frequency, StartTime, CurrentTime;
         QueryPerformanceFrequency(&Frequency);
