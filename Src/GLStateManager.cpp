@@ -396,6 +396,14 @@ namespace GLStateManager {
                 params[0] = activeCullFaceMode;
                 return;
 
+            case GL_BLEND_SRC:
+                params[0] = blendSrcFunc;
+                return;
+
+            case GL_BLEND_DST:
+                params[0] = blendDstFunc;
+                return;
+
             default:
                 // Hardware fallback for un-cached matrix or specialized parameters
                 (glad_glGetIntegerv)(pName, params);
