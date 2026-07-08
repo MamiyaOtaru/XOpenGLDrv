@@ -1579,6 +1579,9 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     INT RoundRobinCount   = Min(Guaranteed, RemainderCount);
 
     // Core Hardware Pass State Overrides
+    GLint oldSrc, oldDst;
+    glGetIntegerv(GL_BLEND_SRC, &oldSrc);
+    glGetIntegerv(GL_BLEND_DST, &oldDst);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
@@ -1708,7 +1711,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     // Restore Context Restrictions for Main Viewport Scene Painting
     glDepthFunc(GL_LEQUAL);
     glBlendEquation(GL_FUNC_ADD);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFunc(oldSrc, oldDst);
     SceneFbo->Bind();
     glViewport(0, 0, SceneWidth, SceneHeight);
 }
