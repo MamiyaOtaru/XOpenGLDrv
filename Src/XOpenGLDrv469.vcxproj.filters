@@ -154,7 +154,6 @@
     </ClInclude>
     <ClInclude Include="..\Inc\GLStateManager.h" />
     <ClInclude Include="..\Inc\HeroLight.h" />
-    <ClInclude Include="PerPixel.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\XOpenGLDrv.int" />

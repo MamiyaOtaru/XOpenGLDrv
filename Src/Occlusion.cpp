@@ -69,7 +69,8 @@ struct FMappedAtlas
         return true;
 #else
         // Linux standard file creation code goes here...
-        return true;
+        // can set to return true if we ever fill this in
+        return false;
 #endif
     }
 
@@ -108,8 +109,7 @@ FWin32CriticalSection* FileWriteMutex = nullptr;
 
 std::thread AtlasThread;
 std::atomic<bool> AtlasFinished{false};
-FString AtlasPNG = TEXT("");
-FString AtlasMeta = TEXT("");
+FString AtlasName = TEXT("");
 INT AtlasW, AtlasH;
 
 struct FPendingLightmap
@@ -693,74 +693,6 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     return FPlane(FinalR, FinalG, FinalB, a);
 }
 
-// UNUSED
-// gather static lighting contributions for a point on a surface, unoccluded but with distance attenuation and NdotL
-FPlane UXOpenGLRenderDevice::EvaluateStaticLighting(
-    const TArray<AActor*>* Lights,
-    const FVector& WorldPos,
-    const SurfaceBasis& Basis,
-    UModel* Model)
-{
-    FPlane Accum(0,0,0,0);
-
-    if (!Lights || Lights->Num() == 0)
-        return Accum;
-
-    for (INT i = 0; i < Lights->Num(); ++i)
-    {
-        AActor* Light = (*Lights)(i);
-        if (!Light)
-            continue;
-
-        // Same radius as selection path
-        float Radius = Light->WorldLightRadius();
-        if (Radius <= 0.f)
-            continue;
-
-        FVector LightPos = Light->Location;
-        FVector L = LightPos - WorldPos;
-        float Dist = L.Size();
-        if (Dist <= SMALL_NUMBER)
-            continue;
-
-        FVector Ldir = L / Dist;
-
-        float NdotL = (Basis.Normal | Ldir);
-        if (NdotL <= 0.f)
-            continue;
-
-        // BSP occlusion
-        FCheckResult Hit;
-        UBOOL bUnobstructed = Model->LineCheck(
-            Hit,
-            nullptr,
-            LightPos,
-            WorldPos,
-            FVector(0,0,0),
-            0
-        );
-        if (!bUnobstructed)
-            continue;
-
-        // Same attenuation model as ComputeStaticLightsForFacet
-        float x = Clamp(Dist / Radius, 0.0f, 1.0f);
-        float Atten = (1.f - x) / (1.f + 4.f * x * x);
-        if (Atten <= 0.f)
-            continue;
-
-        // HSV -> RGB (same base as your ranking)
-        FPlane RGBColor = FGetHSV(Light->LightHue, Light->LightSaturation, Light->LightBrightness);
-
-        FVector Color = RGBColor * NdotL * Atten;
-
-        Accum.X += Color.X;
-        Accum.Y += Color.Y;
-        Accum.Z += Color.Z;
-    }
-
-    return Accum;
-}
-
 static FString SanitizeFilename(const FString& In)
 {
     FString Out = In;
@@ -777,180 +709,19 @@ static FString SanitizeFilename(const FString& In)
     return Out.Locs();
 }
 
-void GetAtlasPathsForLevel(
-    const FString& LevelName,
-    FString& OutPNG,
-    FString& OutMeta)
+FString GetAtlasNameForLevel(const FString& LevelName)
 {
-    // Sanitize and lowercase
-    FString Clean = SanitizeFilename(LevelName);  // replaces illegal chars + lowercases
+    // Sanitize and lowercase the map name string
+    FString Clean = SanitizeFilename(LevelName); // Replaces illegal chars + lowercases
 
     // Base directory: <SystemDir>/xopengl/lightmaps/
     FString BaseDir = FString(appBaseDir()) + TEXT("xopengl/lightmaps/");
 
-    // Ensure directory exists
+    // Ensure directory exists natively on disk
     GFileManager->MakeDirectory(*BaseDir, true);
 
-    // Final paths (NO _Atlas)
-    OutPNG  = BaseDir + Clean + TEXT(".png");
-    OutMeta = BaseDir + Clean + TEXT(".txt");
-}
-
-struct PNGWriteContext
-{
-    FArchive* Ar;
-};
-
-void PNGWriteCallback(void* context, void* data, int size)
-{
-    PNGWriteContext* ctx = (PNGWriteContext*)context;
-    ctx->Ar->Serialize(data, size);
-}
-
-enum class EDDSType
-{
-    BC1,
-    BC3
-};
-
-// ------------------------------------------------------------
-// Helper: Extract a 4'4 RGBA block with edge clamping
-// ------------------------------------------------------------
-void Extract4x4RGBA(BYTE* out, const TArray<BYTE>& src, INT bx, INT by, INT width, INT height)
-{
-    for (INT y = 0; y < 4; y++)
-    {
-        INT sy = Clamp(by + y, 0, height - 1);
-        for (INT x = 0; x < 4; x++)
-        {
-            INT sx = Clamp(bx + x, 0, width - 1);
-            memcpy(out + (y*4 + x)*4, &src((sy*width + sx)*4), 4);
-        }
-    }
-}
-
-// ------------------------------------------------------------
-// DDS header structs
-// ------------------------------------------------------------
-struct DDS_PIXELFORMAT
-{
-    DWORD dwSize;
-    DWORD dwFlags;
-    DWORD dwFourCC;
-    DWORD dwRGBBitCount;
-    DWORD dwRBitMask;
-    DWORD dwGBitMask;
-    DWORD dwBBitMask;
-    DWORD dwABitMask;
-};
-
-struct DDS_HEADER
-{
-    DWORD dwSize;
-    DWORD dwFlags;
-    DWORD dwHeight;
-    DWORD dwWidth;
-    DWORD dwPitchOrLinearSize;
-    DWORD dwDepth;
-    DWORD dwMipMapCount;
-    DWORD dwReserved1[11];
-    DDS_PIXELFORMAT ddspf;
-    DWORD dwCaps;
-    DWORD dwCaps2;
-    DWORD dwCaps3;
-    DWORD dwCaps4;
-    DWORD dwReserved2;
-};
-
-// ------------------------------------------------------------
-// Fill header for BC3 / DXT5
-// ------------------------------------------------------------
-static void FillDDSHeader(DDS_HEADER& H, INT width, INT height, EDDSType type)
-{
-    memset(&H, 0, sizeof(H));
-
-    H.dwSize  = 124;
-    H.dwFlags = 0x1 | 0x2 | 0x4 | 0x1000; // CAPS | HEIGHT | WIDTH | PIXELFORMAT
-    H.dwHeight = height;
-    H.dwWidth  = width;
-
-    INT blocksWide  = (width  + 3) / 4;
-    INT blocksHigh  = (height + 3) / 4;
-
-    INT blockSize = (type == EDDSType::BC1 ? 8 : 16);
-    H.dwPitchOrLinearSize = blocksWide * blocksHigh * blockSize;
-
-    H.ddspf.dwSize  = 32;
-    H.ddspf.dwFlags = 0x4; // DDPF_FOURCC
-
-    if (type == EDDSType::BC1)
-        H.ddspf.dwFourCC = ('D') | ('X' << 8) | ('T' << 16) | ('1' << 24);
-    else
-        H.ddspf.dwFourCC = ('D') | ('X' << 8) | ('T' << 16) | ('5' << 24);
-
-    H.dwCaps = 0x1000; // DDSCAPS_TEXTURE
-}
-
-// ------------------------------------------------------------
-// Main function: write DDS BC3 atlas
-// ------------------------------------------------------------
-void DumpAtlasToDDS(const TArray<FPlane>& Atlas, INT AtlasWidth, INT AtlasHeight, const FString& AtlasDDS, EDDSType type)
-{
-    const INT PixelCount = AtlasWidth * AtlasHeight;
-
-    // Convert FPlane (RGBA16F) -> 8-bit RGBA
-    TArray<BYTE> RGBA;
-    RGBA.AddZeroed(PixelCount * 4);
-
-    for (INT i = 0; i < PixelCount; ++i)
-    {
-        const FPlane& P = Atlas(i);
-        RGBA(i*4 + 0) = BYTE(Clamp(P.X, 0.f, 1.f) * 255.f);
-        RGBA(i*4 + 1) = BYTE(Clamp(P.Y, 0.f, 1.f) * 255.f);
-        RGBA(i*4 + 2) = BYTE(Clamp(P.Z, 0.f, 1.f) * 255.f);
-        RGBA(i*4 + 3) = BYTE(Clamp(P.W, 0.f, 1.f) * 255.f);
-    }
-
-    // Open file
-    FArchive* Ar = GFileManager->CreateFileWriter(*AtlasDDS);
-    if (!Ar)
-    {
-        debugf(TEXT("XOpenGL: Failed to open DDS for writing: %s"), *AtlasDDS);
-        return;
-    }
-
-    // Write magic "DDS "
-    DWORD magic = 0x20534444;
-    Ar->Serialize(&magic, 4);
-
-    // Write header
-    DDS_HEADER header;
-    FillDDSHeader(header, AtlasWidth, AtlasHeight, type);
-    Ar->Serialize(&header, sizeof(header));
-
-    // Compress and write BC1/BC3 blocks
-    BYTE rgbaBlock[64];
-    BYTE dxtBlock[16]; // max size
-
-    INT stbMode = (type == EDDSType::BC1 ? 0 : 1);
-    INT blockSize = (type == EDDSType::BC1 ? 8 : 16);
-
-    for (INT by = 0; by < AtlasHeight; by += 4)
-    {
-        for (INT bx = 0; bx < AtlasWidth; bx += 4)
-        {
-            Extract4x4RGBA(rgbaBlock, RGBA, bx, by, AtlasWidth, AtlasHeight);
-
-            stb_compress_dxt_block(dxtBlock, rgbaBlock, stbMode, STB_DXT_NORMAL);
-
-            Ar->Serialize(dxtBlock, blockSize);
-        }
-    }
-
-    Ar->Close();
-    delete Ar;
-
-    debugf(TEXT("XOpenGL: Wrote DDS atlas (BC3): %s"), *AtlasDDS);
+    // Return the full path filename completely minus extensions!
+    return BaseDir + Clean;
 }
 
 #pragma pack(push, 1)
@@ -1017,17 +788,49 @@ struct FKTX2_DFD_BC3
 
 const BYTE KTX2_Magic_Identifier[12] = { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
 
-void DumpAtlasToKTX2(const FString& OutKTX2Path)
+void DumpAtlasToDisk(const FString& AtlasName, const TArray<FPendingLightmap>& PendingLightmaps)
 {
     if (AtlasW <= 0 || AtlasH <= 0 || !bAtlasMapped)
         return;
+        
+    struct FAtlasEntryBinary
+    {
+        INT   SurfIndex;
+        FLOAT MinU, MaxU;
+        FLOAT MinV, MaxV;
+        FLOAT AtlasMinU, AtlasMaxU;
+        FLOAT AtlasMinV, AtlasMaxV;
+    };
 
-    // Reconstruct and normalize the scratch file path string
-    FString TargetScratchFile = AtlasMeta.Replace(TEXT(".txt"), TEXT("_scratch.tmp")).Replace(TEXT("/"), TEXT("\\"));
+    FString OutKTX2Path = AtlasName;
+    OutKTX2Path += TEXT(".ktx2");    
+    FString TargetScratchFile = AtlasName;
+    TargetScratchFile += TEXT("_scratch.tmp");
+    TargetScratchFile = TargetScratchFile.Replace(TEXT("/"), TEXT("\\"));
 
     FArchive* Ar = GFileManager->CreateFileWriter(*OutKTX2Path);
     if (!Ar) 
         return;
+
+    // --- STAGE A: CALCULATE DYNAMIC KVD KEY/VALUE LENGTHS ---
+    const char* KvdKey = "UE1_AtlasMetadata";
+    uint32_t KeyByteLength = 18; // Length of "UE1_AtlasMetadata" + 1 null terminator
+    uint32_t ValueByteLength = (uint32_t)PendingLightmaps.Num() * sizeof(FAtlasEntryBinary);
+    
+    // Total space for the key, value, and the length header itself
+    uint32_t RawKvdRecordSize = sizeof(uint32_t) + KeyByteLength + ValueByteLength;
+    
+    // KTX2 requires every individual KVD record to be 4-byte aligned
+    uint32_t KvdRecordPaddingSize = (4 - (RawKvdRecordSize % 4)) % 4;
+    uint32_t TotalKvdBlockLength = RawKvdRecordSize + KvdRecordPaddingSize;
+
+    // --- STAGE B: CALCULATE HARDWARE ALIGNMENT PADDING FOR TEXTURE DATA ---
+    // The DFD ends exactly at byte 164. The KVD block starts at 164 and ends at (164 + TotalKvdBlockLength).
+    uint64_t PostKvdOffset = 164 + TotalKvdBlockLength;
+    
+    // Texture data payload blocks must be strictly 16-byte aligned from the file head
+    uint64_t TextureAlignmentPaddingSize = (16 - (PostKvdOffset % 16)) % 16;
+    uint64_t AbsoluteTexturePayloadOffset = PostKvdOffset + TextureAlignmentPaddingSize;
 
     // --- 1. Populate and Serialize KTX2 Header Block (80 Bytes) ---
     FKTX2Header Header = {};
@@ -1041,100 +844,115 @@ void DumpAtlasToKTX2(const FString& OutKTX2Path)
     Header.supercompressionScheme = 0;
     Header.dfdByteOffset = 104; 
     Header.dfdByteLength = sizeof(FKTX2_DFD_BC3);
+    
+    // Register the exact dictionary offsets inside the master header block
+    Header.kvdByteOffset = 164;
+    Header.kvdByteLength = TotalKvdBlockLength;
     Ar->Serialize(&Header, sizeof(FKTX2Header));
 
     // --- 2. Populate and Serialize Level Index Block (24 Bytes) ---
     FKTX2LevelIndex LevelIndex = {};
-    LevelIndex.byteOffset = 176; 
+    // Lock the data offset directly to our dynamically computed 16-byte alignment spot
+    LevelIndex.byteOffset = AbsoluteTexturePayloadOffset; 
     LevelIndex.byteLength = (uint64_t)((AtlasW + 3) / 4) * ((AtlasH + 3) / 4) * 16;
     LevelIndex.uncompressedByteLength = LevelIndex.byteLength;
     Ar->Serialize(&LevelIndex, sizeof(FKTX2LevelIndex));
 
     // --- 3. Populate and Serialize DFD Block (60 Bytes) ---
     FKTX2_DFD_BC3 DFD = {};
+    // Fill out your standard Khronos format bytes descriptor states...
+    DFD.dfdTotalSize = sizeof(FKTX2_DFD_BC3);
+    DFD.descriptorBlockSize = 56;
+    DFD.versionNumber = 2;
+    DFD.colorModel = 130; // BC3
+    DFD.colorPrimaries = 1;
+    DFD.transferFunction = 1;
+    DFD.bytesPlane0 = 16;
     Ar->Serialize(&DFD, sizeof(FKTX2_DFD_BC3));
 
-    // --- 3b. Inject 12 Bytes Alignment Padding ---
-    BYTE MipPadding[12];
-    appMemset(MipPadding, 0, 12);
-    Ar->Serialize(MipPadding, 12);
+    // --- 4. SERIALIZE INLINE KEY-VALUE METADATA BLOCK ---
+    // A: Write the record size header (Key bytes + value bytes)
+    uint32_t RecordHeaderValue = KeyByteLength + ValueByteLength;
+    Ar->Serialize(&RecordHeaderValue, sizeof(uint32_t));
+    
+    // B: Write the Null-Terminated Dictionary Identification String
+    Ar->Serialize((void*)KvdKey, KeyByteLength);
 
-    // --- 4. Streaming and BC3 Payload Variables ---
+    // C: Stream your raw structs directly into the KTX2 container head
+    if (PendingLightmaps.Num() > 0)
+    {
+        TArray<FAtlasEntryBinary> BinaryBlock;
+        BinaryBlock.AddZeroed(PendingLightmaps.Num());
+
+        for (INT i = 0; i < PendingLightmaps.Num(); ++i)
+        {
+            const FPendingLightmap& LM = PendingLightmaps(i);
+            BinaryBlock(i).SurfIndex  = LM.SurfIndex;
+            BinaryBlock(i).MinU       = LM.MinU;
+            BinaryBlock(i).MaxU       = LM.MaxU;
+            BinaryBlock(i).MinV       = LM.MinV;
+            BinaryBlock(i).MaxV       = LM.MaxV;
+            BinaryBlock(i).AtlasMinU  = LM.AtlasMinU;
+            BinaryBlock(i).AtlasMaxU  = LM.AtlasMaxU;
+            BinaryBlock(i).AtlasMinV  = LM.AtlasMinV;
+            BinaryBlock(i).AtlasMaxV  = LM.AtlasMaxV;
+        }
+        Ar->Serialize(&BinaryBlock(0), ValueByteLength);
+    }
+
+    // D: Write 4-byte structural record padding if necessary
+    if (KvdRecordPaddingSize > 0)
+    {
+        BYTE KvdPad[4] = {0, 0, 0, 0};
+        Ar->Serialize(KvdPad, KvdRecordPaddingSize);
+    }
+
+    // E: Write the 16-byte GPU hardware alignment stream padding
+    if (TextureAlignmentPaddingSize > 0)
+    {
+        BYTE AlignPad[16] = {0};
+        Ar->Serialize(AlignPad, (INT)TextureAlignmentPaddingSize);
+    }
+
+    // =========================================================================
+    // --- 5. STREAMING AND BC3 ENCODING LOOPS (COMPLETELY UNCHANGED) ---
+    // =========================================================================
     BYTE rgba[64]; 
     BYTE bc3[16]; 
 
     SIZE_T RowStrideBytes = (SIZE_T)AtlasW * sizeof(FPlane);
     SIZE_T Stripe4RowsBytes = RowStrideBytes * 4;
 
-    // --- SYNCHRONIZATION AND HANDLE ISOLATION FIX ---
-    // Force the operating system to completely lock down active thread background sectors
     FlushFileBuffers(MappedAtlas.FileHandle);
 
-    // Open an independent local tracking handle purely for processing the read stream.
-    // This resets the internal OS file pointer completely, clearing any Error 38 handle states.
     HANDLE LocalReadHandle = CreateFile(
-        *TargetScratchFile,
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_TEMPORARY,
-        nullptr
+        *TargetScratchFile, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_TEMPORARY, nullptr
     );
 
     if (LocalReadHandle == INVALID_HANDLE_VALUE)
     {
-        debugf(TEXT("XOpenGL: Failed to open scratch file for isolated reading! Error: %d"), GetLastError());
-        Ar->Close();
-        delete Ar;
-        return;
+        Ar->Close(); delete Ar; return;
     }
 
     TArray<FPlane> LocalStripeCache;
-    if (bAtlasMapped)
-    {
-        LocalStripeCache.Add(AtlasW * 4);
-    }
+    if (bAtlasMapped) { LocalStripeCache.Add(AtlasW * 4); }
 
-    // Outer loop steps 4 vertical rows at a time
     for (INT by = 0; by < AtlasH; by += 4)
     {
         FPlane* StripeWindow = nullptr;
-
         if (bAtlasMapped)
         {
-            // --- NEW WAY: Read from disk utilizing explicit synchronous pointers ---
             SIZE_T TargetFileOffset = (SIZE_T)by * RowStrideBytes;
-            
             SIZE_T ReadLengthBytes = Stripe4RowsBytes;
             if (TargetFileOffset + ReadLengthBytes > AtlasSizeBytes)
-            {
                 ReadLengthBytes = AtlasSizeBytes - TargetFileOffset;
-            }
 
-            LARGE_INTEGER LiReadOffset;
-            LiReadOffset.QuadPart = (LONGLONG)TargetFileOffset;
-
-            // Explicitly set the read cursor position
+            LARGE_INTEGER LiReadOffset; LiReadOffset.QuadPart = (LONGLONG)TargetFileOffset;
             SetFilePointerEx(LocalReadHandle, LiReadOffset, nullptr, FILE_BEGIN);
 
             DWORD BytesRead = 0;
-            // Execute a clean, standard synchronous read operation
-            BOOL bReadSuccess = ReadFile(
-                LocalReadHandle, 
-                &LocalStripeCache(0), 
-                ReadLengthBytes, 
-                &BytesRead, 
-                nullptr // <-- Pass NULL to specify synchronous execution
-            );
-
-            if (!bReadSuccess || BytesRead != ReadLengthBytes)
-            {
-                debugf(TEXT("XOpenGL: File stream read failure during KTX2 compilation at row %d. OS Error: %d, Read %d of %d"), 
-                    by, GetLastError(), BytesRead, ReadLengthBytes);
-                break;
-            }
-
+            ReadFile(LocalReadHandle, &LocalStripeCache(0), ReadLengthBytes, &BytesRead, nullptr);
             StripeWindow = &LocalStripeCache(0);
         }
         else
@@ -1142,21 +960,17 @@ void DumpAtlasToKTX2(const FString& OutKTX2Path)
             StripeWindow = &AtlasData[by * AtlasW];
         }
 
-        // Process all horizontal blocks within this 4-row stripe (COMPLETELY UNCHANGED)
         for (INT bx = 0; bx < AtlasW; bx += 4)
         {
             for (INT y = 0; y < 4; y++)
             {
                 INT LocalY = y;
-                if (by + y >= AtlasH) 
-                    LocalY = (AtlasH - 1) - by;
+                if (by + y >= AtlasH) LocalY = (AtlasH - 1) - by;
 
                 for (INT x = 0; x < 4; x++)
                 {
                     INT sx = Clamp(bx + x, 0, AtlasW - 1);
-                    
                     const FPlane& P = StripeWindow[LocalY * AtlasW + sx];
-                    
                     INT idx = (y * 4 + x) * 4;
                     rgba[idx+0] = (BYTE)(Clamp(appFloor(P.X * 255.f + 0.5f), 0, 255));
                     rgba[idx+1] = (BYTE)(Clamp(appFloor(P.Y * 255.f + 0.5f), 0, 255));
@@ -1164,108 +978,15 @@ void DumpAtlasToKTX2(const FString& OutKTX2Path)
                     rgba[idx+3] = (BYTE)(Clamp(appFloor(P.W * 255.f + 0.5f), 0, 255));
                 }
             }
-
             stb_compress_dxt_block(bc3, rgba, 1, STB_DXT_NORMAL);
             Ar->Serialize(bc3, 16);
         }
     }
 
-    // Clean up our local reading workspace handle
     CloseHandle(LocalReadHandle);
-    LocalStripeCache.Empty(); 
-
+    LocalStripeCache.Empty();
     Ar->Close();
     delete Ar;
-}
-
-void DumpAtlasToDisk(
-    const TArray<FPlane>& Atlas,
-    INT AtlasWidth,
-    INT AtlasHeight,
-    const FString& AtlasPNG)
-{
-    if (AtlasWidth <= 0 || AtlasHeight <= 0)
-        return;
-
-    // Convert RGBA16F -> 8-bit RGBA
-    const INT PixelCount = AtlasWidth * AtlasHeight;
-
-    TArray<BYTE> PNGPixels;
-    PNGPixels.AddZeroed(PixelCount * 4);
-
-    debugf(TEXT("XOpenGL: AtlasSize = %dx%d"), AtlasWidth, AtlasHeight);
-
-    for (INT i = 0; i < PixelCount; ++i)
-    {
-        const FPlane& P = Atlas(i);
-        PNGPixels(i*4 + 0) = BYTE(Clamp(P.X, 0.f, 1.f) * 255.f);
-        PNGPixels(i*4 + 1) = BYTE(Clamp(P.Y, 0.f, 1.f) * 255.f);
-        PNGPixels(i*4 + 2) = BYTE(Clamp(P.Z, 0.f, 1.f) * 255.f);
-        PNGPixels(i*4 + 3) = BYTE(Clamp(P.W, 0.f, 1.f) * 255.f);
-    }
-
-    // Open file for writing
-    PNGWriteContext Ctx;
-    Ctx.Ar = GFileManager->CreateFileWriter(*AtlasPNG);
-
-    if (!Ctx.Ar)
-    {
-        debugf(TEXT("XOpenGL: Failed to open PNG for writing: %s"), *AtlasPNG);
-        return;
-    }
-
-    // Write PNG using stb_image_write
-    INT ok = stbi_write_png_to_func(
-        PNGWriteCallback,
-        &Ctx,
-        AtlasWidth,
-        AtlasHeight,
-        4,
-        PNGPixels.GetData(),
-        AtlasWidth * 4
-    );
-
-    Ctx.Ar->Close();
-    delete Ctx.Ar;
-
-    if (!ok)
-        debugf(TEXT("XOpenGL: stbi_write_png_to_func failed"));
-    else
-        debugf(TEXT("XOpenGL: Wrote PNG atlas: %s"), *AtlasPNG);
-}
-
-void DumpAtlasMetadata(
-    const TArray<FPendingLightmap>& PendingLightmaps,
-    const FString& AtlasMeta)
-{
-    FArchive* Ar = GFileManager->CreateFileWriter(*AtlasMeta);
-    if (!Ar)
-    {
-        debugf(TEXT("XOpenGL: Failed to write atlas metadata: %s"), *AtlasMeta);
-        return;
-    }
-
-    for (INT i = 0; i < PendingLightmaps.Num(); ++i)
-    {
-        const FPendingLightmap& LM = PendingLightmaps(i);
-
-        FString Line = FString::Printf(
-            TEXT("%d %f %f %f %f %f %f %f %f %d %d\n"),
-            LM.SurfIndex,
-            LM.MinU, LM.MaxU,
-            LM.MinV, LM.MaxV,
-            LM.AtlasMinU, LM.AtlasMaxU,
-            LM.AtlasMinV, LM.AtlasMaxV,
-            LM.Width, LM.Height
-        );
-
-        Ar->Serialize(TCHAR_TO_ANSI(*Line), Line.Len());
-    }
-
-    Ar->Close();
-    delete Ar;
-
-    debugf(TEXT("XOpenGL: Wrote lightmap metadata: %s"), *AtlasMeta);
 }
 
 void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(
@@ -1301,11 +1022,19 @@ void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(
 
 INT CDECL Compare(const FPendingLightmap& A, const FPendingLightmap& B)
 {
-    // Primary: height descending
-    if (A.Height < B.Height) return +1;   // B first
-    if (A.Height > B.Height) return -1;   // A first
+    // Compute total padded footprint area
+    INT AreaA = (A.Width  + 2) * (A.Height + 2);
+    INT AreaB = (B.Width  + 2) * (B.Height + 2);
 
-    // Secondary: surf index ascending
+    // Primary: Area footprint descending (Packs largest boulders first, leaves gaps for small pebbles)
+    if (AreaA < AreaB) return +1;   // B first
+    if (AreaA > AreaB) return -1;   // A first
+
+    // Secondary: Height descending (Tie-breaker for identical areas)
+    if (A.Height < B.Height) return +1; // B first
+    if (A.Height > B.Height) return -1; // A first
+
+    // Tertiary: Static Surface Index ascending (Ensures strict math determinism regardless of array memory layout)
     if (A.SurfIndex < B.SurfIndex) return -1;  // A first
     if (A.SurfIndex > B.SurfIndex) return +1;  // B first
 
@@ -2060,12 +1789,19 @@ void FOcclusionJob::StopAndJoin()
     }
 }
 
+struct FSkylineSegment
+{
+    INT X;      // Starting horizontal pixel position
+    INT Width;  // Width of this specific horizon tier
+    INT Y;      // Active top height of this segment
+};
+
 void DryRunAtlas(INT& OutW, INT& OutH)
 {
     if (PendingLightmaps.Num() == 0)
         return;
 
-    // Compute total pixel count and max padded LM width
+    // --- STAGE 1: Compute total pixel count and max padded LM width ---
     INT TotalPixels = 0;
     INT MaxLMWidth  = 0;
     for (INT i = 0; i < PendingLightmaps.Num(); ++i)
@@ -2087,17 +1823,20 @@ void DryRunAtlas(INT& OutW, INT& OutH)
     while (IdealSize < (INT)IdealSizeF)
         IdealSize <<= 1;
 
-    // Choose atlas width:
     const INT MinAtlasWidth = 256;
 
     OutW = IdealSize;
     OutW = Max(OutW, MaxLMWidth);
     OutW = Max(OutW, MinAtlasWidth);
 
-    // Dry-run packer to get needed height
-    INT SimCursorX   = 0;
-    INT SimCursorY   = 0;
-    INT SimRowHeight = 0;
+    // --- STAGE 2: SKYLINE PACKING ALGORITHM PASS ---
+    // We use a flat TArray to track our horizon segments. It initializes with 
+    // a single entry covering the entire width of the atlas at height 0.
+    TArray<FSkylineSegment> Skyline;
+    FSkylineSegment InitialSegment = { 0, OutW, 0 };
+    Skyline.AddItem(InitialSegment);
+
+    INT MaxAtlasHeightReached = 0;
 
     for (INT i = 0; i < PendingLightmaps.Num(); ++i)
     {
@@ -2108,31 +1847,119 @@ void DryRunAtlas(INT& OutW, INT& OutH)
         const INT PaddedW = LM.Width  + 2;
         const INT PaddedH = LM.Height + 2;
 
-        if (SimCursorX + PaddedW > OutW)
+        // Find the absolute best segment to fit this lightmap. 
+        // We look for a segment that minimizes the resulting height (Low-Waste heuristic).
+        INT BestSegmentIdx = -1;
+        INT BestY = 0x7FFFFFFF;
+
+        for (INT j = 0; j < Skyline.Num(); ++j)
         {
-            SimCursorX   = 0;
-            SimCursorY  += SimRowHeight;
-            SimRowHeight = 0;
+            const FSkylineSegment& Seg = Skyline(j);
+            
+            // Check if the lightmap can fit horizontally starting at this segment's X
+            if (Seg.X + PaddedW <= OutW)
+            {
+                // Find the maximum height of the horizon across the *entire width* of the lightmap
+                INT CurrentMaxY = Seg.Y;
+                INT WidthEvaluated = Seg.Width;
+                INT SearchIdx = j;
+
+                while (WidthEvaluated < PaddedW && SearchIdx < Skyline.Num() - 1)
+                {
+                    SearchIdx++;
+                    const FSkylineSegment& NextSeg = Skyline(SearchIdx);
+                    CurrentMaxY = Max(CurrentMaxY, NextSeg.Y);
+                    WidthEvaluated += NextSeg.Width;
+                }
+
+                // If the spanning width is genuinely sufficient, evaluate its height score
+                if (WidthEvaluated >= PaddedW && CurrentMaxY < BestY)
+                {
+                    BestY = CurrentMaxY;
+                    BestSegmentIdx = j;
+                }
+            }
         }
 
-        // Store *pixel* placement (interior, skip 1px border)
-        LM.AtlasX = SimCursorX + 1;
-        LM.AtlasY = SimCursorY + 1;
+        // Fallback safety (should never trigger given OutW >= MaxLMWidth bounds checks)
+        if (BestSegmentIdx == -1)
+        {
+            OutW <= 0; OutH = 0; return;
+        }
 
-        SimRowHeight = Max(SimRowHeight, PaddedH);
-        SimCursorX   += PaddedW;
+        // Extract the target placement coordinate positions
+        INT PlacementX = Skyline(BestSegmentIdx).X;
+        INT PlacementY = BestY;
+
+        // Store *pixel* placement (interior, skip your 1px safety border)
+        LM.AtlasX = PlacementX + 1;
+        LM.AtlasY = PlacementY + 1;
+
+        // Track the global maximum height ceiling reached by the packer
+        MaxAtlasHeightReached = Max(MaxAtlasHeightReached, PlacementY + PaddedH);
+
+        // --- STAGE 3: MUTATE SKYLINE HORIZON SPLITS ---
+        // Construct our new horizontal tier segment
+        FSkylineSegment NewSeg = { PlacementX, PaddedW, PlacementY + PaddedH };
+
+        // Split and update the segment array in place.
+        // We find all previous segments covered by our new width and update them.
+        INT InsertPos = BestSegmentIdx;
+        
+        // Remove or resize segments that are entirely covered by the new placement width
+        INT WidthRemaining = PaddedW;
+        while (InsertPos < Skyline.Num())
+        {
+            FSkylineSegment& Target = Skyline(InsertPos);
+            if (Target.X < NewSeg.X + NewSeg.Width)
+            {
+                INT RightEdgeOverlap = (Target.X + Target.Width) - (NewSeg.X + NewSeg.Width);
+                if (RightEdgeOverlap > 0)
+                {
+                    // This segment extends past our right edge! Resize it to start where our new block ends.
+                    Target.X = NewSeg.X + NewSeg.Width;
+                    Target.Width = RightEdgeOverlap;
+                    break;
+                }
+                else
+                {
+                    // Entirely consumed by the width of the new block, erase it from the horizon list
+                    Skyline.Remove(InsertPos);
+                }
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        // Insert our clean newly minted horizon tier into the registry slot
+        Skyline.Insert(BestSegmentIdx, 1);
+        Skyline(BestSegmentIdx) = NewSeg;
+
+        // Clean up: Merge any adjacent segments sharing identical heights to keep the array tiny
+        for (INT k = 0; k < Skyline.Num() - 1; ++k)
+        {
+            if (Skyline(k).Y == Skyline(k + 1).Y)
+            {
+                Skyline(k).Width += Skyline(k + 1).Width;
+                Skyline.Remove(k + 1);
+                k--; // Re-evaluate index point
+            }
+        }
     }
 
-    OutH = SimCursorY + SimRowHeight;
+    OutH = MaxAtlasHeightReached;
 
-    // Round height up to next multiple of 16
+    // Round height up to next multiple of 16 to satisfy your BC3 encoding padding requirements
     OutH = ((OutH + 15) / 16) * 16;
+    
+    Skyline.Empty();
 }
 
-void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasPNGIncoming, const FString& AtlasMetaIncoming)
+void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasNameIncoming)
 {
-    AtlasPNG = AtlasPNGIncoming;
-    AtlasMeta = AtlasMetaIncoming;
+    AtlasName = AtlasNameIncoming;
     UModel* Model = Level->Model;
 
     TUnorderedSet<int> UniqueSurfaces;
@@ -2221,7 +2048,7 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
     bAtlasMapped = false;
 
     // Generate a safe scratch file path in your xopengl directory
-    FString ScratchFile = AtlasMeta.Replace(TEXT(".txt"), TEXT("_scratch.tmp"));
+    FString ScratchFile = (AtlasName + TEXT("_scratch.tmp"));
 
     // Try memory-mapped disk file
     if (MappedAtlas.Create(AtlasSizeBytes, *ScratchFile))
@@ -2289,75 +2116,89 @@ void UXOpenGLRenderDevice::BuildingPoll()
     if (OcclusionJob.IsRunning())
     {
         StatusMessage = FString::Printf(
-            TEXT("Generating occlusion maps' %d / %d\n(This is a one-time process for this level)"),
+            TEXT("Generating occlusion maps... %d / %d\n(This is a one-time process for this level)"),
             ProgressDone.load(), ProgressTotal
         );
     }
     else
     {
+        // Force strict execution synchronization: block until all threads are dead
         OcclusionJob.StopAndJoin();
 
+        // Save off the total and load the final un-raced work count left by the threads
+        INT RequiredTotal = PendingLightmaps.Num();
+        INT FinalDone     = ProgressDone.load(std::memory_order_acquire);
+        
         ProgressTotal = 0;
-        if (PendingLightmaps.Num() > 0)
+
+        // If FinalDone matches the required total, it is a 100% complete run.
+        // If it falls short by even a single surface, it was aborted or cut short
+        if (RequiredTotal > 0 && FinalDone == RequiredTotal)
         {
+            // Genuinely Finished: Run the full asset assembly and disk dumping passes
             StatusMessage   = TEXT("Assembling Atlas");
 
             AtlasFinished.store(false, std::memory_order_relaxed);
-            if (bAtlasMapped)
-            {
-                // Forces the OS file cache to physically commit all multi-threaded
-                // WriteFile blocks down to the actual disk sectors all at once.
-                FlushFileBuffers(MappedAtlas.FileHandle);
-            }
-            const FString PNG  = AtlasPNG;
-            const FString Meta = AtlasMeta;
-
-            //DumpAtlasToDisk(Atlas, AtlasW, AtlasH, AtlasPNG);
-            FString AtlasKTX2 = AtlasPNG.Replace(TEXT(".png"), TEXT(".ktx2"));
-            DumpAtlasToKTX2(AtlasKTX2);
-            //DumpAtlasToDDS(Atlas, AtlasW, AtlasH, AtlasPNG, EDDSType::BC1);
-            DumpAtlasMetadata(PendingLightmaps, AtlasMeta);
-            AtlasFinished.store(true, std::memory_order_release);
-           
-            // Now upload the texture
-            UploadKTX2AtlasToGPU(AtlasKTX2);
-
-            GOcclusionState = EOcclusionState::Ready;
-            StatusMessage   = TEXT("");
-
-            // cleanup
-            PendingLightmaps.Empty();  
-            
 #if _WIN32
             if (bAtlasMapped)
             {
-                MappedAtlas.Destroy();
-                FString TargetScratchFile = AtlasMeta.Replace(TEXT(".txt"), TEXT("_scratch.tmp"));
-                
-                // --- CLEAN DEALLOCATION ---
-                if (FileWriteMutex)
-                {
-                    delete FileWriteMutex; // Destructor natively handles DeleteCriticalSection
-                    FileWriteMutex = nullptr;
-                }
-                DeleteFileW(*TargetScratchFile);
+                // Forces the Windows OS file cache to physically commit all multi-threaded
+                // WriteFile blocks down to the actual disk sectors all at once.
+                FlushFileBuffers(MappedAtlas.FileHandle);
             }
+#else
+            // Non-Windows platforms use a standard heap allocation (AtlasData),
+            // so there is no OS file cache handle that needs flushing here!
 #endif
-            if (AtlasData)
-            {
-                // 64-bit Linux/Mac platforms safely clear their massive heap arrays right here
-                appFree(AtlasData);
-                AtlasData = nullptr;
-            }
 
-            AtlasData      = nullptr;
-            AtlasSizeBytes = 0;
-            bAtlasMapped   = false; // returns excess capacity to the allocator
+            DumpAtlasToDisk(AtlasName, PendingLightmaps);
+            AtlasFinished.store(true, std::memory_order_release);
+           
+            // Now upload the texture
+            // invokes the single master loader. It streams the metadata,
+            // configures the UVs, parses the layout, and uploads the data straight to VRAM.
+            LoadStaticLightmapAtlas(LastLevel, AtlasName);
+            GOcclusionState = EOcclusionState::Ready;
+            StatusMessage   = TEXT("");
         }
         else
         {
             GOcclusionState = EOcclusionState::Failed;
         }
+
+        // =====================================================================
+        // --- UNIFIED CLEANUP RUNS REGARDLESS OF ABORT OR COMPLETION ---
+        // =====================================================================
+        // By placing this right here at the base of the outer else scope, 
+        // we guarantee it executes for both finished maps and early aborts
+        PendingLightmaps.Empty();  
+        
+#if _WIN32
+        if (bAtlasMapped)
+        {
+            MappedAtlas.Destroy();
+            
+            // Fixed path assignment format using our step-by-step operator+=
+            FString TargetScratchFile = AtlasName;
+            TargetScratchFile += TEXT("_scratch.tmp");
+            
+            if (FileWriteMutex)
+            {
+                delete FileWriteMutex; 
+                FileWriteMutex = nullptr;
+            }
+            DeleteFileW(*TargetScratchFile);
+        }
+#endif
+        if (AtlasData)
+        {
+            appFree(AtlasData);
+            AtlasData = nullptr;
+        }
+
+        AtlasData      = nullptr;
+        AtlasSizeBytes = 0;
+        bAtlasMapped   = false; 
     }
 }
 
@@ -2367,85 +2208,7 @@ static UBOOL FileExistsUE1(const FString& Path)
     return GFileManager->FileSize(*Path) >= 0;
 }
 
-bool UXOpenGLRenderDevice::UploadKTX2AtlasToGPU(const FString& InKTX2Path)
-{
-    FArchive* Ar = GFileManager->CreateFileReader(*InKTX2Path);
-    if (!Ar) return false;
-
-    // 1. Extract the unified 80-byte identification header block structure
-    FKTX2Header HeaderFile;
-    Ar->Serialize(&HeaderFile, sizeof(FKTX2Header));
-
-    // 2. Clear security and specification layout verification boundaries
-    if (appMemcmp(HeaderFile.identifier, KTX2_Magic_Identifier, 12) != 0 ||
-        HeaderFile.vkFormat != 137 || HeaderFile.levelCount != 1)
-    {
-        Ar->Close();
-        delete Ar;
-        return false;
-    }
-
-    INT W = HeaderFile.pixelWidth;
-    INT H = HeaderFile.pixelHeight;
-
-    // 3. Extract the 24-byte Level Index metadata table element
-    FKTX2LevelIndex LevelIdxTable;
-    Ar->Serialize(&LevelIdxTable, sizeof(FKTX2LevelIndex));
-
-    // 4. Seek cleanly to the 16-byte aligned hardware payload address target (176)
-    Ar->Seek((INT)LevelIdxTable.byteOffset);
-
-    TArray<BYTE> CompressedBuffer;
-    CompressedBuffer.AddZeroed((INT)LevelIdxTable.byteLength);
-    Ar->Serialize(CompressedBuffer.GetData(), (INT)LevelIdxTable.byteLength);
-
-    Ar->Close();
-    delete Ar;
-
-    // 5. Stream texture data payload straight to the GPU allocation handle
-    glGenTextures(1, &GStaticLightmapAtlasTex);
-    glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
-
-    // no mips
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    // 0x8DB5 = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT (BC3)
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    GLenum internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
-    glCompressedTexImage2D(
-        GL_TEXTURE_2D,
-        0,
-        internalFormat, 
-        W, H,
-        0,
-        (INT)LevelIdxTable.byteLength,
-        CompressedBuffer.GetData()
-    );
-
-    CompressedBuffer.Empty();
-
-    if (UsingBindlessTextures)
-    {
-        GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
-        glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
-    }
-
-    GLenum err = glGetError();
-    if (err != GL_NO_ERROR)
-    {
-        debugf(TEXT("KTX2 upload GL error: %d"), err);
-    }
-
-    return true;
-}
-
-bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasPNG, const FString& AtlasMeta)
+UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasName)
 {
     // Clean up any existing atlas (belt-and-suspenders; NewLevelOC also does this)
     if (GStaticLightmapAtlasHandle != 0)
@@ -2460,22 +2223,65 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
         GStaticLightmapAtlasTex = 0;
     }
 
-    // Make sure files exist
-    FString AtlasKTX2 = AtlasPNG.Replace(TEXT(".png"), TEXT(".ktx2"));
-    if (!FileExistsUE1(AtlasMeta) || !FileExistsUE1(AtlasKTX2))
+    // --- Clean paths appended directly from the extensionless AtlasName root ---
+    FString AtlasKTX2 = AtlasName;
+    AtlasKTX2 += TEXT(".ktx2");
+
+    // Unified File Existence Check (Only 1 file required per map now!)
+    if (!FileExistsUE1(AtlasKTX2))
     {
-        debugf(TEXT("XOpenGL: Atlas files missing: %s / %s"), *AtlasKTX2, *AtlasMeta);
+        debugf(TEXT("XOpenGL: Static lightmap texture container missing: %s"), *AtlasKTX2);
         return false;
     }
 
-    // Load metadata text
-    FString MetaText;
-    if (!appLoadFileToString(MetaText, *AtlasMeta))
+    // --- HIGH-SPEED NATIVE SINGLE-FILE INGEST PASS ---
+    FArchive* Ar = GFileManager->CreateFileReader(*AtlasKTX2);
+    if (!Ar)
     {
-        debugf(TEXT("XOpenGL: Failed to load atlas metadata: %s"), *AtlasMeta);
-        return false;
+        debugf(TEXT("XOpenGL: Failed to open texture package for metadata parsing: %s"), *AtlasKTX2);
+        return false; 
     }
 
+    // 1. Read master 80-byte header block
+    FKTX2Header HeaderFile;
+    Ar->Serialize(&HeaderFile, sizeof(FKTX2Header));
+
+    // 2. Validate magic numbers and Khronos specification blocks
+    if (appMemcmp(HeaderFile.identifier, KTX2_Magic_Identifier, 12) != 0 ||
+        HeaderFile.vkFormat != 137 || HeaderFile.levelCount != 1)
+    {
+        debugf(TEXT("XOpenGL: Corrupt or invalid KTX2 file signature format: %s"), *AtlasKTX2);
+        Ar->Close(); delete Ar; return false;
+    }
+
+    // 3. Skip past the Level Index metadata table element (24 bytes)
+    FKTX2LevelIndex LevelIdxTable;
+    Ar->Serialize(&LevelIdxTable, sizeof(FKTX2LevelIndex));
+
+    // 4. JUMP DIRECTLY TO THE EMBEDDED METADATA BLOCK
+    // KTX2 spec dictates kvdByteOffset points directly to the record dictionary head
+    if (HeaderFile.kvdByteLength <= 0 || HeaderFile.kvdByteOffset == 0)
+    {
+        debugf(TEXT("XOpenGL: KTX2 file lacks required embedded dictionary data records: %s"), *AtlasKTX2);
+        Ar->Close(); delete Ar; return false;
+    }
+    Ar->Seek((INT)HeaderFile.kvdByteOffset);
+
+    // Read the inline 4-byte record value size indicator block header
+    INT KvdRecordSize = 0;
+    *Ar << KvdRecordSize;
+
+    // Read the 18-byte Null-Terminated string token key ("UE1_AtlasMetadata\0")
+    char ExtractedKey[18];
+    Ar->Serialize(ExtractedKey, 18);
+
+    if (strcmp(ExtractedKey, "UE1_AtlasMetadata") != 0)
+    {
+        debugf(TEXT("XOpenGL: Key mismatch in container header dictionary! Found: %s"), ExtractedKey);
+        Ar->Close(); delete Ar; return false;
+    }
+
+    // Compute the true length of our struct records allocation block payload size
     struct FAtlasEntry
     {
         INT   SurfIndex;
@@ -2484,114 +2290,96 @@ bool UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString&
         FLOAT AtlasMinU, AtlasMaxU;
         FLOAT AtlasMinV, AtlasMaxV;
     };
+    uint32_t RealPayloadBytes = KvdRecordSize - 18;
+    INT EntryCount = RealPayloadBytes / sizeof(FAtlasEntry);
+
     TArray<FAtlasEntry> Entries;
-
-    // Split MetaText into lines manually (UE1-style)
-    FString Remaining = MetaText;
-    while (Remaining.Len() > 0)
+    if (EntryCount > 0 && EntryCount < 100000) 
     {
-        INT NewlinePos = Remaining.InStr(TEXT("\n"));
-        FString Line;
-
-        if (NewlinePos == INDEX_NONE)
-        {
-            Line = Remaining;
-            Remaining = TEXT("");
-        }
-        else
-        {
-            Line = Remaining.Left(NewlinePos);
-            Remaining = Remaining.Mid(NewlinePos + 1);
-        }
-
-        if (Line.Len() == 0)
-            continue;
-
-        // Parse one line: SurfIndex MinU MaxU MinV MaxV AtlasMinU AtlasMaxU AtlasMinV AtlasMaxV Width Height
-        INT SurfIndex = 0;
-        FLOAT MinU = 0, MaxU = 0;
-        FLOAT MinV = 0, MaxV = 0;
-        FLOAT AtlasMinU = 0, AtlasMaxU = 0;
-        FLOAT AtlasMinV = 0, AtlasMaxV = 0;
-        INT Width = 0, Height = 0;
-
-        INT Parsed = swscanf(
-            *Line,
-            TEXT("%d %f %f %f %f %f %f %f %f %d %d"),
-            &SurfIndex,
-            &MinU, &MaxU,
-            &MinV, &MaxV,
-            &AtlasMinU, &AtlasMaxU,
-            &AtlasMinV, &AtlasMaxV,
-            &Width, &Height
-        );
-
-        if (Parsed == 11)
-        {
-            FAtlasEntry E;
-            E.SurfIndex  = SurfIndex;
-            E.MinU  = MinU;
-            E.MaxU  = MaxU;
-            E.MinV  = MinV;
-            E.MaxV  = MaxV;
-            E.AtlasMinU  = AtlasMinU;
-            E.AtlasMaxU  = AtlasMaxU;
-            E.AtlasMinV  = AtlasMinV;
-            E.AtlasMaxV  = AtlasMaxV;
-            Entries.AddItem(E);
-        }
-        else
-        {
-            debugf(TEXT("XOpenGL: Bad metadata line: %s"), *Line);
-        }
+        Entries.AddZeroed(EntryCount);
+        // Bulk-serialize our raw structural data matrices directly out of the texture head!
+        Ar->Serialize(&Entries(0), RealPayloadBytes);
     }
+    else
+    {
+        debugf(TEXT("XOpenGL: Corrupt or out-of-bounds dictionary entry allocation size: %d"), EntryCount);
+        Ar->Close(); delete Ar; return false;
+    }
+
+    // 5. EXTRACT TEXTURE FOR GPU TRANSITIONS
+    // Jump over to the 16-byte aligned hardware payload address target
+    Ar->Seek((INT)LevelIdxTable.byteOffset);
+
+    TArray<BYTE> CompressedBuffer;
+    CompressedBuffer.AddZeroed((INT)LevelIdxTable.byteLength);
+    Ar->Serialize(CompressedBuffer.GetData(), (INT)LevelIdxTable.byteLength);
+
+    // We are completely finished reading from disk! Close the file archive stream cleanly.
+    Ar->Close();
+    delete Ar;
 
     if (Entries.Num() == 0)
     {
-        debugf(TEXT("XOpenGL: No valid atlas metadata entries in %s"), *AtlasMeta);
+        debugf(TEXT("XOpenGL: No valid atlas lightmap allocations mapped inside %s"), *AtlasKTX2);
         return false;
     }
 
-    if (!UploadKTX2AtlasToGPU(AtlasKTX2))
+    // 6. STREAM COMPRESSED PAYLOAD STRAIGHT TO VRAM
+    glGenTextures(1, &GStaticLightmapAtlasTex);
+    glBindTexture(GL_TEXTURE_2D, GStaticLightmapAtlasTex);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glCompressedTexImage2D(
+        GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, 
+        HeaderFile.pixelWidth, HeaderFile.pixelHeight, 0,
+        (INT)LevelIdxTable.byteLength, CompressedBuffer.GetData()
+    );
+
+    CompressedBuffer.Empty();
+
+    if (UsingBindlessTextures)
     {
-        return false;
+        GStaticLightmapAtlasHandle = glGetTextureHandleARB(GStaticLightmapAtlasTex);
+        glMakeTextureHandleResidentARB(GStaticLightmapAtlasHandle);
     }
 
-    // Apply atlas UVs AND reconstruct per-vertex lightmap UVs
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) { debugf(TEXT("KTX2 upload GL error: %d"), err); }
+
+    // =========================================================================
+    // --- STAGE C: RUNTIME PLATFORM STRUCT MAPPING ---
+    // =========================================================================
     for (INT i = 0; i < Entries.Num(); i++)
     {
         const FAtlasEntry& E = Entries(i);
-
         FSurfInfo* SI = SurfaceInfoMap.Find(E.SurfIndex);
-        if (!SI)
-            continue;
+        if (!SI) continue;
 
         SI->HasHDLightmap = true;
 
-        // Rebuild the UT planar basis (same as bake-time)
         FBspSurf& Surf = Level->Model->Surfs(E.SurfIndex);
         UXOpenGLRenderDevice::SurfaceBasis Basis = BuildSurfaceBasis(SI, Level, Surf);
         SI->LightmapBasis = Basis;
 
-        // Apply atlas rectangle to runtime struct
         FSurfaceLightmap& LM = SI->HDLightmap;
-        LM.AtlasMinU = E.AtlasMinU;
-        LM.AtlasMaxU = E.AtlasMaxU;
-        LM.AtlasMinV = E.AtlasMinV;
-        LM.AtlasMaxV = E.AtlasMaxV;
-        LM.SurfMinU = E.MinU;
-        LM.SurfMaxU = E.MaxU;
-        LM.SurfMinV = E.MinV;
-        LM.SurfMaxV = E.MaxV;
+        LM.AtlasMinU = E.AtlasMinU; LM.AtlasMaxU = E.AtlasMaxU;
+        LM.AtlasMinV = E.AtlasMinV; LM.AtlasMaxV = E.AtlasMaxV;
+        LM.SurfMinU  = E.MinU;       LM.SurfMaxU  = E.MaxU;
+        LM.SurfMinV  = E.MinV;       LM.SurfMaxV  = E.MaxV;
         if (SI->IsMover)
             LM.OriginOffset = SI->LightmapBasis.Origin - SI->Owner->Location;
 
-        // Reconstruct per-vertex lightmap UVs using MinU/MaxU/MinV/MaxV from metadata
         ComputeFinalAtlasUVs(*SI, Basis, E.MinU, E.MaxU, E.MinV, E.MaxV, E.AtlasMinU, E.AtlasMaxU, E.AtlasMinV, E.AtlasMaxV);
     }
 
-
-    debugf(TEXT("XOpenGL: Loaded static lightmap atlas %s, entries=%d"), *AtlasPNG, Entries.Num());
+    debugf(TEXT("XOpenGL: Successfully ingested single-file KTX2 lightmap package %s [%d entries loaded]"), *AtlasKTX2, Entries.Num());
     return true;
 }
 
@@ -2600,6 +2388,7 @@ void UXOpenGLRenderDevice::NewLevelOC()
     NextAllowedMessageTime = 0;
 
     // Stop occlusion job
+    OcclusionJob.bAbort.store(true, std::memory_order_seq_cst);
     OcclusionJob.StopAndJoin();
     OcclusionJob.bAbort.store(false, std::memory_order_relaxed);
 
@@ -2629,16 +2418,19 @@ void UXOpenGLRenderDevice::NewLevelOC()
         GStaticLightmapAtlasTex = 0;
     }
 
-    FString AtlasPNG, AtlasMeta;
-    GetAtlasPathsForLevel(LastLevel->GetOuter()->GetName(), AtlasPNG, AtlasMeta);
-    //FString liff = LastLevel->GetLevelInfo()->Title;
-    FString AtlasKTX2 = AtlasPNG.Replace(TEXT(".png"), TEXT(".ktx2"));
-    if (FileExistsUE1(AtlasKTX2) && FileExistsUE1(AtlasMeta))
+    FString AtlasName = GetAtlasNameForLevel(LastLevel->GetOuter()->GetName());
+    // Generate the modern extension for tracking existence on disk
+    FString AtlasKTX2 = AtlasName;
+    AtlasKTX2 += TEXT(".ktx2");
+
+    // Check if our binary atlas data components are active and ready
+    if (FileExistsUE1(AtlasKTX2))
     {
-        if (LoadStaticLightmapAtlas(LastLevel, AtlasPNG, AtlasMeta))
+        // Inside LoadStaticLightmapAtlas, you pass your clean extensionless AtlasName parameter!
+        if (LoadStaticLightmapAtlas(LastLevel, AtlasName))
         {
             GOcclusionState = EOcclusionState::Ready;
-            return; // success
+            return; // Success!
         }
         else
         {
@@ -2647,5 +2439,5 @@ void UXOpenGLRenderDevice::NewLevelOC()
     }
 
     // nothing to load, or failed.  create.  or rather, kick off creation on worker threads and return immediately; when they finish we'll wrap up and assemble
-    BuildPerSurfaceStaticLight(LastLevel, AtlasPNG, AtlasMeta);
+    BuildPerSurfaceStaticLight(LastLevel, AtlasName);
 }
