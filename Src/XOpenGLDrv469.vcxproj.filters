@@ -152,12 +152,9 @@
     <ClInclude Include="..\Inc\thirdparty\stb\stb_dxt.h">
       <Filter>Inc</Filter>
     </ClInclude>
-    <ClInclude Include="HeroLight.h">
-      <Filter>Inc</Filter>
-    </ClInclude>
-    <ClInclude Include="GLStateManager.h">
-      <Filter>Inc</Filter>
-    </ClInclude>
+    <ClInclude Include="..\Inc\GLStateManager.h" />
+    <ClInclude Include="..\Inc\HeroLight.h" />
+    <ClInclude Include="PerPixel.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\XOpenGLDrv.int" />

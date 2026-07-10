@@ -1691,7 +1691,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::vec4 LightData2[MAX_LIGHTS]; // Actor->LightEffect, Actor->LightPeriod, Actor->LightPhase, Actor->LightRadius
 		glm::vec4 LightData3[MAX_LIGHTS]; // Actor->LightType, Actor->VolumeBrightness, Actor->VolumeFog, Actor->VolumeRadius
 		glm::vec4 LightData4[MAX_LIGHTS]; // Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f
-		glm::vec4 LightData5[MAX_LIGHTS]; // Actor->LightRadius * 10, 1.0, 0.0, 0.0
+		glm::vec4 LightData5[MAX_LIGHTS]; // Actor->LightRadius * 10, bIsSpotlight (1.0 or 0.0), Bindless Shadow Handle LowerBits, Bindless Shadow Handle UpperBits
+		glm::vec4 LightData6[MAX_LIGHTS]; // Spotlight Direction Vector (X, Y, Z), Spotlight SpotCosOuter Angle Limit (W)
 		glm::vec4 LightPos[MAX_LIGHTS];
 	};
 	BufferObject<LightInfo> LightInfoBuffer;
@@ -1836,6 +1837,18 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// per level list of all static lights that movers use during occlusion generation
 	TArray<AActor*> StaticLevelLights;
 
+	// --- Fake Spotlight Pair Tracking ---
+	struct FakeSpotlightPair
+	{
+		AActor* FloorLight;      // Bottom light (UPGRADED to downward spotlight)
+		AActor* TopLight;        // Top light (Maintained as raw point light for ceiling glow)
+		FLOAT   ReachRadius;     // Distance falloff radius
+		BYTE    Brightness;
+		FVector SpotDirection;   // Direction from top to bottom
+		FLOAT   SpotCosOuter;    // Outer cone cosine
+		FLOAT   SpotCosInner;    // Inner cone cosine
+	};
+
 	#define MAX_SURFACE_LIGHTS 2048
 	// Just taking all that touch a surface now (they should be there) fine now that we don't pad out the array with junk so most surfaces can have one or two or some other small number
 	INT DefaultLightCap = 2000; // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/ 
@@ -1855,6 +1868,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	void UXOpenGLRenderDevice::InitLightLevelOverrides();
+	static UBOOL UXOpenGLRenderDevice::IsFakeSpotlightCeilingToExclude(AActor* L);
+	UBOOL UXOpenGLRenderDevice::IsSpotlight(AActor* L);
+	static UXOpenGLRenderDevice::FakeSpotlightPair* UXOpenGLRenderDevice::GetSpotlightData(AActor* L);
 	void UXOpenGLRenderDevice::NewLevelPP();
 	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
 

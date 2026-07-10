@@ -230,143 +230,255 @@ FVector UXOpenGLRenderDevice::ClosestPointOnTriangle(const FVector& P, const FVe
 }
 
 void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
-	ULevel* Level,
+    ULevel* Level,
     INT iSurf,
     TArray<AActor*>& OutTopLights,
     int MaxStaticLights)
 {
-	OutTopLights.Empty();
+    OutTopLights.Empty();
 
     if (!Level || !Level->Model || iSurf < 0 || iSurf >= Level->Model->Surfs.Num())
         return;
 
-	// --- Retrieve cached world-space polygon vertices if present ---
-    TArray<FVector> Verts;
-	FSurfInfo* SurfaceInfo = SurfaceInfoMap.Find(iSurf);
-    if (!SurfaceInfo)
-    {
-        return;
-    }
-    Verts = SurfaceInfo->Verts;
-	
-    if (Verts.Num() < 3)
-        return;
+    FSurfInfo* SurfaceInfo = SurfaceInfoMap.Find(iSurf);
+    if (!SurfaceInfo) return;
+
+    // Retrieve cached world-space polygon vertices if present
+    TArray<FVector>& Verts = SurfaceInfo->Verts;
+    if (Verts.Num() < 3) return;
 
     TArray<glm::uint>& TriIdx = SurfaceInfo->TriIdx;
+    if (TriIdx.Num() <= 0) return;
 
-	// get precomputed triangulation (surface is degenerate if there is none)
-	TArray<FVector> Triangles; // triplets of vertices
-	if (TriIdx.Num() > 0)
-	{
-		for (INT t = 0; t < TriIdx.Num(); t += 3)
-		{
-			Triangles.AddItem(Verts(TriIdx(t)));
-			Triangles.AddItem(Verts(TriIdx(t+1)));
-			Triangles.AddItem(Verts(TriIdx(t+2)));
-		}
-	}
-	else
-	{
-        return;
-	}
+    // Get precomputed triangulation (surface is degenerate if there is none)
+    TArray<FVector> Triangles;
+    for (INT t = 0; t < TriIdx.Num(); t += 3)
+    {
+        Triangles.AddItem(Verts(TriIdx(t)));
+        Triangles.AddItem(Verts(TriIdx(t+1)));
+        Triangles.AddItem(Verts(TriIdx(t+2)));
+    }
 
     FBspSurf bspSurf = Level->Model->Surfs(iSurf);
-    bool twoSided = (bspSurf.PolyFlags & PF_TwoSided);
+    bool twoSided   = (bspSurf.PolyFlags & PF_TwoSided);
     bool specialLit = (bspSurf.PolyFlags & PF_SpecialLit);
 
     TArray<RankedLight> Ranked;
     Ranked.Reserve(Level->Actors.Num());
 
-    AActor* DummyLight = nullptr; // keep one light to ensure each surface has at least one, so the shader doesn't draw a surface with none as fullbright6
+    AActor* DummyLight = nullptr; // keep one light to ensure each surface has at least one, so the shader doesn't draw a surface with none as fullbright
+    FVector FacetNormal = Level->Model->Vectors(bspSurf.vNormal);
+    FVector BaseVert = Verts(0);
 
-	// Iterate static lights
     for (INT i = 0; i < Level->Actors.Num(); ++i)
     {
         AActor* L = Level->Actors(i);
-        if (!L || !IsStaticLight(L))
-            continue;
+        if (!L || !IsStaticLight(L)) continue;
 
-        // surfaces marked specialLit only receive lighting from actors with bSpecialLit=1
         bool specialLight = L->bSpecialLit == 1;
-        if (specialLit != specialLight)
-            continue;
+        if (specialLit != specialLight) continue;
 
-        if (!DummyLight)
-            DummyLight = L;
+        if (!DummyLight) DummyLight = L;
 
-        float Radius = L->WorldLightRadius();
-        if (Radius <= 0.f)
-            continue;
+        // Check if this top light is one of our upgraded spotlights
+        FakeSpotlightPair* SpotData = GetSpotlightData(L);
+        bool bIsSpot = (SpotData != nullptr);
 
-		FVector LightPos = (L->Location);
+        // Get appropriate radius limits
+        float Radius = bIsSpot ? SpotData->ReachRadius : L->WorldLightRadius();
+        if (Radius <= 0.f) continue;
 
-		float planeDist = (LightPos - (Verts.Num()>0 ? Verts(0) : FVector(0,0,0))) | (Level->Model->Vectors(Level->Model->Surfs(iSurf).vNormal));
-		// projection onto surface plane
-		FVector FacetNormal = Level->Model->Vectors(Level->Model->Surfs(iSurf).vNormal);
-		FVector projected = LightPos - FacetNormal * planeDist;
+        // For spotlights, pull coordinates from the ceiling fixture (TopLight)
+        // For regular point lights, use their own location
+        FVector LightPos = bIsSpot ? SpotData->TopLight->Location : L->Location;
+        
+        FVector TargetPoint;
+        bool bFoundValidPoint = false;
 
-		FVector closest;
-        // Inside test using triangles
-        bool inside = false;
-		for (INT t = 0; t < Triangles.Num(); t += 3)
-		{
-			const FVector& A = Triangles(t);
-			const FVector& B = Triangles(t+1);
-			const FVector& C = Triangles(t+2);
-
-			if (PointInTriangle(projected, A, B, C, FacetNormal))
-			{
-				inside = true;
-				closest = projected;
-				break;
-			}
-		}
-
-        if (!inside)
+        // --- POSITION & ATTENUATION SELECTION ---
+        if (bIsSpot)
         {
-            // Closest point on polygon edges (fallback to triangle closest)
-            float minDistSq = FLT_MAX;
-			for (INT t = 0; t < Triangles.Num(); t += 3)
-			{
-				const FVector& A = Triangles(t);
-				const FVector& B = Triangles(t+1);
-				const FVector& C = Triangles(t+2);
+            // 1. Trace the center ray of the spotlight to the infinite plane of the surface
+            float Denominator = SpotData->SpotDirection | FacetNormal;
+            
+            // If the spotlight beam is not completely parallel to the surface plane
+            if (Abs(Denominator) > 0.0001f)
+            {
+                float T = ((BaseVert - LightPos) | FacetNormal) / Denominator;
+                
+                // If the surface is in front of the spotlight direction
+                if (T > 0.f && T < Radius)
+                {
+                    FVector InfinitePlaneIntersection = LightPos + SpotData->SpotDirection * T;
+                    
+                    // Check if this intersection point actually falls inside our polygon triangles
+                    for (INT t = 0; t < Triangles.Num(); t += 3)
+                    {
+                        if (PointInTriangle(InfinitePlaneIntersection, Triangles(t), Triangles(t+1), Triangles(t+2), FacetNormal))
+                        {
+                            TargetPoint = InfinitePlaneIntersection;
+                            bFoundValidPoint = true;
+                            break;
+                        }
+                    }
+                }
+            }
 
-				FVector cp = ClosestPointOnTriangle(projected, A, B, C);
-				float d2 = (cp - projected).SizeSquared();
+            // 2. Fallback: If center ray misses the polygon, test if vertices or edges clip the cone envelope!
+            if (!bFoundValidPoint)
+            {
+                float minDistSq = FLT_MAX;
+                
+                for (INT t = 0; t < Triangles.Num(); t += 3)
+                {
+                    const FVector& A = Triangles(t);
+                    const FVector& B = Triangles(t+1);
+                    const FVector& C = Triangles(t+2);
+                    
+                    // Core structural array of edge combinations
+                    FVector Edges[3][2] = { {A, B}, {B, C}, {C, A} };
+                    
+                    for (int e = 0; e < 3; ++e)
+                    {
+                        const FVector& Start = Edges[e][0];
+                        const FVector& End   = Edges[e][1];
+                        
+                        // Sample 5 discrete points along the segment (Start, 25%, Mid, 75%, End)
+                        // This perfectly catches grazing steep ramps cutting through the cone edge!
+                        for (int step = 0; step <= 4; ++step)
+                        {
+                            float Alpha = (float)step * 0.25f;
+                            FVector SamplePoint = Start + (End - Start) * Alpha;
+                            
+                            FVector ToSample = SamplePoint - LightPos;
+                            float DistSq = ToSample.SizeSquared();
+                            
+                            if (DistSq < (Radius * Radius))
+                            {
+                                float SampleDist = appSqrt(DistSq);
+                                FVector DirNorm  = ToSample / Max(SampleDist, 0.001f);
+                                float CosAngle   = DirNorm | SpotData->SpotDirection;
+                                
+                                // If this specific segment sample sits inside the cone, lock it in!
+                                if (CosAngle >= SpotData->SpotCosOuter)
+                                {
+                                    if (DistSq < minDistSq)
+                                    {
+                                        minDistSq = DistSq;
+                                        TargetPoint = SamplePoint;
+                                        bFoundValidPoint = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Final safety fallback: If completely missing the cone boundary, use closest point on triangle
+                if (!bFoundValidPoint)
+                {
+                    float planeDist = (LightPos - BaseVert) | FacetNormal;
+                    FVector projected = LightPos - FacetNormal * planeDist;
+                    float minDistSq2 = FLT_MAX;
 
-				if (d2 < minDistSq)
-				{
-					minDistSq = d2;
-					closest = cp;
-				}
-			}
+                    for (INT t = 0; t < Triangles.Num(); t += 3)
+                    {
+                        FVector cp = ClosestPointOnTriangle(projected, Triangles(t), Triangles(t+1), Triangles(t+2));
+                        float d2 = (cp - projected).SizeSquared();
+                        if (d2 < minDistSq2)
+                        {
+                            minDistSq2 = d2;
+                            TargetPoint = cp;
+                        }
+                    }
+                    bFoundValidPoint = true;
+                }
+            }
+        }
+        else
+        {
+            // Standard Point Light logic: Find the mathematically closest point on the polygon
+            float planeDist = (LightPos - BaseVert) | FacetNormal;
+            FVector projected = LightPos - FacetNormal * planeDist;
+            bool inside = false;
+
+            for (INT t = 0; t < Triangles.Num(); t += 3)
+            {
+                if (PointInTriangle(projected, Triangles(t), Triangles(t+1), Triangles(t+2), FacetNormal))
+                {
+                    inside = true;
+                    TargetPoint = projected;
+                    break;
+                }
+            }
+
+            if (!inside)
+            {
+                float minDistSq = FLT_MAX;
+                for (INT t = 0; t < Triangles.Num(); t += 3)
+                {
+                    FVector cp = ClosestPointOnTriangle(projected, Triangles(t), Triangles(t+1), Triangles(t+2));
+                    float d2 = (cp - projected).SizeSquared();
+                    if (d2 < minDistSq)
+                    {
+                        minDistSq = d2;
+                        TargetPoint = cp;
+                    }
+                }
+            }
+            bFoundValidPoint = true;
         }
 
-		float dist = (LightPos - closest).Size();
+        if (!bFoundValidPoint) continue;
 
+        // Calculate core vectors relative to the chosen target point
+        FVector LightToTarget = TargetPoint - LightPos;
+        float dist = LightToTarget.Size();
+        if (dist > Radius) continue;
+
+        // --- CALCULATE ATTENUATION ---
         float x = Clamp(dist / Radius, 0.0f, 1.0f);
         float attenuation = (1.f - x) / (1.f + 4.f * x * x);
 
-        float brightness = L->LightBrightness / 255.f;
-		FPlane RGBColor = FGetHSV(
-			L->LightHue,
-			L->LightSaturation,
-			L->LightBrightness
-		);
-		float lum =
-			0.299f * Clamp(RGBColor.X / 255.0f, 0.0f, 1.0f) +
-			0.587f * Clamp(RGBColor.Y / 255.0f, 0.0f, 1.0f) +
-			0.114f * Clamp(RGBColor.Z / 255.0f, 0.0f, 1.0f);
+        // --- SPOTLIGHT CONE FACTOR ---
+        float ConeFactor = 1.0f;
+        if (bIsSpot)
+        {
+            FVector LightDirNorm = LightToTarget.SafeNormal();
+            float CosAngle = LightDirNorm | SpotData->SpotDirection;
+
+            // Outside the outer cone completely? Reject the light loop.
+            if (CosAngle < SpotData->SpotCosOuter)
+                continue;
+
+            // Smooth cone edge interpolation (Inner to Outer cone fade)
+            if (CosAngle < SpotData->SpotCosInner)
+            {
+                float Range = SpotData->SpotCosInner - SpotData->SpotCosOuter;
+                ConeFactor = (CosAngle - SpotData->SpotCosOuter) / Max(Range, 0.001f);
+                ConeFactor = Clamp(ConeFactor, 0.0f, 1.0f);
+            }
+        }
+
+        // --- BRIGHTNESS AND COLOR CALCULATIONS ---
+        // Use custom brightness values for upgraded spotlights
+        float BaseBrightness = bIsSpot ? (float)SpotData->Brightness : (float)L->LightBrightness;
+        float brightness = BaseBrightness / 255.f;
+
+        FPlane RGBColor = FGetHSV(L->LightHue, L->LightSaturation, (BYTE)BaseBrightness);
+        float lum = 0.299f * Clamp(RGBColor.X / 255.0f, 0.0f, 1.0f) +
+                    0.587f * Clamp(RGBColor.Y / 255.0f, 0.0f, 1.0f) +
+                    0.114f * Clamp(RGBColor.Z / 255.0f, 0.0f, 1.0f);
         float brightnessFactor = Max(lum, brightness);
 
-		FVector LightDir = (LightPos - closest).SafeNormal();
-        float dot = FacetNormal | LightDir;
-        if (twoSided && dot < 0.f)
-            dot = -dot;
+        // --- LAMBERT FACTOR ---
+        FVector SurfaceToLightDir = (-LightToTarget).SafeNormal();
+        float dot = FacetNormal | SurfaceToLightDir;
+        if (twoSided && dot < 0.f) dot = -dot;
         float lambert = Max(0.f, dot);
 
-        float score = attenuation * brightnessFactor * lambert;
+        // Apply ConeFactor directly to the scoring heuristic
+        float score = attenuation * brightnessFactor * lambert * ConeFactor;
 
         if (score > 0)
         {
@@ -375,8 +487,9 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
             R.Score = score;
             Ranked.AddItem(R);
         }
-    } // end iterate static lights
-    // If no lights contributed, insert a dummy so BSP is not fullbright
+    }
+
+    // Insert dummy if dark to avoid fullbright bug
     if (Ranked.Num() == 0)
     {
         RankedLight R;
@@ -385,7 +498,8 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         R.IsStatic = true;
         Ranked.AddItem(R);
     }
-	Sort(&Ranked(0), Ranked.Num());
+
+    Sort(&Ranked(0), Ranked.Num());
 
     int Count = Min(MaxStaticLights, Ranked.Num());
     OutTopLights.Empty(Count);
@@ -829,6 +943,146 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     }
 }
 
+// global array of spotlight pairs
+TArray<UXOpenGLRenderDevice::FakeSpotlightPair> FakeSpotlightPairs;
+
+// Global map: FloorLight* -> TopLight* for quick lookup during filtering
+TMap<AActor*, AActor*> FakeSpotlightFloorToTopMap;
+
+// Global map: TopLight* -> FloorLight* for quick lookup when disqualifying shadow casting
+TMap<AActor*, AActor*> FakeSpotlightTopToFloorMap;
+
+// Global map of floor lights to pair indices, used for fast lookup during data upload
+TMap<AActor*, INT> SpotlightFloorIndexMap;
+
+// --- Detect all fake spotlight pairs in the level ---
+void DetectFakeSpotlights(ULevel* Level, TArray<AActor*>& AllLights)
+{
+    UModel* Model = Level->Model;
+    
+    FakeSpotlightPairs.Empty();
+    FakeSpotlightFloorToTopMap.Empty();
+    FakeSpotlightTopToFloorMap.Empty();
+    SpotlightFloorIndexMap.Empty();
+
+    // Fast O(1) lookup map to track processed lights during this loop
+    TMap<AActor*, UBOOL> ProcessedLights;
+
+    for (INT i = 0; i < AllLights.Num(); ++i)
+    {
+        AActor* FloorCandidate = AllLights(i);
+        if (!FloorCandidate) continue;
+
+        // Skip if already paired
+        if (ProcessedLights.Find(FloorCandidate)) continue;
+
+        // Check if near the floor
+        FVector Down = FloorCandidate->Location + FVector(0, 0, -48);
+        bool HasFloor = !UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, FloorCandidate->Location, Down);
+        if (!HasFloor) continue;
+
+        // Look for a vertically stacked partner above
+        for (INT j = 0; j < AllLights.Num(); ++j)
+        {
+            if (i == j) continue;
+
+            AActor* TopCandidate = AllLights(j);
+            if (!TopCandidate || ProcessedLights.Find(TopCandidate)) continue;
+
+            // Rough XY alignment (Deck-tested)
+            if (Abs(FloorCandidate->Location.X - TopCandidate->Location.X) > 16.f) continue;
+            if (Abs(FloorCandidate->Location.Y - TopCandidate->Location.Y) > 16.f) continue;
+
+            // Must be above
+            if (TopCandidate->Location.Z <= FloorCandidate->Location.Z) continue;
+
+            // Colors must match closely
+            FPlane C1 = FGetHSV(FloorCandidate->LightHue, FloorCandidate->LightSaturation, FloorCandidate->LightBrightness);
+            FPlane C2 = FGetHSV(TopCandidate->LightHue, TopCandidate->LightSaturation, TopCandidate->LightBrightness);
+
+            float ColorDist = Abs(C1.X - C2.X) + Abs(C1.Y - C2.Y) + Abs(C1.Z - C2.Z);
+            if (ColorDist > 20.f) continue;
+
+            // Must have unobstructed line-of-sight
+            if (!UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, FloorCandidate->Location, TopCandidate->Location))
+                continue;
+
+            // Upper light must NOT be near the floor
+            FVector Down2 = TopCandidate->Location + FVector(0, 0, -128);
+            bool UpperHasFloor = !UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, TopCandidate->Location, Down2);
+            if (UpperHasFloor) continue;
+
+            // --- PAIR FOUND! ---
+            UXOpenGLRenderDevice::FakeSpotlightPair Pair;
+            Pair.FloorLight  = FloorCandidate;
+            Pair.TopLight    = TopCandidate;
+
+            FLOAT FloorRadius = FloorCandidate->WorldLightRadius();
+            FLOAT h = Abs(FloorCandidate->Location.Z - TopCandidate->Location.Z);
+
+            // Cone angle from footprint radius
+            FLOAT theta = appAtan(FloorRadius / Max(h, 1.f));
+            Pair.SpotCosOuter = appCos(theta);
+            Pair.SpotCosInner = appCos(theta * 0.9f);
+
+            // Beam reach radius (distance falloff)
+            float ReachRadius = (h + FloorRadius) * 1.2f;
+            Pair.ReachRadius = ReachRadius;
+
+            // Brightness scaling (stable, mapper-faithful)
+            float I_floor = 1.0f - h / ReachRadius;
+            float TargetIntensity = 0.7f; 
+            float B = TargetIntensity / Max(I_floor, 0.01f);
+            Pair.Brightness = Clamp(FloorCandidate->LightBrightness * B, 0.0f, 255.0f);
+
+            // Direction vector
+            Pair.SpotDirection = (FloorCandidate->Location - TopCandidate->Location).SafeNormal();
+            
+            // Map tracking updates
+            INT NewIdx = FakeSpotlightPairs.AddItem(Pair);
+            SpotlightFloorIndexMap.Set(FloorCandidate, NewIdx);
+            FakeSpotlightFloorToTopMap.Set(FloorCandidate, TopCandidate);
+            FakeSpotlightTopToFloorMap.Set(TopCandidate, FloorCandidate);
+
+            // Mark both as processed
+            ProcessedLights.Set(FloorCandidate, TRUE);
+            ProcessedLights.Set(TopCandidate, TRUE);
+
+            //debugf(TEXT("DetectFakeSpotlights: Paired floor light at (%.0f, %.0f, %.0f) with top at (%.0f, %.0f, %.0f)"),
+            //    FloorCandidate->Location.X, FloorCandidate->Location.Y, FloorCandidate->Location.Z,
+            //    TopCandidate->Location.X, TopCandidate->Location.Y, TopCandidate->Location.Z);
+
+            break; 
+        }
+    }
+}
+
+// --- Check if a light should be excluded (is a fake spotlight floor) ---
+UBOOL UXOpenGLRenderDevice::IsFakeSpotlightCeilingToExclude(AActor* L)
+{
+    return FakeSpotlightTopToFloorMap.Find(L) != nullptr;
+}
+
+// --- Check if a light is a spotlight and should have spotlight data sideloaded---
+UBOOL UXOpenGLRenderDevice::IsSpotlight(AActor* L)
+{
+    // retreiving a spotlight:
+    // FakeSpotlightPair& P = FakeSpotlightPairs[SpotlightTopIndexMap[L]];
+    return FakeSpotlightTopToFloorMap.Find(L) != nullptr;
+}
+
+// --- Safely retrieve sideloaded spotlight data ---
+UXOpenGLRenderDevice::FakeSpotlightPair* UXOpenGLRenderDevice::GetSpotlightData(AActor* L)
+{
+    INT* IndexPtr = SpotlightFloorIndexMap.Find(L);
+    if (IndexPtr && FakeSpotlightPairs.IsValidIndex(*IndexPtr))
+    {
+        return &FakeSpotlightPairs(*IndexPtr);
+    }
+    return nullptr;
+}
+
+
 // lightmap stuff
 
 // run on new level to gather list of lights per surface,
@@ -850,6 +1104,19 @@ void UXOpenGLRenderDevice::NewLevelPP()
         debugf(TEXT("new level (mapname) %s"), *MapName);
         // Lookup using filename key
         LevelLightCap = GetLevelLightCap(MapName);
+
+        // build the level's static light list for quick lookup when doing occlusion for movers
+        for (INT ai = 0; ai < LastLevel->Actors.Num(); ++ai)
+        {
+            AActor* A = LastLevel->Actors(ai);
+            if (A && A->IsA(ALight::StaticClass())
+                && !IsDynamicLight(A))
+            {
+                StaticLevelLights.AddItem(A);
+            }
+        }
+
+        DetectFakeSpotlights(LastLevel, StaticLevelLights);
 
         // build lightlist map
 
@@ -899,13 +1166,6 @@ void UXOpenGLRenderDevice::NewLevelPP()
                 ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Bump);
                 ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height);
             }
-        }
-        // build the level's static light list for quick lookup when doing occlusion for movers
-        for (INT ai = 0; ai < LastLevel->Actors.Num(); ++ai)
-        {
-            AActor* A = LastLevel->Actors(ai);
-            if (A && A->IsA(ALight::StaticClass()) && !IsDynamicLight(A))
-                StaticLevelLights.AddItem(A);
         }
     }
 } // end function NewLevelPP

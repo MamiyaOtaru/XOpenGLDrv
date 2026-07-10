@@ -239,7 +239,7 @@ static bool SameSurface(
     return true; // dumb: just checking texture.  good enough
 
     /*
-    // 2. Node membership: is the hit node one of the origin surface’s nodes?
+    // 2. Node membership: is the hit node one of the origin surface's nodes?
     //    (Strongest possible identity test.)
     for (INT i = 0; i < A.Nodes.Num(); ++i)
     {
@@ -248,7 +248,7 @@ static bool SameSurface(
     }
 
     // 3. Plane equivalence:
-    //    Compare the hit node’s plane to ANY node belonging to the origin surface.
+    //    Compare the hit node's plane to ANY node belonging to the origin surface.
     const FBspNode& HitNode = Model->Nodes(HitNodeIndex);
     const FPlane& HitPlane  = HitNode.Plane;
 
@@ -290,7 +290,7 @@ static bool BacktraceEmergesFromOrigin(
     if (!bHit)
         return true; // treat as emerged through origin
 
-    // If we've effectively reached Start, we’re done
+    // If we've effectively reached Start, we're done
     if ((Hit.Location - Start).Size() <= skipMagnitude * 2)
         return true;
 
@@ -570,11 +570,19 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         if (!Light)
             continue;
 
-        float Radius = Light->WorldLightRadius();
+        FakeSpotlightPair* SpotData = GetSpotlightData(Light);
+        bool bIsSpot = (SpotData != nullptr);
+
+        float Radius = bIsSpot ? SpotData->ReachRadius : Light->WorldLightRadius();
         if (Radius <= 0.f)
             continue;
 
-        FVector L = Light->Location - WorldPos;
+        // For spotlights, rays emanate from the ceiling fixture (TopLight)
+        // For normal point lights, use their own location vector
+        FVector TargetLightPos = bIsSpot ? SpotData->TopLight->Location : Light->Location;
+
+        // All vector operations now use TargetLightPos safely!
+        FVector L = TargetLightPos - WorldPos;
         float Dist = L.Size();
         if (Dist <= SMALL_NUMBER)
             continue;
@@ -586,20 +594,6 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         if (NdotL <= 0.f)
             continue;
 
-        // my original formula with inverse-quadratic falloff, which is more physically correct but leads to very dark shadows
-        //float x = Clamp(Dist / Radius, 0.0f, 1.0f);
-        //float Atten = (1.f - x) / (1.f + 4.f * x * x);
-
-        // more closely match linear
-        //float x = Clamp(Dist / Radius, 0.0f, 1.0f);
-        //float Atten = (1.0 - x) * (1.0 + x - x*x);
-        
-        // match the "hardware" path in Unreal
-        /*float RWorldLightRadius = Radius * Radius;
-        float b = Radius / (RWorldLightRadius * .05f);
-        float Atten = Radius / (Dist + b * Dist * Dist);
-        Atten -= 0.05f;*/
-
         // Match the GPU's linear falloff
         float x = Clamp(Dist / Radius, 0.0f, 1.0f);
         float Atten = 1.0f - x;
@@ -610,35 +604,41 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         FPlane RGB;
         if (Light->LightType == LT_TexturePaletteOnce || Light->LightType == LT_TexturePaletteLoop)
         {
-            // For texture lights, just use a shade of white into which we'll mix the vanilla colormap (which this takes over full responsibility for the final color)
-            FLOAT AnimatedBrightness = Light->LightBrightness;// *0.9f;
+            FLOAT AnimatedBrightness = Light->LightBrightness;
             RGB = FPlane(AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, 1.0f);
         }
         else
         {
+            // For spotlights, use enhanced brightness profile values from our detection
+            FLOAT BaseBrightness = bIsSpot ? (FLOAT)SpotData->Brightness : Light->LightBrightness;
             RGB = FGetHSV(
                 Light->LightHue,
                 Light->LightSaturation,
-                Light->LightBrightness
+                (BYTE)BaseBrightness
             );
         }
 
-        /*
-        // --- MIRROR SHADER DESATURATION PASS (DIRECTLY ON LIGHT RGB) ---
-        float lum = 0.299f * RGB.X + 0.587f * RGB.Y + 0.114f * RGB.Z;
-        float maxChannel = Max(RGB.X, Max(RGB.Y, RGB.Z));
-        float saturationMeasure = maxChannel - lum;
-        float desatStrength = 1.12f;
-        float finalMix = Clamp(saturationMeasure * desatStrength, 0.0f, 0.85f);
-        // Apply the mix back directly to the raw light components
-        RGB.X = Lerp(RGB.X, lum, finalMix);
-        RGB.Y = Lerp(RGB.Y, lum, finalMix);
-        RGB.Z = Lerp(RGB.Z, lum, finalMix);
-        // ---------------------------------------------------------------
-        */
+        float ConeFactor = 1.0f;
+        if (bIsSpot)
+        {
+            // FIX: Evaluate cone math extending from the ceiling fixture coordinates down to the sample
+            FVector LightToPixelDir = (WorldPos - TargetLightPos).SafeNormal();
+            float CosAngle = LightToPixelDir | SpotData->SpotDirection;
 
-        // Now apply spatial factors to the cleanly desaturated light color
-        FVector Color = RGB * NdotL * Atten;
+            // Skip entirely if outside outer cone
+            if (CosAngle < SpotData->SpotCosOuter)
+                continue;
+
+            // Calculate falloff (inner-to-outer)
+            if (CosAngle < SpotData->SpotCosInner)
+            {
+                float Range = SpotData->SpotCosInner - SpotData->SpotCosOuter;
+                ConeFactor = Clamp((CosAngle - SpotData->SpotCosOuter) / Max(Range, 0.001f), 0.0f, 1.0f);
+            }
+        }
+
+        // Apply all spatial factors
+        FVector Color = RGB * NdotL * Atten * ConeFactor;
 
         // Always accumulate unshadowed
         Unshadowed.X += Color.X;
@@ -650,17 +650,18 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         if (TwoSided)
             mult = 10.0f;
         if (isMover)
-            mult = 2.0f; // 40 for less likely to be in the surface leads to weirdness around edges
+            mult = 2.0f; 
 
-        // Start slightly off the surface toward the light
+        // Start slightly off the surface toward the light source position
         FVector SamplePos = WorldPos + Basis.Normal * mult;
 
-        bool bUnobstructed = BSPVisibilityRay(Model, iSurf, SamplePos, Light->Location);
+        // FIX: Trace visibility check line directly back up to the ceiling fixture center!
+        bool bUnobstructed = BSPVisibilityRay(Model, iSurf, SamplePos, TargetLightPos);
 
         if (TwoSided)
         {
             SamplePos = WorldPos - Basis.Normal * mult;
-            bUnobstructed = bUnobstructed || BSPVisibilityRay(Model, iSurf, SamplePos, Light->Location);
+            bUnobstructed = bUnobstructed || BSPVisibilityRay(Model, iSurf, SamplePos, TargetLightPos);
         }
 
         if (bUnobstructed)
@@ -671,47 +672,22 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
         }
     }
 
-    // Compute ratio per channel
+    // Compute ratio per channel safely
     const float eps = 0.0001f;
     
-    // Apply the global 1.5xLightMapIntensity engine intensity boost to the sums
     float vanillaLightmapIntensity = 2.0;
-    float hdLightmapIntensity = 2.0; // must match the value in the shader for consistent final results
+    float hdLightmapIntensity = 2.0; 
     Unshadowed.X *= hdLightmapIntensity * vanillaLightmapIntensity;   Unshadowed.Y *= hdLightmapIntensity * vanillaLightmapIntensity;   Unshadowed.Z *= hdLightmapIntensity * vanillaLightmapIntensity;
     Shadowed.X   *= hdLightmapIntensity * vanillaLightmapIntensity;   Shadowed.Y   *= hdLightmapIntensity * vanillaLightmapIntensity;   Shadowed.Z   *= hdLightmapIntensity * vanillaLightmapIntensity;
-    /*
-    float GPU_Threshold = 1.34f; // <- must match the clamp in the shader!
-    // Apply flat Ceiling Pass to total light to preserve channels potential intensity
-    // apply color preserving clamp to final, which is where we want to end up
-    if (Unshadowed.X > GPU_Threshold)
-        Unshadowed.X = GPU_Threshold;
-    if (Unshadowed.Y > GPU_Threshold)
-        Unshadowed.Y = GPU_Threshold;
-    if (Unshadowed.Z > GPU_Threshold)
-        Unshadowed.Z = GPU_Threshold;
 
-    auto clampChannel = [&](float val) {
-        // Standard x / (x + 1) normalized to the 1.34 ceiling
-        float normalized = val / GPU_Threshold;
-        float curved = normalized / (normalized + 1.0f);
-        return curved * GPU_Threshold;
-    };
-
-    Shadowed.X = clampChannel(Shadowed.X);
-    Shadowed.Y = clampChannel(Shadowed.Y);
-    Shadowed.Z = clampChannel(Shadowed.Z);
-    */
-    // Now compute final color-accurate RGB ratio safely
     float FinalR = Shadowed.X / (Unshadowed.X + eps);
     float FinalG = Shadowed.Y / (Unshadowed.Y + eps);
     float FinalB = Shadowed.Z / (Unshadowed.Z + eps);
 
-    // Clamp the final ratios to standard 0.0-1.0 space for texture packing
     FinalR = Clamp(FinalR, 0.0f, 1.0f);
     FinalG = Clamp(FinalG, 0.0f, 1.0f);
     FinalB = Clamp(FinalB, 0.0f, 1.0f);
     
-    // Optional alpha = luminance
     float a = 0.2126f*FinalR + 0.7152f*FinalG + 0.0722f*FinalB;
 
     return FPlane(FinalR, FinalG, FinalB, a);
@@ -838,7 +814,7 @@ enum class EDDSType
 };
 
 // ------------------------------------------------------------
-// Helper: Extract a 4×4 RGBA block with edge clamping
+// Helper: Extract a 4'4 RGBA block with edge clamping
 // ------------------------------------------------------------
 void Extract4x4RGBA(BYTE* out, const TArray<BYTE>& src, INT bx, INT by, INT width, INT height)
 {
@@ -1753,7 +1729,7 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
 
         for (INT y = 0; y < H; ++y)
         {
-            // We’ll loop here until it’s safe to process this row
+            // We'll loop here until it's safe to process this row
             for (;;)
             {
                 ULevel* FrameLevel = GFrameLevel.load(std::memory_order_acquire);
@@ -1765,7 +1741,7 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
                         return;
 
                     std::this_thread::yield();
-                    continue; // stay on the same y, don’t enter BSP, don’t touch the level - continue goes back to the for (;;)
+                    continue; // stay on the same y, don't enter BSP, don't touch the level - continue goes back to the for (;;)
                 }
 
                 // Case 2: level changed: abort this surface/job
@@ -1780,14 +1756,14 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
                 // Re-check after increment to catch races with Unlock/level change
                 FrameLevel = GFrameLevel.load(std::memory_order_acquire);
 
-                // Still the same level: we’re good, break out and do the row
+                // Still the same level: we're good, break out and do the row
                 if (FrameLevel == Level)
                     break;
 
                 // Not the same anymore: back out of the danger zone
                 GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
 
-                // If it’s nullptr now, we just slipped between frames: pause and retry this row
+                // If it's nullptr now, we just slipped between frames: pause and retry this row
                 if (FrameLevel == nullptr)
                 {
                     if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
@@ -2274,7 +2250,7 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
         appMemzero(AtlasData, AtlasSizeBytes);
     }
 
-    // Fill the job’s shared queue
+    // Fill the job's shared queue
     {
         std::lock_guard<std::mutex> lock(OcclusionJob.QueueMutex);
         while (!OcclusionJob.PendingSurfaces.empty())
@@ -2301,7 +2277,7 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
     // Start the job (binds owner + level + resets abort)
     OcclusionJob.Start(this, Level);
 
-    // Spawn worker threads (they’ll run WorkerLoop())
+    // Spawn worker threads (they'll run WorkerLoop())
     int numThreads = std::thread::hardware_concurrency() - 1; // leave room for the game
     OcclusionJob.StartThreads(numThreads);
 
@@ -2313,7 +2289,7 @@ void UXOpenGLRenderDevice::BuildingPoll()
     if (OcclusionJob.IsRunning())
     {
         StatusMessage = FString::Printf(
-            TEXT("Generating occlusion maps… %d / %d\n(This is a one-time process for this level)"),
+            TEXT("Generating occlusion maps' %d / %d\n(This is a one-time process for this level)"),
             ProgressDone.load(), ProgressTotal
         );
     }

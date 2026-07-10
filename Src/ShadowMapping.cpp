@@ -59,20 +59,42 @@ static bool IsPointVisibleFromLight(UModel* Model, const FVector& LightLoc, cons
 // ------------------------------------------------------------
 static float ComputeSpatialRelevance(UModel* Model, ALight* L, const TArray<FVector>& NavPoints)
 {
-    float Radius = L->WorldLightRadius();
+    // Fetch custom sideloaded spotlight parameters
+    UXOpenGLRenderDevice::FakeSpotlightPair* SpotData = UXOpenGLRenderDevice::GetSpotlightData(L);
+    bool bIsSpot = (SpotData != nullptr);
+
+    // Read the correct physical reach radius
+    float Radius = bIsSpot ? SpotData->ReachRadius : L->WorldLightRadius();
     if (Radius <= 0.001f) return 0.0f;
+
+    // Shift the evaluation center to the ceiling fixture coordinates for spotlights
+    FVector EvaluationSourcePos = bIsSpot ? SpotData->TopLight->Location : L->Location;
 
     float TotalIllumination = 0.0f;
 
     for (INT i = 0; i < NavPoints.Num(); ++i)
     {
         const FVector& P = NavPoints(i);
-        float Dist = (L->Location - P).Size();
+        
+        // --- SPOTLIGHT CONE CUTOFF GATE ---
+        if (bIsSpot)
+        {
+            FVector LightToNodeDir = (P - EvaluationSourcePos).SafeNormal();
+            float CosAngle = LightToNodeDir | SpotData->SpotDirection;
+
+            // If the navigation point is outside the outer cone boundary, completely ignore it!
+            if (CosAngle < SpotData->SpotCosOuter)
+                continue;
+        }
+
+        // Measure distance from the true virtual illumination source point
+        float Dist = (EvaluationSourcePos - P).Size();
 
         if (Dist < Radius)
         {
             // First check line-of-sight to ensure it isn't bleeding through solid BSP walls
-            if (!IsPointVisibleFromLight(Model, L->Location, P))
+            // Placing this after the cone check saves massive CPU cycles!
+            if (!IsPointVisibleFromLight(Model, EvaluationSourcePos, P))
                 continue;
 
             // Linear attenuation matching the rendering pipeline
@@ -93,78 +115,41 @@ static float ComputeSpatialRelevance(UModel* Model, ALight* L, const TArray<FVec
 // ------------------------------------------------------------
 static float ComputeHeroBaseScore(UModel* Model, ALight* L, const TArray<FVector>& NavPoints)
 {
-    float Radius = L->WorldLightRadius();
+    UXOpenGLRenderDevice::FakeSpotlightPair* SpotData = UXOpenGLRenderDevice::GetSpotlightData(L);
+    bool bIsSpot = (SpotData != nullptr);
+
+    float Radius = bIsSpot ? SpotData->ReachRadius : L->WorldLightRadius();
     
-    // Calculate Perceptual Luminance
-    float Brightness = L->LightBrightness / 255.0f;
-    FPlane RGB = FGetHSV(L->LightHue, L->LightSaturation, L->LightBrightness);
+    // 1. Calculate Perceptual Luminance using the spotlight's enhanced brightness
+    float BaseBrightness = bIsSpot ? (float)SpotData->Brightness : (float)L->LightBrightness;
+    float Brightness = BaseBrightness / 255.0f;
+
+    FPlane RGB = FGetHSV(L->LightHue, L->LightSaturation, (BYTE)BaseBrightness);
     float Lum = 0.299f * Clamp(RGB.X/255.0f, 0.f, 1.f) + 
                 0.587f * Clamp(RGB.Y/255.0f, 0.f, 1.f) + 
                 0.114f * Clamp(RGB.Z/255.0f, 0.f, 1.f);
     float BrightnessFactor = Max(Lum, Brightness);
 
+    // 2. Spatial Relevance Pass (Tracks how many floor nav nodes it actively touches)
     float Relevance = ComputeSpatialRelevance(Model, L, NavPoints);
     if (Relevance <= 0.0f) return 0.0f;
 
-    // Radius squared gives geometric weight to large area coverage
-    return (Radius * Radius) * BrightnessFactor * Relevance;
-}
+    // 3. Compute Base Area Score
+    float BaseScore = (Radius * Radius) * BrightnessFactor * Relevance;
 
-// ------------------------------------------------------------
-// Attempt to exclude the bottom point light in a fake spotlight pair
-// ------------------------------------------------------------
-static bool IsFakeSpotlightFloorLight(
-    ALight* L1,
-    const TArray<AActor*>& AllLights,
-    UModel* Model)
-{
-    // --- 1. Must be near the floor ---
-    FVector Down = L1->Location + FVector(0,0,-48);
-    bool HasFloor = !UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, L1->Location, Down);
-
-    if (!HasFloor)
-        return false; // not near the ground
-
-    // --- 2. Find a vertically stacked partner above ---
-    for (INT i = 0; i < AllLights.Num(); ++i)
+    // --- SOLID ANGLE VOLUME ADJUSTMENT ---
+    if (bIsSpot)
     {
-        ALight* L2 = Cast<ALight>(AllLights(i));
-        if (!L2 || L2 == L1) continue;
-
-        // Rough XY alignment.  12 is too tight for Deck
-        if (Abs(L1->Location.X - L2->Location.X) > 16.f) continue;
-        if (Abs(L1->Location.Y - L2->Location.Y) > 16.f) continue;
-
-        // Must be above
-        if (L2->Location.Z <= L1->Location.Z) continue;
-
-        // --- 3. Colors must match closely ---
-        FPlane C1 = FGetHSV(L1->LightHue, L1->LightSaturation, L1->LightBrightness);
-        FPlane C2 = FGetHSV(L2->LightHue, L2->LightSaturation, L2->LightBrightness);
-
-        float ColorDist =
-            Abs(C1.X - C2.X) +
-            Abs(C1.Y - C2.Y) +
-            Abs(C1.Z - C2.Z);
-
-        if (ColorDist > 20.f) continue;
-
-        // --- 4. Must have unobstructed line-of-sight ---
-        if (!UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, L1->Location, L2->Location))
-            continue;
-
-        // --- 5. Upper light must NOT be near the floor ---
-        FVector Down2 = L2->Location + FVector(0,0,-128);
-        bool UpperHasFloor = !UXOpenGLRenderDevice::BSPVisibilityRay(Model, -1, L2->Location, Down2);
-
-        if (UpperHasFloor)
-            continue; // upper is TOO near floor
+        // Attenuates the inflated Radius*Radius weight by the true physical cone volume slice
+        float ConeCoverageRatio = 0.5f * (1.0f - SpotData->SpotCosOuter);
         
-        // If we reach here, L1 is a fake spotlight floor light
-        return true;
+        // Safe floor clamp so razor-sharp spot beams don't vanish from the ranker entirely
+        ConeCoverageRatio = Clamp(ConeCoverageRatio, 0.02f, 0.5f);
+        
+        BaseScore *= ConeCoverageRatio;
     }
 
-    return false;
+    return BaseScore;
 }
 
 // ------------------------------------------------------------
@@ -199,8 +184,7 @@ void UXOpenGLRenderDevice::PickHeroLights(
         if (L->WorldLightRadius() < 128.0f) continue; // Raised slightly to ignore tiny trim lights
         if (L->LightBrightness < 32) continue;
         if (L->bSpecialLit) continue;
-        if (IsFakeSpotlightFloorLight(L, StaticLevelLights, Level->Model))
-            continue;
+        if (UXOpenGLRenderDevice::IsFakeSpotlightCeilingToExclude(L)) continue;
 
         float BaseScore = ComputeHeroBaseScore(Level->Model, L, NavPoints);
         if (BaseScore <= 0.0f) continue; // Disqualified

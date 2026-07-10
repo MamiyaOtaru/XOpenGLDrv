@@ -192,11 +192,12 @@ layout(std140) uniform FrameState
 // Light information -- use SSBO so MAX_LIGHTS can exceed UBO limits.
 layout(std430, binding = )" << GlobalShaderBindingIndices::LightInfoIndex << R"() buffer LightInfo
 {  
-  vec4 LightData1[MAX_LIGHTS]; // LightColor.R, LightColor.G, LightColor.B, LightCone
+  vec4 LightData1[MAX_LIGHTS]; // LightColor.R, LightColor.G, LightColor.B, LightCone OR SpotCosInner (if spot)
   vec4 LightData2[MAX_LIGHTS]; // LightEffect, LightPeriod, LightPhase, LightRadius
   vec4 LightData3[MAX_LIGHTS]; // LightType, VolumeBrightness, VolumeFog, VolumeRadius
-  vec4 LightData4[MAX_LIGHTS]; // WorldLightRadius, NumLights, ZoneNumber, CameraRegion->ZoneNumber
-  vec4 LightData5[MAX_LIGHTS]; // NormalLightRadius, bZoneNormalLight, LightBrightness, unused
+  vec4 LightData4[MAX_LIGHTS]; // Custom ReachRadius OR WorldLightRadius, NumLights, ZoneNumber, CameraRegion->ZoneNumber
+  vec4 LightData5[MAX_LIGHTS]; // NormalLightRadius, bIsSpotlight (1.0 or 0.0), Bindless Handle LowerBits, Bindless Handle UpperBits
+  vec4 LightData6[MAX_LIGHTS]; // Spotlight Direction Vector (XYZ), Spotlight SpotCosOuter Angle Limit (W)
   vec4 LightPos[MAX_LIGHTS];
 };
 )";
@@ -207,11 +208,12 @@ layout(std430, binding = )" << GlobalShaderBindingIndices::LightInfoIndex << R"(
 // Light information fallback for potatos.
 layout(std140) uniform LightInfo
 {  
-  vec4 LightData1[MAX_LIGHTS]; // LightColor.R, LightColor.G, LightColor.B, LightCone
+  vec4 LightData1[MAX_LIGHTS]; // LightColor.R, LightColor.G, LightColor.B, LightCone OR SpotCosInner (if spot)
   vec4 LightData2[MAX_LIGHTS]; // LightEffect, LightPeriod, LightPhase, LightRadius
   vec4 LightData3[MAX_LIGHTS]; // LightType, VolumeBrightness, VolumeFog, VolumeRadius
-  vec4 LightData4[MAX_LIGHTS]; // WorldLightRadius, NumLights, ZoneNumber, CameraRegion->ZoneNumber
-  vec4 LightData5[MAX_LIGHTS]; // NormalLightRadius, bZoneNormalLight, LightBrightness, unused
+  vec4 LightData4[MAX_LIGHTS]; // Custom ReachRadius OR WorldLightRadius, NumLights, ZoneNumber, CameraRegion->ZoneNumber
+  vec4 LightData5[MAX_LIGHTS]; // NormalLightRadius, bIsSpotlight (1.0 or 0.0), Bindless Handle LowerBits, Bindless Handle UpperBits
+  vec4 LightData6[MAX_LIGHTS]; // Spotlight Direction Vector (XYZ), Spotlight SpotCosOuter Angle Limit (W)
   vec4 LightPos[MAX_LIGHTS];
 };
 )";

@@ -446,6 +446,7 @@
     <ClInclude Include="..\Inc\XOpenGLTemplate.h" />
     <ClInclude Include="..\Inc\GLStateManager.h" />
     <ClInclude Include="..\Inc\HeroLight.h" />
+    <ClInclude Include="PerPixel.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>

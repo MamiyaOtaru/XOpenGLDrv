@@ -404,6 +404,37 @@ namespace GLStateManager {
                 params[0] = blendDstFunc;
                 return;
 
+            case GL_DEPTH_FUNC:
+                params[0] = depthFunction;
+                return;
+
+            case GL_DEPTH_WRITEMASK:
+                params[0] = depthWriteMask;
+                return;
+
+            case GL_BLEND_EQUATION:
+                params[0] = blendEquationRGB;
+                return;
+
+            case GL_BLEND_EQUATION_ALPHA:
+                params[0] = blendEquationAlpha;
+                return;
+
+            case GL_STENCIL_TEST:
+                params[0] = (stencilEnabled == GL_TRUE) ? 1 : 0;
+                return;
+
+            case GL_SCISSOR_TEST:
+                params[0] = (scissorEnabled == GL_TRUE) ? 1 : 0;
+                return;
+
+            case GL_COLOR_WRITEMASK:
+                params[0] = colorMaskR;
+                params[1] = colorMaskG;
+                params[2] = colorMaskB;
+                params[3] = colorMaskA;
+                return;
+
             default:
                 // Hardware fallback for un-cached matrix or specialized parameters
                 (glad_glGetIntegerv)(pName, params);

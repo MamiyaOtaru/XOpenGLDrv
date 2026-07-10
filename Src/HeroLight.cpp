@@ -17,6 +17,28 @@ UXOpenGLHeroLight::UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<
 
     UModel* Model = Level->Model;
 
+    // Check if our device registers this specific actor handle as an upgraded floor light!
+    UXOpenGLRenderDevice::FakeSpotlightPair* SpotData = UXOpenGLRenderDevice::GetSpotlightData(InLight);
+    
+    if (SpotData != nullptr)
+    {
+        bIsSpotlight   = TRUE;
+        SpotDirection  = SpotData->SpotDirection;
+        SpotCosOuter   = SpotData->SpotCosOuter;
+        SpotCosInner   = SpotData->SpotCosInner;
+        ReachRadius    = SpotData->ReachRadius;
+        SourceLocation = SpotData->TopLight->Location;
+    }
+    else
+    {
+        bIsSpotlight   = FALSE;
+        SpotDirection  = FVector(0.f, 0.f, 0.f);
+        SpotCosOuter   = -1.0f;
+        SpotCosInner   = -1.0f;
+        ReachRadius    = InLight->WorldLightRadius(); // Fallback to standard point radius
+        SourceLocation = InLight->Location; // Standard point lights emanate from themselves
+    }
+
     // Automatically map affected BSP surfaces immediately upon object creation
     for (INT SurfIndex = 0; SurfIndex < Model->Surfs.Num(); ++SurfIndex)
     {
@@ -73,25 +95,28 @@ UXOpenGLHeroLight::~UXOpenGLHeroLight()
     if (ShadowFbo) delete ShadowFbo;
 }
 
-// Static direction vectors mapped to UE1's unique camera axis layout!
-// Array maps sequentially to: +X, -X, +Y, -Y, +Z, -Z
+// Cubemap face directions in OpenGL space.
+// ALSO annotated with what they correspond to in UE1 world space.
+//
+// Cubemap order: +X, -X, +Y, -Y, +Z, -Z
+// UE1 axes: X=fwd, Y=right, Z=up
 const FVector FaceDirs[6] = {
-    FVector(1, 0, 0), // Index 0: Now maps to Left Face (-X)  -> Fixes the horizontal flip
-    FVector(-1, 0, 0),  // Index 1: Now maps to Right Face (+X) -> Fixes the horizontal flip
-    FVector(0, -1, 0),  // Index 2: Bottom Face (+Y)
-    FVector(0, 1, 0), // Index 3: Top Face (-Y)
-    FVector(0, 0, 1),  // Index 4: Forward Face (+Z)
-    FVector(0, 0, -1)  // Index 5: Backward Face (-Z)
+    FVector( 1,  0,  0), // +X  (cubemap right)   -> UE1 forward
+    FVector(-1,  0,  0), // -X  (cubemap left)    -> UE1 backward
+    FVector( 0, -1,  0), // +Y  (cubemap up)      -> UE1 right
+    FVector( 0,  1,  0), // -Y  (cubemap down)    -> UE1 left
+    FVector( 0,  0,  1), // +Z  (cubemap forward) -> UE1 DOWN
+    FVector( 0,  0, -1)  // -Z  (cubemap back)    -> UE1 UP
 };
 
-// Swap the corresponding Up vectors to keep the camera axes aligned with the new positions
+// Up vectors for each cubemap face (OpenGL space)
 const FVector FaceUps[6] = {
-    FVector(0, -1, 0), // Up for Index 0 (Left)
-    FVector(0, -1, 0), // Up for Index 1 (Right)
-    FVector(0, 0, -1),  // Up for Index 2 (Bottom)
-    FVector(0, 0, 1), // Up for Index 3 (Top)
-    FVector(0, -1, 0), // Up for Index 4 (Forward)
-    FVector(0, -1, 0)  // Up for Index 5 (Backward)
+    FVector(0, -1,  0), // +X face
+    FVector(0, -1,  0), // -X face
+    FVector(0,  0, -1), // +Y face
+    FVector(0,  0,  1), // -Y face
+    FVector(0, -1,  0), // +Z face (UE1 DOWN spotlight)
+    FVector(0, -1,  0)  // -Z face (UE1 UP)
 };
 
 FMatrix MakeLookAt(const FVector& Eye, const FVector& ForwardDir, const FVector& UpDir)
@@ -212,6 +237,14 @@ void UXOpenGLHeroLight::PartitionBSPSurfaces(UModel* Model, UXOpenGLRenderDevice
     for (INT f = 0; f < 6; ++f)
     {
         AffectedFaceBSPSurfaces[f].Empty();
+    }
+
+    // --- OPTIMIZATION BYPASS FOR VERTICAL CONES ---
+    if (bIsSpotlight)
+    {
+        // Straight-down cones unconditionally dump all pre-filtered surfaces directly into Face 0
+        AffectedFaceBSPSurfaces[4] = AffectedBSPSurfaces;
+        return; 
     }
 
     FLOAT Radius   = LightActor->WorldLightRadius();
@@ -375,10 +408,10 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
      guard(UXOpenGLHeroLight::RenderFaceGeometry);
 
     // Light-space camera configuration
-    FVector Eye        = LightActor->Location;
+    FVector Eye        = SourceLocation;
     const FVector& Dir = FaceDirs[FaceIndex];
     const FVector& Up  = FaceUps[FaceIndex];
-    FLOAT Radius       = LightActor->WorldLightRadius();
+    FLOAT Radius       = ReachRadius;
 
     FMatrix ViewMatrix = MakeLookAt(Eye, Dir, Up);
     FMatrix ProjMatrix = MakePerspective(90.0f, 1.0f, 8.0f, Radius);
@@ -476,12 +509,41 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 
     ULevel* Level = Frame->Level;
 
-    FLOAT Radius   = LightActor->WorldLightRadius();
+    FLOAT Radius   = bIsSpotlight ? ReachRadius : LightActor->WorldLightRadius();
     FLOAT RadiusSq = Radius * Radius;
 
     CurrentFaceMask = 0;
 
-    if (!Frame || !SphereInFrustum(Frame, LightActor->Location, Radius))
+    // --- TRANSLATE BOUNDING SPHERE FOR VERTICAL CONES ---
+    FVector EvaluationFrustumCenter = LightActor->Location;
+    FLOAT   EvaluationFrustumRadius = Radius;
+
+    if (bIsSpotlight)
+    {
+        // Protect against zero division for a theoretical edge-case 90-degree half-angle
+        FLOAT SafeCos = Max(SpotCosOuter, 0.1f);
+        
+        // The mathematically perfect bounding sphere radius factor for a cone:
+        // SphereRadius = ReachRadius / (2.0 * Cos^2)
+        FLOAT SphereRadiusFactor = 1.0f / (2.0f * SafeCos * SafeCos);
+
+        // If the angle is very wide (theta > 45 degrees, i.e., Cos < 0.707), 
+        // the sphere center shifts entirely to the base, and its radius is the base radius.
+        if (SafeCos < 0.7071f)
+        {
+            FLOAT TanTheta = appSqrt(1.0f - (SafeCos * SafeCos)) / SafeCos;
+            EvaluationFrustumRadius = ReachRadius * TanTheta;
+            EvaluationFrustumCenter = SourceLocation + (SpotDirection * ReachRadius);
+        }
+        else
+        {
+            // Perfect bounding sphere for standard tight spotlight beams!
+            EvaluationFrustumRadius = ReachRadius * SphereRadiusFactor;
+            EvaluationFrustumCenter = SourceLocation + (SpotDirection * (ReachRadius * SphereRadiusFactor));
+        }
+    }
+
+    if (!Frame || !SphereInFrustum(Frame, EvaluationFrustumCenter, EvaluationFrustumRadius))
         return;
 
     // =========================================================================
@@ -572,9 +634,21 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
         if (A->DrawType != DT_Mesh && A->DrawType != DT_Brush) continue;
         if (A->Style != STY_Normal) continue;
 
-        FVector ToActor = A->Location - LightActor->Location;
+        // sourceLocation being where the light is for point lights, or the location of the upper light in spotlight pairs (set in constructor)
+        FVector ToActor = A->Location - SourceLocation;
         if (ToActor.SizeSquared() < RadiusSq)
         {
+            // --- CONE ANGLE CUTOFF GATE FOR LIVE ACTORS ---
+            if (bIsSpotlight)
+            {
+                FVector DirNorm = ToActor.SafeNormal();
+                float CosAngle = DirNorm | SpotDirection;
+                
+                // Drop the actor early before computing deep face metrics
+                if (CosAngle < SpotCosOuter)
+                    continue;
+            }
+
             CachedActorState State;
             State.Actor          = A;
             State.ActorIndex     = A->GetIndex();
@@ -584,13 +658,24 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
             State.bIsStaticMesh  = IsStaticMesh(A); // Classify immediately
             State.FaceMask       = 0;
 
-            FVector Dir = ToActor.SafeNormal();
-            for (INT f = 0; f < 6; ++f)
+            if (bIsSpotlight)
             {
-                if ((Dir | -FaceDirs[f]) > -0.2f)
+                // Spotlights explicitly lock onto Face 3 (Negative Y / Bit 3)
+                // already know it is within the cone (checked above)
+                State.FaceMask  |= (1 << 4);
+                CurrentFaceMask |= (1 << 4);
+            }
+            else
+            {
+                // Standard traditional Point Light cubemap mapping
+                FVector Dir = ToActor.SafeNormal();
+                for (INT f = 0; f < 6; ++f)
                 {
-                    State.FaceMask |= (1 << f);
-                    CurrentFaceMask |= (1 << f);
+                    if ((Dir | -FaceDirs[f]) > -0.2f)
+                    {
+                        State.FaceMask  |= (1 << f);
+                        CurrentFaceMask |= (1 << f);
+                    }
                 }
             }
             CurrentFrameActors.AddItem(State);
@@ -664,7 +749,7 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
     LastFrameActors   = CurrentFrameActors;
     LastFrameFaceMask = CurrentFaceMask;
     LastRadius        = Radius;
-    LastLocation      = LightActor->Location;
+    LastLocation      = SourceLocation;
 
     if (ChangedFaceMask == 0)
         return;

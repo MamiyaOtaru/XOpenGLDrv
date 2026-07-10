@@ -862,6 +862,37 @@ return;
       if (dist > WorldLightRadius)
         continue;
 
+      // --- RUNTIME SPOTLIGHT CONE EVALUATION ---
+      float coneFactor = 1.0f;
+      
+      // Check if LightData6 contains an active spotlight configuration
+      if (LightData6[i].w > -0.99f)
+      {
+          // Reconstruct the true world-space direction vector from the light to this pixel position
+          // because vCoords and InLightPos are calculated in View space.
+          vec3 X = FrameCoords[1].xyz; vec3 Y = FrameCoords[2].xyz; vec3 Z = FrameCoords[3].xyz;
+          mat3 ViewToWorld = mat3(X, Y, Z);
+          vec3 pixelWorldPos = FrameCoords[0].xyz + ViewToWorld * vCoords;
+
+          vec3 lightToPixelWS = normalize(pixelWorldPos - LightPos[i].xyz);
+          vec3 spotDirWS      = normalize(LightData6[i].xyz);
+
+          float fragAngleCos = dot(lightToPixelWS, spotDirWS);
+          float cosOuter     = LightData6[i].w;
+          float cosInner     = LightData1[i].w; // Using the repurposed LightCone slot
+
+          // Completely outside the spotlight beam? Drop the light instantly!
+          if (fragAngleCos < cosOuter)
+              continue;
+
+          // Penumbra smooth edge interpolation
+          if (fragAngleCos < cosInner)
+          {
+              float range = cosInner - cosOuter;
+              coneFactor = clamp((fragAngleCos - cosOuter) / max(range, 0.001f), 0.0f, 1.0f);
+          }
+      }
+
       vec3 originVS = vec3(vCoords.x, vCoords.y, vCoords.z);
       vec3 lightPosVS = vec3(InLightPos.x, InLightPos.y, InLightPos.z);
       
@@ -911,25 +942,18 @@ return;
         }
       }
 #endif    
-
-      //float NormalLightRadius  = LightData5[i].x;
-      // attenuation that fades out by radius.  worldLightRadius looks better here
-      //float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
-      //float attenuation = (1.0 - x) / (1.0 + 4.0 * x*x);
-
-      // literally linear
+      // literally linear attenuation
       float x = clamp(dist / WorldLightRadius, 0.0, 1.0);
-      float attenuation = 1.0 - x;
-
-      // mix in shadowmap result, if any
-      attenuation;
+      float attenuation = (1.0 - x) * coneFactor; // cone factor for spotlights
 
       // Light color + brightness
       vec3 rawColor = clamp(vec3(LightData1[i].x, LightData1[i].y, LightData1[i].z), 0.0, 1.0);
       float lum = dot(rawColor, vec3(0.299, 0.587, 0.114));
     
-      float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0.  (unless I pass Actor->LightBrightness like Unreal path does.  Why not?)
-      float brightnessFactor = max(lum, brightness); // so in UT this == lum, but in Unreal it allows the light's brightness to boost the diffuse and specular even if the color is dark
+      // LightData5[i].z has been repurposed for the herolight bindless texture handle (lower half).  if this is to run in Unreal will need to refactor all of that
+      //float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0.  (unless I pass Actor->LightBrightness like Unreal path does.  Why not?)
+      //float brightnessFactor = max(lum, brightness); // so in UT this == lum, but in Unreal it allows the light's brightness to boost the diffuse and specular even if the color is dark
+      float brightnessFactor = lum;
 
       // Choose normal / coordinate space based on whether we have a normal map
       vec3 N;
@@ -1037,7 +1061,8 @@ return;
     } // end if there are lights
   }
 #endif
-
+    )";
+    Out << R"(
   vec4 FogColor = vec4(0.0);
 
   if ((DrawFlags & DF_FogMap) == DF_FogMap)

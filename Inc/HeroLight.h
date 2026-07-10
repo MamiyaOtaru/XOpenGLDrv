@@ -38,6 +38,14 @@ private:
     TArray<BYTE> AffectedZones;
     TArray<INT> AffectedBSPSurfaces;
     TArray<INT> AffectedFaceBSPSurfaces[6];
+    
+    // --- SPOTLIGHT ARCHITECTURE EXTENSION ---
+    UBOOL   bIsSpotlight;       // Dynamic shape flag
+    FVector SpotDirection;      // Clamped vector pointing down
+    FLOAT   SpotCosOuter;       // Outer penumbra cosine cut
+    FLOAT   SpotCosInner;       // Inner hotspot cosine cut
+    FLOAT   ReachRadius;
+    FVector SourceLocation;
 
     // internal helper to assign surfaces to faces of the cubemap
     void UXOpenGLHeroLight::PartitionBSPSurfaces(UModel* Model, UXOpenGLRenderDevice* GL);
@@ -67,6 +75,12 @@ public:
 
     GLuint64 GetBindlessMaskHandle() const { return BindlessMaskHandle; }
     UBOOL HasActiveShadowMap() const { return (ShadowFbo != nullptr && BindlessMaskHandle != 0 && CurrentFaceMask > 0); }
+
+    // --- DYNAMIC PROPERTY LOOKUPS --- (unsure if needed yet)
+    /*UBOOL IsSpotlight() const { return bIsSpotlight; }
+    FLOAT GetSpotCosOuter() const { return SpotCosOuter; }
+    FLOAT GetSpotCosInner() const { return SpotCosInner; }
+    FVector GetSpotDirection() const { return SpotDirection; }*/
 
     void ClearShadowMapTexture();
 

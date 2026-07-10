@@ -1984,7 +1984,26 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		for (INT i = 0; i < NumLights; i++)
 		{
 			auto Actor = LightList(i);
-			LightData->LightPos[i] = glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
+			FakeSpotlightPair* SpotData = GetSpotlightData(Actor);
+			bool bIsSpot = (SpotData != nullptr);
+
+			// Use custom calculated radius for spotlights, fallback to original engine radius otherwise
+			FLOAT FinalRadius = bIsSpot ? SpotData->ReachRadius : Actor->WorldLightRadius();
+
+			if (bIsSpot)
+			{
+				// --- POSITION OVERRIDE ---
+				// Ground light actor represents the spotlight, but its rays emanate from the ceiling fixture!
+				LightData->LightPos[i] = glm::vec4(SpotData->TopLight->Location.X, 
+												   SpotData->TopLight->Location.Y, 
+												   SpotData->TopLight->Location.Z, 
+												   1.f);
+			}
+			else
+			{
+				// Standard path
+				LightData->LightPos[i] = glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
+			}
 
 			GLuint64 MaskHandle = 0; // Default: 0 means no bindless shadow map
 			if (ShadowMaps)
@@ -2105,7 +2124,10 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 					break;
 			}
 
-			BYTE AnimatedBrightness = (BYTE)Clamp(appRound((FLOAT)Actor->LightBrightness * FlickerScale), 0, 255);
+			// Re-calculate AnimatedBrightness based on custom base intensity (of spotlight if applicable)
+			FLOAT BaseBrightness = bIsSpot ? (FLOAT)SpotData->Brightness : (FLOAT)Actor->LightBrightness;
+			BYTE AnimatedBrightness = (BYTE)Clamp(appRound(BaseBrightness * FlickerScale), 0, 255);
+
 			// Final RGB always comes from HSV
 			FPlane RGBColor;
 			if (false && IsHeroLight(Actor, HeroLights))
@@ -2134,7 +2156,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			LightData->LightData3[i] = glm::vec4(Actor->LightType, Actor->VolumeBrightness, Actor->VolumeFog, Actor->VolumeRadius);
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
-			LightData->LightData4[i] = glm::vec4(Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f));
+			LightData->LightData4[i] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f));
 			// --- SAFE TO STUFF: UT-only path utilizes the dead Z and W components perfectly! ---
 			LightData->LightData5[i] = glm::vec4(
 				Actor->LightRadius * 10, 
@@ -2143,9 +2165,26 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 				*reinterpret_cast<float*>(&UpperBits)  // Type pun bitcast into W
 			);
 #else
-			LightData->LightData4[i] = glm::vec4(Actor->WorldLightRadius(), NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
+			LightData->LightData4[i] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
 			LightData->LightData5[i] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
 #endif
+		// --- POPULATE THE NEW SPOTLIGHT PROPERTY CHANNELS ---
+		if (bIsSpot)
+		{
+			LightData->LightData6[i] = glm::vec4(
+				SpotData->SpotDirection.X,
+				SpotData->SpotDirection.Y,
+				SpotData->SpotDirection.Z,
+				SpotData->SpotCosOuter
+			);
+			// Overwrite the LightCone tracking dimension within LightData1 so your shader has inner cone values
+			LightData->LightData1[i].w = SpotData->SpotCosInner;
+		}
+		else
+		{
+			// Safe baseline fallbacks for regular lights
+			LightData->LightData6[i] = glm::vec4(0.0f, 0.0f, 0.0f, -1.0f);
+		}
 
 			CurrentLightToIndex.Set(LightList(i), static_cast<GLuint>(i));
 		}
