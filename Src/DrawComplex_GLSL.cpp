@@ -549,27 +549,36 @@ float GetSoftActorShadow(samplerCube shadowMap, vec3 sampleDir)
 {
     vec3 N_Dir = normalize(sampleDir);
 
-    // 1. Establish a fast tangent plane perpendicular to the lookup ray
+    // Establish a fast tangent plane perpendicular to the lookup ray
     // This ensures our PCF offsets expand flatly along the cubemap face plane
     vec3 up = (abs(N_Dir.z) < 0.999) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
     vec3 tangent = normalize(cross(up, N_Dir));
     vec3 bitangent = cross(N_Dir, tangent);
 
-    // 2. Define a standard 4-tap diamond offset pattern
-    vec3 offset0 = ( tangent *  1.0 + bitangent *  1.0) * SHADOW_FILTER_RADIUS;
-    vec3 offset1 = (-tangent *  1.0 + bitangent *  1.0) * SHADOW_FILTER_RADIUS;
-    vec3 offset2 = ( tangent *  1.0 - bitangent *  1.0) * SHADOW_FILTER_RADIUS;
-    vec3 offset3 = (-tangent *  1.0 - bitangent *  1.0) * SHADOW_FILTER_RADIUS;
+    // Define an optimized 9-Tap Poisson Disk Pattern
+    vec2 poissonDisk[9] = vec2[](
+        vec2(-0.613392,  0.617481),
+        vec2( 0.170019, -0.040254),
+        vec2(-0.299417,  0.791925),
+        vec2( 0.645680,  0.493210),
+        vec2(-0.651784, -0.324416),
+        vec2( 0.424220, -0.681817),
+        vec2( 0.715560, -0.198350),
+        vec2(-0.111405, -0.540130),
+        vec2(-0.024212,  0.134105)
+    );
 
-    // 3. Accumulate classification values (alpha channel contains capsule splats and static meshes)
     float shadowSample = 0.0;
-    shadowSample += texture(shadowMap, N_Dir + offset0).a;
-    shadowSample += texture(shadowMap, N_Dir + offset1).a;
-    shadowSample += texture(shadowMap, N_Dir + offset2).a;
-    shadowSample += texture(shadowMap, N_Dir + offset3).a;
 
-    // 4. Return the averaged shadow factor (0.0 = fully occluded, 1.0 = fully unshadowed)
-    return 1.0 - (shadowSample * 0.25);
+    // Sweep the randomized sampling disk through your pre-computed alpha mask
+    for (int i = 0; i < 9; ++i)
+    {
+        vec3 offsetWS = (tangent * poissonDisk[i].x + bitangent * poissonDisk[i].y) * SHADOW_FILTER_RADIUS;
+        shadowSample += texture(shadowMap, N_Dir + offsetWS).a;
+    }
+
+    // Return the averaged shadow factor (0.0 = fully occluded, 1.0 = fully unshadowed)
+    return 1.0 - (shadowSample / 9.0);
 }
 #endif
 vec3 applyReinhard(vec3 color, float threshold) {
