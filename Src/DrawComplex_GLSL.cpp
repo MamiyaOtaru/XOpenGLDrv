@@ -869,7 +869,6 @@ return;
       if (LightData6[i].w > -0.99f)
       {
           // Reconstruct the true world-space direction vector from the light to this pixel position
-          // because vCoords and InLightPos are calculated in View space.
           vec3 X = FrameCoords[1].xyz; vec3 Y = FrameCoords[2].xyz; vec3 Z = FrameCoords[3].xyz;
           mat3 ViewToWorld = mat3(X, Y, Z);
           vec3 pixelWorldPos = FrameCoords[0].xyz + ViewToWorld * vCoords;
@@ -885,12 +884,23 @@ return;
           if (fragAngleCos < cosOuter)
               continue;
 
-          // Penumbra smooth edge interpolation
+          // Penumbra smooth edge interpolation in Pure Cosine Space
           if (fragAngleCos < cosInner)
           {
               float range = cosInner - cosOuter;
-              coneFactor = clamp((fragAngleCos - cosOuter) / max(range, 0.001f), 0.0f, 1.0f);
+              float cosineGradient = (fragAngleCos - cosOuter) / max(range, 0.001f);
+              float baseCone = clamp(cosineGradient, 0.0, 1.0);
+
+              // Match the CPU contrast curve exactly using fast ALUs
+              // raising to whatever power here to approximate the visual falloff of the point light
+              // which (though it had linear attenuation) was also affected by lambert as it moved away from center
+              coneFactor = baseCone * baseCone * baseCone * baseCone * baseCone * baseCone;
           }
+
+          // Apply your uniform distance intensity booster
+          // old pointlight was at floor.  new spotlight is at ceiling.
+          // radius raised to ~distance*1.2 to compensate, but it still attenuates by the time it reaches the floor
+          coneFactor *= 2.5f; 
       }
 
       vec3 originVS = vec3(vCoords.x, vCoords.y, vCoords.z);

@@ -617,24 +617,33 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
                 (BYTE)BaseBrightness
             );
         }
-
+        // --- SPOTLIGHT CONE FACTOR ---
         float ConeFactor = 1.0f;
         if (bIsSpot)
         {
-            // FIX: Evaluate cone math extending from the ceiling fixture coordinates down to the sample
-            FVector LightToPixelDir = (WorldPos - TargetLightPos).SafeNormal();
-            float CosAngle = LightToPixelDir | SpotData->SpotDirection;
+            FVector LightDirNorm = (WorldPos - TargetLightPos).SafeNormal();
+            float CosAngle = LightDirNorm | SpotData->SpotDirection;
 
-            // Skip entirely if outside outer cone
+            // Completely outside the spotlight beam? Reject the light loop.
             if (CosAngle < SpotData->SpotCosOuter)
                 continue;
 
-            // Calculate falloff (inner-to-outer)
+            // Penumbra smooth edge interpolation in Pure Cosine Space
             if (CosAngle < SpotData->SpotCosInner)
             {
                 float Range = SpotData->SpotCosInner - SpotData->SpotCosOuter;
-                ConeFactor = Clamp((CosAngle - SpotData->SpotCosOuter) / Max(Range, 0.001f), 0.0f, 1.0f);
+                float CosineGradient = (CosAngle - SpotData->SpotCosOuter) / Max(Range, 0.001f);
+                float BaseCone = Clamp(CosineGradient, 0.0f, 1.0f);
+
+                // --- ZERO-TRANSCENDENTAL CONTRAST SQUEEZE ---
+                // Raising the pure cosine gradient to a power of 5 or 6 perfectly
+                // counteracts both the cosine distortion and the vertical Lambertian flat-line,
+                // matching your acos^4 look at a fraction of the CPU cycle cost!
+                ConeFactor = BaseCone * BaseCone * BaseCone * BaseCone * BaseCone * BaseCone; 
             }
+
+            // Apply your uniform distance intensity booster
+            ConeFactor *= 2.5f; 
         }
 
         // Apply all spatial factors

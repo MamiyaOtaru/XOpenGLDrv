@@ -451,7 +451,9 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
             if (CosAngle < SpotData->SpotCosOuter)
                 continue;
 
-            // Smooth cone edge interpolation (Inner to Outer cone fade)
+            // --- PURE COSINE-SPACE LINEAR ATTENUATION ---
+            // Maps perfectly from 1.0 (100% full brightness at SpotCosInner)
+            // straight down to 0.0 (0% brightness at SpotCosOuter)
             if (CosAngle < SpotData->SpotCosInner)
             {
                 float Range = SpotData->SpotCosInner - SpotData->SpotCosOuter;
@@ -1023,17 +1025,14 @@ void DetectFakeSpotlights(ULevel* Level, TArray<AActor*>& AllLights)
             // Cone angle from footprint radius
             FLOAT theta = appAtan(FloorRadius / Max(h, 1.f));
             Pair.SpotCosOuter = appCos(theta);
-            Pair.SpotCosInner = appCos(theta * 0.9f);
+            Pair.SpotCosInner = appCos(theta * 0.001f);
 
             // Beam reach radius (distance falloff)
             float ReachRadius = (h + FloorRadius) * 1.2f;
             Pair.ReachRadius = ReachRadius;
 
             // Brightness scaling (stable, mapper-faithful)
-            float I_floor = 1.0f - h / ReachRadius;
-            float TargetIntensity = 0.7f; 
-            float B = TargetIntensity / Max(I_floor, 0.01f);
-            Pair.Brightness = Clamp(FloorCandidate->LightBrightness * B, 0.0f, 255.0f);
+            Pair.Brightness = FloorCandidate->LightBrightness;
 
             // Direction vector
             Pair.SpotDirection = (FloorCandidate->Location - TopCandidate->Location).SafeNormal();

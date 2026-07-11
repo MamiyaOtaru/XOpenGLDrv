@@ -268,7 +268,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	}
 
 	// Write static lightmap params (if present).  Only do mover if we have a Node match
-	INT facetIDForVerts;
+	INT facetIDForVerts = 0;
 	if (BumpMaps ||
 		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
 	{
