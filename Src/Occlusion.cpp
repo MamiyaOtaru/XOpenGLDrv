@@ -86,7 +86,7 @@ struct FMappedAtlas
     }
 };
 FMappedAtlas MappedAtlas;
-bool bAtlasMapped = false;
+UBOOL bAtlasMapped = false;
 #if _WIN32
 #include <windows.h>
 
@@ -159,7 +159,7 @@ struct FOcclusionJob
         StopAndJoin();
     }
     void Start(UXOpenGLRenderDevice* InOwner, ULevel* Level);
-	void StartThreads(int NumThreads);
+	void StartThreads(INT NumThreads);
     void WorkerLoop();
 	void StopAndJoin();
     bool IsRunning() const { return ActiveWorkers.load(std::memory_order_acquire) > 0; }
@@ -212,7 +212,7 @@ INT GetHitSurfIndex(UModel* Model, const FCheckResult& Hit)
     return Node.iSurf;
 }
 
-static bool SameSurface(
+static UBOOL SameSurface(
     const UModel* Model,
     INT OriginSurfIndex,
     INT HitSurfIndex,
@@ -267,7 +267,7 @@ static bool SameSurface(
     */
 }
 
-static bool BacktraceEmergesFromOrigin(
+static UBOOL BacktraceEmergesFromOrigin(
     UModel* Model,
     const FVector& Start, // the origin surface (meant to be just outside it with normal offset)
     const FVector& Escaped, // where we escaped solidity
@@ -295,7 +295,7 @@ static bool BacktraceEmergesFromOrigin(
         return true;
 
     const FBspSurf& OriginSurf = Model->Surfs(OriginSurfIndex);
-    bool isMover = (OriginSurf.Actor && OriginSurf.Actor->IsA(AMover::StaticClass()));
+    UBOOL isMover = (OriginSurf.Actor && OriginSurf.Actor->IsA(AMover::StaticClass()));
     if (isMover && (Hit.Location - Start).Size() <= skipMagnitude * 4) // bit more leeway for movers
         return true;
 
@@ -320,7 +320,7 @@ static bool BacktraceEmergesFromOrigin(
 
     DWORD PF = HitSurf.PolyFlags;
 
-    if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid |
+    if (PF & (PF_Translucent | PF_Invisible | PF_NotSolid | 
                 PF_Masked | PF_AlphaTexture | PF_Portal | PF_Modulated))
         return true;
 
@@ -332,7 +332,7 @@ static bool BacktraceEmergesFromOrigin(
 }
 
 
-static bool EmergedFromTransparent(
+static UBOOL EmergedFromTransparent(
     UModel* Model,
     const FVector& Start,
     const FVector& CurrentStart)
@@ -376,7 +376,7 @@ static bool EmergedFromTransparent(
 }
 
 // used in creating the occlusion map, and also in picking hero lights in PerPixel
-bool UXOpenGLRenderDevice::BSPVisibilityRay(
+UBOOL UXOpenGLRenderDevice::BSPVisibilityRay(
     UModel* Model,
     INT OriginSurfIndex,
     const FVector& Start,
@@ -555,8 +555,8 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
     const FVector& WorldPos,
     const SurfaceBasis& Basis,
     UModel* Model,
-    bool TwoSided,
-    bool isMover)
+    UBOOL TwoSided,
+    UBOOL isMover)
 {
     FPlane Shadowed(0,0,0,0);
     FPlane Unshadowed(0,0,0,0);
@@ -571,9 +571,9 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
             continue;
 
         FakeSpotlightPair* SpotData = GetSpotlightData(Light);
-        bool bIsSpot = (SpotData != nullptr);
+        UBOOL bIsSpot = (SpotData != nullptr);
 
-        float Radius = bIsSpot ? SpotData->ReachRadius : Light->WorldLightRadius();
+        FLOAT Radius = bIsSpot ? SpotData->ReachRadius : Light->WorldLightRadius();
         if (Radius <= 0.f)
             continue;
 
@@ -583,20 +583,20 @@ FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
 
         // All vector operations now use TargetLightPos safely!
         FVector L = TargetLightPos - WorldPos;
-        float Dist = L.Size();
+        FLOAT Dist = L.Size();
         if (Dist <= SMALL_NUMBER)
             continue;
 
         FVector Ldir = L / Dist;
-        float NdotL = (Basis.Normal | Ldir);
+        FLOAT NdotL = (Basis.Normal | Ldir);
         if (TwoSided)
             NdotL = fabs(NdotL);
         if (NdotL <= 0.f)
             continue;
 
         // Match the GPU's linear falloff
-        float x = Clamp(Dist / Radius, 0.0f, 1.0f);
-        float Atten = 1.0f - x;
+        FLOAT x = Clamp(Dist / Radius, 0.0f, 1.0f);
+        FLOAT Atten = 1.0f - x;
 
         if (Atten <= 0.f)
             continue;
@@ -1001,29 +1001,29 @@ void DumpAtlasToDisk(const FString& AtlasName, const TArray<FPendingLightmap>& P
 void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(
     FSurfInfo& SI,
     const SurfaceBasis& Basis,
-    float MinU, float MaxU,
-    float MinV, float MaxV,
-    float AtlasMinU, float AtlasMaxU,
-    float AtlasMinV, float AtlasMaxV)
+    FLOAT MinU, FLOAT MaxU,
+    FLOAT MinV, FLOAT MaxV,
+    FLOAT AtlasMinU, FLOAT AtlasMaxU,
+    FLOAT AtlasMinV, FLOAT AtlasMaxV)
 {
     SI.LightmapUVs.Empty();
     SI.LightmapUVs.AddZeroed(SI.Verts.Num());
 
-    float InvUSize = 1.0f / (MaxU - MinU);
-    float InvVSize = 1.0f / (MaxV - MinV);
+    FLOAT InvUSize = 1.0f / (MaxU - MinU);
+    FLOAT InvVSize = 1.0f / (MaxV - MinV);
 
     for (INT i = 0; i < SI.Verts.Num(); i++)
     {
         FVector& P = SI.Verts(i);
 
-        float U = Basis.TangentU | (P - Basis.Origin);
-        float V = Basis.TangentV | (P - Basis.Origin);
+        FLOAT U = Basis.TangentU | (P - Basis.Origin);
+        FLOAT V = Basis.TangentV | (P - Basis.Origin);
 
-        float u = (U - MinU) * InvUSize;
-        float v = (V - MinV) * InvVSize;
+        FLOAT u = (U - MinU) * InvUSize;
+        FLOAT v = (V - MinV) * InvVSize;
 
-        float atlasU = AtlasMinU + u * (AtlasMaxU - AtlasMinU);
-        float atlasV = AtlasMinV + v * (AtlasMaxV - AtlasMinV);
+        FLOAT atlasU = AtlasMinU + u * (AtlasMaxU - AtlasMinU);
+        FLOAT atlasV = AtlasMinV + v * (AtlasMaxV - AtlasMinV);
 
         SI.LightmapUVs(i) = FVector(atlasU, atlasV, 0);
     }
@@ -1083,134 +1083,8 @@ inline float Luma(const FPlane& p)
     return 0.299f * p.X + 0.587f * p.Y + 0.114f * p.Z;
 }
 
-//scalefx version
-void ApplyAntialias(FPlane* pixels, int W, int H)
-{
-    // ScaleFX demands a minimum 7x7 neighborhood to track long shallow slopes
-    if (W < 7 || H < 7) return;
-
-    SIZE_T PixelCount = (SIZE_T)W * H;
-    
-    // Allocate our temporary pass buffer natively
-    TArray<FPlane> original;
-    original.AddZeroed(PixelCount);
-    appMemcpy(original.GetData(), pixels, PixelCount * sizeof(FPlane));
-
-    // Allocate an explicit vector tracking matrix array for Pass 1 data
-    // X = Horizontal Gradient, Y = Vertical Gradient, Z = Local Contrast Range
-    TArray<FPlane> EdgeVectors;
-    EdgeVectors.AddZeroed(PixelCount);
-
-    auto at = [&](int x, int y) -> const FPlane&
-    {
-        return original(Clamp(y, 0, H - 1) * W + Clamp(x, 0, W - 1));
-    };
-
-    const float SCALEFX_THRESHOLD = 0.08f; // Triggers easily on soft shadow transitions
-
-    // ==========================================
-    // PASS 1: LONG-RANGE EDGE VECTOR ANALYSIS
-    // ==========================================
-    for (int y = 0; y < H; ++y)
-    {
-        for (int x = 0; x < W; ++x)
-        {
-            float m = Luma(at(x, y));
-
-            // Sample a broad 7x7 cross layout pattern to calculate long-range vectors
-            float l3 = Luma(at(x-3, y)); float l2 = Luma(at(x-2, y)); float l1 = Luma(at(x-1, y));
-            float r3 = Luma(at(x+3, y)); float r2 = Luma(at(x+2, y)); float r1 = Luma(at(x+1, y));
-            float t3 = Luma(at(x, y-3)); float t2 = Luma(at(x, y-2)); float t1 = Luma(at(x, y-1));
-            float b3 = Luma(at(x, y+3)); float b2 = Luma(at(x, y+2)); float b1 = Luma(at(x, y+1));
-
-            // Compute ScaleFX directional gradients
-            float gradH = (r1 - l1) * 4.0f + (r2 - l2) * 2.0f + (r3 - l3);
-            float gradV = (b1 - t1) * 4.0f + (b2 - t2) * 2.0f + (b3 - t3);
-
-            float lumaMin = Min(m, Min(Min(Min(l1, r1), Min(t1, b1)), Min(Min(l2, r2), Min(t2, b2))));
-            float lumaMax = Max(m, Max(Max(Max(l1, r1), Max(t1, b1)), Max(Max(l2, r2), Max(t2, b2))));
-            float range   = lumaMax - lumaMin;
-
-            // Store the vector properties safely inside our tracking array
-            FPlane& EV = EdgeVectors(y * W + x);
-            EV.X = gradH;
-            EV.Y = gradV;
-            EV.Z = range;
-        }
-    }
-
-    // ==========================================
-    // PASS 2: STRAIGHT LINE SUBPIXEL BLENDING
-    // ==========================================
-    for (int y = 0; y < H; ++y)
-    {
-        for (int x = 0; x < W; ++x)
-        {
-            const FPlane& EV = EdgeVectors(y * W + x);
-            float contrastRange = EV.Z;
-
-            // Bypass flat areas instantly to preserve core lightmap sharpness
-            if (contrastRange < SCALEFX_THRESHOLD)
-                continue;
-
-            float gradH = EV.X;
-            float gradV = EV.Y;
-
-            // Calculate the exact mathematical angle of the straight shadow line
-            float absGradH = Abs(gradH);
-            float absGradV = Abs(gradV);
-            float sumGrad  = absGradH + absGradV;
-
-            if (sumGrad < 0.001f) continue;
-
-            // Determine fractional vector components for blending
-            float weightH = absGradH / sumGrad;
-            float weightV = absGradV / sumGrad;
-
-            // Trace directions
-            int stepX = (gradH > 0.f) ? 1 : -1;
-            int stepY = (gradV > 0.f) ? 1 : -1;
-
-            // Fetch cross-boundary samples along the perpendicular vector path
-            const FPlane& center = at(x, y);
-            const FPlane& sideH  = at(x + stepX, y);
-            const FPlane& sideV  = at(x, y + stepY);
-            const FPlane& diag   = at(x + stepX, y + stepY);
-
-            // Execute a true linear sub-pixel interpolation match
-            // This is ScaleFX's exact line-smoothing trick: it uses the calculated
-            // gradient angles to blend smoothly across shallow steps like an 8x1 line.
-            FPlane blended;
-            blended.X = center.X * (1.0f - weightH * 0.5f - weightV * 0.5f) +
-                        sideH.X  * (weightH * 0.35f) +
-                        sideV.X  * (weightV * 0.35f) +
-                        diag.X   * (weightH * 0.15f + weightV * 0.15f);
-
-            blended.Y = center.Y * (1.0f - weightH * 0.5f - weightV * 0.5f) +
-                        sideH.Y  * (weightH * 0.35f) +
-                        sideV.Y  * (weightV * 0.35f) +
-                        diag.Y   * (weightH * 0.15f + weightV * 0.15f);
-
-            blended.Z = center.Z * (1.0f - weightH * 0.5f - weightV * 0.5f) +
-                        sideH.Z  * (weightH * 0.35f) +
-                        sideV.Z  * (weightV * 0.35f) +
-                        diag.Z   * (weightH * 0.15f + weightV * 0.15f);
-
-            blended.W = center.W; // Absolute alpha channel mask protection
-
-            // Write the final anti-aliased pixels back to the main buffer
-            pixels[y * W + x] = blended;
-        }
-    }
-
-    // Clean up temporary workspace structures
-    EdgeVectors.Empty();
-    original.Empty();
-}
-
 //scale3x/gimp aa version
-/*
-void ApplyAntialias(FPlane* pixels, int W, int H)
+void ApplyAntialias(FPlane* pixels, INT W, INT H)
 {
     if (W < 3 || H < 3) return;
 
@@ -1219,7 +1093,7 @@ void ApplyAntialias(FPlane* pixels, int W, int H)
     original.AddZeroed(W * H);
     appMemcpy(original.GetData(), pixels, W * H * sizeof(FPlane));
 
-    auto at = [&](int x, int y) -> const FPlane&
+    auto at = [&](INT x, INT y) -> const FPlane&
     {
         return original(Clamp(y, 0, H - 1) * W + Clamp(x, 0, W - 1));
     };
@@ -1227,9 +1101,9 @@ void ApplyAntialias(FPlane* pixels, int W, int H)
     // Allocate an intermediate 3x3 sub-pixel matrix block
     FPlane subPixels[9];
 
-    for (int y = 0; y < H; ++y)
+    for (INT y = 0; y < H; ++y)
     {
-        for (int x = 0; x < W; ++x)
+        for (INT x = 0; x < W; ++x)
         {
             // --- 1. Fetch the 3x3 Original Neighborhood Layout ---
             // [ A ][ B ][ C ]
@@ -1263,14 +1137,14 @@ void ApplyAntialias(FPlane* pixels, int W, int H)
             FPlane sum(0.f, 0.f, 0.f, 0.f);
             
             // Weight Distribution: Center = 4.f, Cross Edges = 2.f, Corners = 1.f
-            float weights[9] = {
+            FLOAT weights[9] = {
                 1.0f, 2.0f, 1.0f,
                 2.0f, 4.0f, 2.0f,
                 1.0f, 2.0f, 1.0f
             };
-            float totalWeight = 16.0f;
+            FLOAT totalWeight = 16.0f;
 
-            for (int i = 0; i < 9; ++i)
+            for (INT i = 0; i < 9; ++i)
             {
                 sum.X += subPixels[i].X * weights[i];
                 sum.Y += subPixels[i].Y * weights[i];
@@ -1289,7 +1163,6 @@ void ApplyAntialias(FPlane* pixels, int W, int H)
         }
     }
 }
-*/
 
 // fxaa version
 /*
@@ -1391,7 +1264,7 @@ void ApplyAntialias(FPlane* pixels, int W, int H)
 }
 */
 // build an occlusion map for a given surface
-void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
+void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
 {
     UModel* Model = Level->Model;
 
@@ -1399,13 +1272,13 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(int plm, ULevel* Level)
         return;
 
     FPendingLightmap& Pending = PendingLightmaps(plm);
-    int iSurf = Pending.SurfIndex;
-    int W = Pending.Width;
-    int H = Pending.Height;
-    float minU = Pending.MinU;
-    float maxU = Pending.MaxU;
-    float minV = Pending.MinV;
-    float maxV = Pending.MaxV;
+    INT iSurf = Pending.SurfIndex;
+    INT W = Pending.Width;
+    INT H = Pending.Height;
+    FLOAT minU = Pending.MinU;
+    FLOAT maxU = Pending.MaxU;
+    FLOAT minV = Pending.MinV;
+    FLOAT maxV = Pending.MaxV;
     const SurfaceBasis& Basis = Pending.Basis;
 
 
@@ -1709,7 +1582,7 @@ void FOcclusionJob::Start(UXOpenGLRenderDevice* InOwner, ULevel* Level)
     bAbort.store(false, std::memory_order_relaxed);
 }
 
-void FOcclusionJob::StartThreads(int NumThreads)
+void FOcclusionJob::StartThreads(INT NumThreads)
 {
     // join any previous threads if needed (or ensure StopAndJoin was called)
     Threads.clear();
@@ -1717,7 +1590,7 @@ void FOcclusionJob::StartThreads(int NumThreads)
 
     ActiveWorkers.store(NumThreads, std::memory_order_relaxed);
 
-    for (int i = 0; i < NumThreads; ++i)
+    for (INT i = 0; i < NumThreads; ++i)
     {
         Threads.emplace_back([this]()
         {
@@ -1982,10 +1855,10 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
 
     PendingLightmaps.Empty();
 
-    int MaxClamp = 512;
-    for (TUnorderedSet<int>::TIterator It(UniqueSurfaces); It; ++It)
+    INT MaxClamp = 512;
+    for (TUnorderedSet<INT>::TIterator It(UniqueSurfaces); It; ++It)
     {
-        int surf = It.Key();
+        INT surf = It.Key();
         FBspSurf& Surf = Model->Surfs(surf);
         FSurfInfo* SI = SurfaceInfoMap.Find(surf);
         if (!SI || SI->Verts.Num() < 3 || SI->TriIdx.Num() <= 0)

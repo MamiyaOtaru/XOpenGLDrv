@@ -1889,12 +1889,11 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TArray<FCoronaLight> CoronaLights;
 
 	// occlusion map stuff
-	static bool BSPVisibilityRay(UModel* Model, INT OriginSurfIndex, const FVector& Start, const FVector& End);
+	static UBOOL BSPVisibilityRay(UModel* Model, INT OriginSurfIndex, const FVector& Start, const FVector& End);
 	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf);
-	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>& Lights, INT iSurf, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model, bool TwoSided, bool IsMover);
-	void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(FSurfInfo& SI, const SurfaceBasis& Basis, float MinU, float MaxU, float MinV, float MaxV, float AtlasMinU, float AtlasMaxU, float AtlasMinV, float AtlasMaxV);
-    void UXOpenGLRenderDevice::ProcessNodeSurface(int ni, ULevel* Level); // build occlusion map for one surface (called from WorkerThread)
-	void UXOpenGLRenderDevice::WorkerThread(std::queue<int>& nodeQueue, ULevel* Level);
+	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>& Lights, INT iSurf, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model, UBOOL TwoSided, UBOOL IsMover);
+	void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(FSurfInfo& SI, const SurfaceBasis& Basis, FLOAT MinU, FLOAT MaxU, FLOAT MinV, FLOAT MaxV, FLOAT AtlasMinU, FLOAT AtlasMaxU, FLOAT AtlasMinV, FLOAT AtlasMaxV);
+    void UXOpenGLRenderDevice::ProcessNodeSurface(INT ni, ULevel* Level); // build occlusion map for one surface (called from WorkerThread)
 	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasName);
 	void UXOpenGLRenderDevice::BuildingPoll();
 	UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasName);
