@@ -177,7 +177,44 @@ Fbo::Fbo(int w, int h,
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 }
 
-// cubemap constructor
+// Custom static constructor for individual cubemap face FBO view targets
+Fbo::Fbo(int size, GLuint sharedColorCubemapID, GLuint sharedDepthCubemapID, int faceIndex)
+    : width(size), height(size), samples(1), isCubemap(true)
+{
+    // Instantiate our hardware frame target block cleanly
+    glGenFramebuffers(1, &fboID);
+    glBindFramebuffer(GL_FRAMEBUFFER, fboID);
+
+    // Statically bind this FBO container to its target cubemap color face stride!
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER,
+        GL_COLOR_ATTACHMENT0,
+        GL_TEXTURE_CUBE_MAP_POSITIVE_X + faceIndex,
+        sharedColorCubemapID,
+        0
+    );
+
+    // Statically bind this FBO container to its target cubemap depth face stride!
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER,
+        GL_DEPTH_ATTACHMENT,
+        GL_TEXTURE_CUBE_MAP_POSITIVE_X + faceIndex,
+        sharedDepthCubemapID,
+        0
+    );
+
+    // Execute all of your standard class completion steps seamlessly!
+    GLenum bufs[] = { GL_COLOR_ATTACHMENT0 };
+    glDrawBuffers(1, bufs);
+
+    CheckStatus();
+}
+
+// all in one cubemap constructor
+// NOTE: HeroLight now uses 6 individual FBOs instead of this shared cubemap approach
+// because FBO attachment state doesn't survive frame boundaries when reconfigured.
+// This constructor remains available if a future use case needs a single cubemap FBO
+// with a shared depth RBO (non-persistent across frames).
 Fbo::Fbo(int size, int numColorAttachments, GLenum colorFormat)
     : width(size), height(size), samples(1), isCubemap(true)
 {
@@ -267,7 +304,6 @@ Fbo::Fbo(int size, int numColorAttachments, GLenum colorFormat)
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 }
 
-
 Fbo::~Fbo() {
     Dispose();
 }
@@ -275,12 +311,25 @@ Fbo::~Fbo() {
 void Fbo::Bind() {
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&prevFbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fboID);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        debugf(TEXT("FBO broken between frames!"));
+    }
 }
 
 void Fbo::Unbind() {
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 }
 
+GLuint Fbo::GetColorTexID(GLuint index) {
+    if (index >= colorTexIDs.size()) return 0;
+    return colorTexIDs[index];
+}
+
+GLuint Fbo::GetDepthTexID() {
+    return depthTexID;
+}
+
+// old way to bind a texture unit.  Used for debug only
 void Fbo::BindColorCubemap(GLuint attachmentIndex, GLuint textureUnit)
 {
     if (attachmentIndex >= colorTexIDs.size()) return;

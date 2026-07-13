@@ -83,7 +83,7 @@ INT UploadLights(UXOpenGLRenderDevice::FSurfInfo* SI,
 	UXOpenGLRenderDevice::DrawComplexProgram* Shader,
 	BOOL BumpMaps,
 	BOOL HDLightMap,
-	TArray<glm::uint> facetIndices,
+	TArray<INT>& facetIndices,
 	INT staticCount,
 	INT dynamicCount,
 	UXOpenGLRenderDevice::EOcclusionState GOcclusionState)
@@ -176,7 +176,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	STAT(clockFast(Stats.ComplexCycles));
 	SetProgram(Complex_Prog);
 
-	TArray<glm::uint> facetIndices;
+	TArray<INT> facetIndices;
 	GLuint startIndex = 0;
 	GLuint count = 0;
 	int staticCount = 0;
@@ -223,10 +223,10 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			else
 				Actor = dynamicList(i - staticList.Num());
 			if (!Actor) continue;
-			GLuint* Found = CurrentLightToIndex.Find(Actor);
+			INT* Found = CurrentLightToIndex.Find(Actor);
 			if (Found)
 			{
-				facetIndices.AddItem(static_cast<glm::uint>(*Found));
+				facetIndices.AddItem(*Found);
 				if (i < staticList.Num())
 					staticCount++;
 				else

@@ -2186,7 +2186,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			LightData->LightData6[i] = glm::vec4(0.0f, 0.0f, 0.0f, -1.0f);
 		}
 
-			CurrentLightToIndex.Set(LightList(i), static_cast<GLuint>(i));
+			CurrentLightToIndex.Set(LightList(i), i);
 		}
 
 		LightInfoBuffer.Bind();
@@ -2349,7 +2349,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 void UXOpenGLRenderDevice::DrawShadowmapDebugOverlay()
 {
     UXOpenGLHeroLight* DebugLight = nullptr;
-    for (INT i = 0; i < HeroLights.Num(); ++i) // 1 is the corner with row of health vials in stalwart
+    for (INT i = 0; i <HeroLights.Num(); ++i) // 1 is the corner with row of health vials in stalwart
     {
         if (HeroLights(i) && HeroLights(i)->HasValidShadowMap())
         {
@@ -2376,7 +2376,6 @@ void UXOpenGLRenderDevice::DrawShadowmapDebugOverlay()
             "in vec2 v_TexCoords;\n"
             "out vec4 out_Color;\n"
             "uniform samplerCube u_DepthCubemap;\n"
-            "uniform samplerCube u_MaskCubemap;\n"
             "uniform int u_Mode;\n"
             
             "void main() {\n"
@@ -2403,7 +2402,7 @@ void UXOpenGLRenderDevice::DrawShadowmapDebugOverlay()
             
             "   if (!valid) { out_Color = vec4(0.1, 0.1, 0.1, 1.0); return; }\n"
             "   float val = 0.0;\n"
-            "   if (u_Mode == 1) val = texture(u_MaskCubemap, normalize(dir)).r;\n"
+            "   if (u_Mode == 1) val = texture(u_DepthCubemap, normalize(dir)).a;\n"
             "   else             val = texture(u_DepthCubemap, normalize(dir)).r;\n"
             "   if (u_Mode == 1) out_Color = vec4(val, 0.0, 0.0, 1.0);\n"
             "   else             out_Color = vec4(vec3(val), 1.0);\n"
@@ -2438,17 +2437,25 @@ void UXOpenGLRenderDevice::DrawShadowmapDebugOverlay()
 
     // =========================================================================
     // TOGGLE MODE HERE:
-    // DebugMode = 0 -> Inspect Linear Depth (Attachment 0, Texture Unit 0)
-    // DebugMode = 1 -> Inspect Actor Classification Mask (Attachment 1, Texture Unit 1)
+    // DebugMode = 0 -> Inspect Linear Depth (.r channel)
+    // DebugMode = 1 -> Inspect Actor Classification Mask (.a channel)
+	// DebugMode = 2 -> Inspect depth attachment
     // =========================================================================
-    int DebugMode = 0; 
+    int DebugMode = 1; 
 
-    // Binds Depth to Texture Unit 0, Mask to Texture Unit 1 seamlessly
-    DebugLight->BindTextures(30); 
+	if (DebugMode < 2)
+	{
+		// Binds color attachment to Texture Unit 30
+		DebugLight->BindTextures(30);
+	}
+	else
+	{
+		// Binds depth attachment to Texture Unit 30
+        DebugLight->BindDepthTexture(30);
+	}
     
     // Explicitly link the samplers to their respective texture unit values
     glUniform1i(glGetUniformLocation(DebugProgramID, "u_DepthCubemap"), 30); // Slot 0
-    glUniform1i(glGetUniformLocation(DebugProgramID, "u_MaskCubemap"),  31); // Slot 1
     glUniform1i(glGetUniformLocation(DebugProgramID, "u_Mode"), DebugMode);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); 

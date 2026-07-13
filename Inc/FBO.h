@@ -34,13 +34,19 @@ public:
         bool bDepthRbo,
         GLenum colorFormat = 0);
 
-    // specialized constructor for cubemaps to keep clean structural separation
+    // special constructor for cubemap FBOs (single FBO for single face)
+    Fbo(int size, GLuint sharedColorCubemapID, GLuint sharedDepthCubemapID, int faceIndex);
+
+
+    // specialized constructor for all in one cubemaps
     Fbo(int size, int numColorAttachments, GLenum colorFormat);
 
     ~Fbo();
 
     void Bind();
     void Unbind();
+    GLuint GetColorTexID(GLuint index);
+    GLuint GetDepthTexID();
     void BindColorCubemap(GLuint attachmentIndex, GLuint textureUnit);
     void Dispose();
 

@@ -25,12 +25,18 @@ private:
     FLOAT     LastRadius;
     FVector   LastLocation;
 
-    Fbo*      ShadowFbo;
+    Fbo*      FaceFbos[6];
+    INT       shadowmapSize = 512;
+
+    GLuint    ColorCubemapID = 0;
+    GLuint    DepthCubemapID = 0;
 
     GLuint64 BindlessMaskHandle = 0;
     UBOOL    bIsHandleResident = FALSE;
 
     BYTE CurrentFaceMask = 0;
+
+    BOOL bspDrawn[6] = { FALSE, FALSE, FALSE, FALSE, FALSE, FALSE };
     
     TArray<CachedActorState> LastFrameActors;
     BYTE LastFrameFaceMask; // Which faces had actors last frame
@@ -63,7 +69,7 @@ public:
     UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<INT, TArray<AActor*>>& StaticLightsMap, UXOpenGLRenderDevice* GL);
     ~UXOpenGLHeroLight();
 
-    UBOOL HasValidShadowMap() const { return (ShadowFbo != nullptr); }
+    UBOOL HasValidShadowMap() const { return (ColorCubemapID != 0); }
 
     // High-utility master call: Checks visibility, tests caches, 
     // and loops through FBO attachments internally if updates are required.
@@ -71,11 +77,12 @@ public:
 
     // Public bindings for screen space composite shader pass
     void BindTextures(GLuint BaseTextureUnit) const;
+    void BindDepthTexture(GLuint BaseTextureUnit) const;
     ALight* GetActor() const { return LightActor; }
 
     GLuint64 GetBindlessMaskHandle() const { return BindlessMaskHandle; }
-    UBOOL HasActiveShadowMap() const { return (ShadowFbo != nullptr && BindlessMaskHandle != 0 && CurrentFaceMask > 0); }
-
+    UBOOL HasActiveShadowMap() const { return (ColorCubemapID != 0 && BindlessMaskHandle != 0 && CurrentFaceMask > 0); }    
+    
     // --- DYNAMIC PROPERTY LOOKUPS --- (unsure if needed yet)
     /*UBOOL IsSpotlight() const { return bIsSpotlight; }
     FLOAT GetSpotCosOuter() const { return SpotCosOuter; }

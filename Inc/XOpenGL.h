@@ -1855,7 +1855,7 @@ class UXOpenGLRenderDevice : public URenderDevice
     INT LevelLightCap = DefaultLightCap;
 
 	// per-frame mapping from AActor* -> index inside LightInfoBuffer (populated each SetSceneNode)
-	TMap<AActor*, GLuint> CurrentLightToIndex;
+	TMap<AActor*, INT> CurrentLightToIndex;
 
     // per level mapping from texture to roughness value, used to avoid expensive String allocations on every frame for every surface
 	TMap<UTexture*, float> RoughnessCache;

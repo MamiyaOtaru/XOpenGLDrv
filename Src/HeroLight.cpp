@@ -7,10 +7,15 @@ extern "C"
 
 UXOpenGLHeroLight::UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<INT, TArray<AActor*>>& StaticLightsMap, UXOpenGLRenderDevice* GL)
     : LightActor(InLight), LastRadius(0.f), LastLocation(0.f,0.f,0.f), 
-      ShadowFbo(nullptr), LastFrameFaceMask(0)
+      LastFrameFaceMask(0)
 {
     AffectedZones.Empty();
     AffectedBSPSurfaces.Empty();
+
+    for (INT f = 0; f < 6; f++)
+    {
+        FaceFbos[f] = nullptr;
+    }
 
     if (!LightActor || !Level || !Level->Model) return;
     OwnerLevel = Level;
@@ -43,8 +48,6 @@ UXOpenGLHeroLight::UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<
     for (INT SurfIndex = 0; SurfIndex < Model->Surfs.Num(); ++SurfIndex)
     {
         const FBspSurf& Surf = Model->Surfs(SurfIndex);
-        
-        // Movers are handled dynamically, skip them here
         if (Surf.Actor && Surf.Actor->IsA(AMover::StaticClass())) 
             continue;
 
@@ -56,18 +59,14 @@ UXOpenGLHeroLight::UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<
         {
             if ((*LightsForThisSurf)(l) == LightActor)
             {
-                // Traverse every sub-node cut associated with this flat surface plane
                 for (INT n = 0; n < Surf.Nodes.Num(); ++n)
                 {
                     INT NodeIndex = Surf.Nodes(n);
                     const FBspNode& Node = Model->Nodes(NodeIndex);
 
-                    // Extract front-side and back-side room visibility zones natively
                     for (INT z = 0; z < 2; ++z)
                     {
                         BYTE ZoneIdx = Node.iZone[z];
-                        
-                        // Filter out unassigned zones (0) and guarantee no array duplicates
                         if (ZoneIdx > 0 && AffectedZones.FindItemIndex(ZoneIdx) == INDEX_NONE)
                         {
                             AffectedZones.AddItem(ZoneIdx);
@@ -80,19 +79,51 @@ UXOpenGLHeroLight::UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<
         }
     }
 
-    // now that gathered all surfaces affected by this light, partition by face
     PartitionBSPSurfaces(Model, GL);
 }
 
 UXOpenGLHeroLight::~UXOpenGLHeroLight()
 {
+    guard(UXOpenGLHeroLight::~UXOpenGLHeroLight);
+
     LastFrameActors.Empty();
-    // CRITICAL: Make sure to turn off residency before deleting the texture object!
+    
+    // CRITICAL STATE CLEAR: Turn off residency BEFORE deleting the textures!
+    // Safely checks if a bindless handle was ever generated and marked resident.
     if (bIsHandleResident && BindlessMaskHandle != 0)
     {
         glMakeTextureHandleNonResidentARB(BindlessMaskHandle);
+        bIsHandleResident = FALSE;
+        BindlessMaskHandle = 0;
     }
-    if (ShadowFbo) delete ShadowFbo;
+
+    // Delete the face-specific FBO frame structures cleanly
+    // Thanks to the 'if (FaceFbos[face])' gate, this handles per-face lazy loading flawlessly!
+    for (INT face = 0; face < 6; face++)
+    {
+        if (FaceFbos[face] != nullptr)
+        {
+            delete FaceFbos[face]; // Safely triggers destructor -> Dispose() natively
+            FaceFbos[face] = nullptr;
+        }
+    }
+
+    // ATOMIC UNIFIED CUBEMAP RECLAMATION
+    // Cleanly deletes both omnidirectional texture tracks from VRAM exactly once.
+    // If the light never rendered a single face, these remain 0 and glDeleteTextures is safely skipped.
+    if (ColorCubemapID > 0 && ColorCubemapID != 0xFFFFFFFF)
+    {
+        glDeleteTextures(1, &ColorCubemapID);
+        ColorCubemapID = 0;
+    }
+
+    if (DepthCubemapID > 0 && DepthCubemapID != 0xFFFFFFFF)
+    {
+        glDeleteTextures(1, &DepthCubemapID);
+        DepthCubemapID = 0;
+    }
+
+    unguard;
 }
 
 // Cubemap face directions in OpenGL space.
@@ -405,7 +436,7 @@ BOOL IsStaticMesh(AActor* Actor)
 // ----------------------RenderFaceGeometry--------------------------------------
 void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT FaceIndex, TArray<CachedActorState> ActiveActors, UXOpenGLRenderDevice* GL)
 {
-     guard(UXOpenGLHeroLight::RenderFaceGeometry);
+    guard(UXOpenGLHeroLight::RenderFaceGeometry);
 
     // Light-space camera configuration
     FVector Eye        = SourceLocation;
@@ -422,21 +453,27 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
     // PASS 1: TRIANGLES (BSP + STATIC MESHES)
     // =========================================================
     {
-        GL->BeginShadowMapFace(FaceIndex, ViewMatrix, ProjMatrix, Eye, Radius);
-
-        INT ActiveFaceVertexCount = 0;
-
-        // A: BSP Surfaces (Cached subset)
-        for (INT s = 0; s < AffectedFaceBSPSurfaces[FaceIndex].Num(); ++s)
+        if (!bspDrawn[FaceIndex])
         {
-            INT iSurf = AffectedFaceBSPSurfaces[FaceIndex](s);
-            UXOpenGLRenderDevice::FSurfInfo* pSI = GL->GetSurfInfoByID(iSurf);
-            if (pSI && !(pSI->PolyFlags & (PF_Translucent | PF_Invisible | PF_NotSolid | PF_Masked | PF_AlphaTexture | PF_Portal)))
+            INT ActiveFaceVertexCount = 0;
+            GL->BeginShadowMapFace(FaceIndex, ViewMatrix, ProjMatrix, Eye, Radius);
+            // A: BSP Surfaces (Cached subset)
+            for (INT s = 0; s < AffectedFaceBSPSurfaces[FaceIndex].Num(); ++s)
             {
-                GL->DrawShadowMapSurface(Frame, *pSI, ActiveFaceVertexCount);
+                INT iSurf = AffectedFaceBSPSurfaces[FaceIndex](s);
+                UXOpenGLRenderDevice::FSurfInfo* pSI = GL->GetSurfInfoByID(iSurf);
+                if (pSI && !(pSI->PolyFlags & (PF_Translucent | PF_Invisible | PF_NotSolid | PF_Masked | PF_AlphaTexture | PF_Portal)))
+                {
+                    GL->DrawShadowMapSurface(Frame, *pSI, ActiveFaceVertexCount);
+                }
             }
+            bspDrawn[FaceIndex] = TRUE;
+            GL->EndShadowMapFace(ActiveFaceVertexCount); // triangle program flush
+            glDepthMask(GL_FALSE); // don't write to depth buffer for meshes, only BSP
         }
 
+        INT ActiveFaceVertexCount = 0;
+        GL->BeginShadowMapFace(FaceIndex, ViewMatrix, ProjMatrix, Eye, Radius);
         // B: Static / Triangle Meshes (Pre-filtered Array)
         for (INT i = 0; i < ActiveActors.Num(); ++i)
         {
@@ -744,119 +781,169 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
         }
     }
 
-    // --- Execution Pipeline Transition ---
-    LastFrameActors.Empty();
-    LastFrameActors   = CurrentFrameActors;
-    LastFrameFaceMask = CurrentFaceMask;
-    LastRadius        = Radius;
-    LastLocation      = SourceLocation;
+// --- Execution Pipeline Transition ---
+	LastFrameActors.Empty();
+	LastFrameActors   = CurrentFrameActors;
+	LastFrameFaceMask = CurrentFaceMask;
+	LastRadius        = Radius;
+	LastLocation      = SourceLocation;
 
-    if (ChangedFaceMask == 0)
-        return;
-    // --- Atomic Framebuffer Direct Execution Block ---
-    if (!ShadowFbo)
-        ShadowFbo = new Fbo(512, 1, GL_RGBA32F);
+	if (ChangedFaceMask == 0)
+		return;
 
-    // Ensure bindless tracking state is completely resident in VRAM
-    MakeTextureResident();
+    // =========================================================================
+	// STEP 1: ONE-TIME BASE CUBEMAP BACKING VRAM ALLOCATION
+	// Allocate the raw texture coordinates ONCE per light if they don't exist, 
+	// but do NOT construct any FBO containers yet!
+	// =========================================================================
+	if (ColorCubemapID == 0)
+	{
+        INT size = shadowmapSize;
 
-    ShadowFbo->Bind();
-    GLint PrevViewport[4];
-    glGetIntegerv(GL_VIEWPORT, PrevViewport);
-    glViewport(0, 0, 512, 512);
+		// Allocate the single shared Color Cubemap Texture
+		glGenTextures(1, &ColorCubemapID);
+		glBindTexture(GL_TEXTURE_CUBE_MAP, ColorCubemapID);
+		for (int face = 0; face < 6; face++)
+		{
+			glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA32F, size, size, 0, GL_RGBA, GL_FLOAT, nullptr);
+		}
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
-    GLenum DrawBuffers[] = { GL_COLOR_ATTACHMENT0 };
+		// Allocate the single shared Hardware Depth Cubemap Texture
+		glGenTextures(1, &DepthCubemapID);
+		glBindTexture(GL_TEXTURE_CUBE_MAP, DepthCubemapID);
+		for (int face = 0; face < 6; face++)
+		{
+			glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_DEPTH_COMPONENT24, size, size, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+		}
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        
+        // Ensure bindless tracking state is completely resident in VRAM
+	    MakeTextureResident();
+	}
 
-    for (INT face = 0; face < 6; face++)
-    {
-        if (!(ChangedFaceMask & (1 << face)))
-            continue;
+	// Backup previous main screen viewport coordinates
+	GLint PrevViewport[4];
+	glGetIntegerv(GL_VIEWPORT, PrevViewport);
 
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, ShadowFbo->colorTexIDs[0], 0);
-        glDrawBuffers(2, DrawBuffers);
+	// Dynamically align the drawing window dimensions to match your FBO size
+	glViewport(0, 0, shadowmapSize, shadowmapSize);
 
-        GLfloat ClearValues[] = { 1.0f, 0.0f, 0.0f, 0.0f };
-        glClearBufferfv(GL_COLOR, 0, ClearValues);
-        glClear(GL_DEPTH_BUFFER_BIT);
+	GLenum DrawBuffers[] = { GL_COLOR_ATTACHMENT0 };
 
-        if (CurrentFaceMask & (1 << face))
-        {
-            RenderFaceGeometry(Level, Frame, face, CurrentFrameActors, GL);
-        }
-    }
+	for (INT face = 0; face < 6; face++)
+	{
+		if (!(ChangedFaceMask & (1 << face)))
+			continue;
 
-    // Target detachment configuration to avoid state leakage
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, 0);
-    glViewport(PrevViewport[0], PrevViewport[1], PrevViewport[2], PrevViewport[3]);
-    ShadowFbo->Unbind();
+        // =========================================================================
+		// STEP 2: HYPER-EFFICIENT PER-FACE LAZY LOADING
+		// The individual face FBO is only constructed right here, at the exact split-second 
+		// its frustum index passes the visibility mask, saving thousands of FBO handles!
+		// =========================================================================
+		if (!FaceFbos[face])
+		{
+			FaceFbos[face] = new Fbo(shadowmapSize, ColorCubemapID, DepthCubemapID, face);
+		}
+
+		// --- BIND THE PERMANENT STATIC FACE FBO ---
+		// Absolutely zero attachment swaps, texture layer rebindings, or unbinds! 
+		// The driver treats this memory layout as a permanent, persistent asset block.
+		FaceFbos[face]->Bind();
+		glDrawBuffers(1, DrawBuffers);
+
+		// --- SELECTIVE CLEARING BASED ON BSP CACHE ---
+		if (!bspDrawn[face])
+		{
+			glDepthMask(GL_TRUE); // Open depth writes wide for the baseline pass
+			
+			// First time rendering this face: clear everything (color + depth)
+			GLfloat ClearValues[] = { 1.0f, 0.0f, 0.0f, 0.0f };
+			glClearBufferfv(GL_COLOR, 0, ClearValues);
+			glClear(GL_DEPTH_BUFFER_BIT); // Wipes only this face's independent canvas layer
+		}
+		else
+		{
+			// --- HARDWARE TILE CACHE LOCK ---
+			// We freeze depth mutations explicitly BEFORE running the color clear!
+			// This locks your cached depth face layer, telling the driver it is read-only
+			// and preventing the color clear from invalidating its Hi-Z tiles.
+			glDepthMask(GL_FALSE);
+
+			// BSP already cached: only clear .a channel (mesh data) while preserving .r (BSP depth)
+			glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);  // Alpha only
+			glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+			glClear(GL_COLOR_BUFFER_BIT);
+			glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);  // Restore
+		}
+
+		// Keep glDepthMask(GL_FALSE) active here if the BSP is cached!
+		// This protects your write-once static world depth maps from being corrupted by dynamic actors.
+		if (CurrentFaceMask & (1 << face))
+		{
+			RenderFaceGeometry(Level, Frame, face, CurrentFrameActors, GL);
+		}
+
+		// Restore standard depth writing capability before stepping to the next face quadrant
+		glDepthMask(GL_TRUE);
+		FaceFbos[face]->Unbind();
+	}
+
+	// Restore standard screen depth writes and viewport coordinates for the main player pass
+	glDepthMask(GL_TRUE);
+	glViewport(PrevViewport[0], PrevViewport[1], PrevViewport[2], PrevViewport[3]);
 }
 
 void UXOpenGLHeroLight::ClearShadowMapTexture()
 {
     if (HasActiveShadowMap())
     {
-        /*
-        // 1. Bind our private Framebuffer Object context
-        ShadowFbo->Bind();
-
-        // Stash the active viewport configuration so we don't disrupt the main viewport loop
-        GLint PrevViewport[4];
-        glGetIntegerv(GL_VIEWPORT, PrevViewport);
-        glViewport(0, 0, 512, 512);
-
-        GLenum DrawBuffers[] = { GL_COLOR_ATTACHMENT0 };
-
-        // 2. Loop through all 6 structural cube map faces
-        for (INT face = 0; face < 6; face++)
-        {
-            if (CurrentFaceMask & (1 << face))
-            {
-                // Attach this specific face layer to the framebuffer target
-                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, ShadowFbo->colorTexIDs[0], 0);
-                glDrawBuffers(1, DrawBuffers);
-
-                // Baseline Clear Matrix Values: Red (Depth) = 1.0f, Green (Mask) = 0.0f
-                GLfloat ClearValues[] = { 1.0f, 0.0f, 0.0f, 0.0f };
-                glClearBufferfv(GL_COLOR, 0, ClearValues);
-
-                // Clear the hardware depth buffer attachment if present on the FBO
-                glClear(GL_DEPTH_BUFFER_BIT);
-            }
-        }
-
-        // 3. Detach and restore standard main context viewport properties to prevent state leakage
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, 0);
-        glViewport(PrevViewport[0], PrevViewport[1], PrevViewport[2], PrevViewport[3]);
-        ShadowFbo->Unbind();
-
-        // 4. Force state reset indicators so the next activation pass knows it must rebuild completely
-        */
         CurrentFaceMask = 0;
         LastFrameActors.Empty(); // Ensure fresh render if/when this comes back into scope
     }
 }
-
 
 // ------------------------------------------------------------
 // Uniform Pipeline Binder
 // ------------------------------------------------------------
 void UXOpenGLHeroLight::BindTextures(GLuint BaseTextureUnit) const
 {
-    if (!ShadowFbo) return;
-    
-    // Bind depth / ,ask texture to texture unit N
+    // Ensure our color cubemap handle is fully allocated and valid before binding
+    if (ColorCubemapID == 0) 
+        return;
+
     glActiveTexture(GL_TEXTURE0 + BaseTextureUnit);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, ShadowFbo->colorTexIDs[0]);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, ColorCubemapID);
+}
+
+void UXOpenGLHeroLight::BindDepthTexture(GLuint BaseTextureUnit) const
+{
+    if (DepthCubemapID == 0) 
+        return;
+
+    glActiveTexture(GL_TEXTURE0 + BaseTextureUnit);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, DepthCubemapID);
 }
 
 void UXOpenGLHeroLight::MakeTextureResident()
 {
-    if (!ShadowFbo) return;
-
     // Generate the bindless handle once if it doesn't exist yet
-    if (BindlessMaskHandle == 0)
+    if (BindlessMaskHandle == 0 && ColorCubemapID != 0)
     {
-        BindlessMaskHandle = glGetTextureHandleARB(ShadowFbo->colorTexIDs[0]);
+        // Reference your own cleanly stored class texture handle natively!
+        BindlessMaskHandle = glGetTextureHandleARB(ColorCubemapID);
+    }
+    else
+    {
+        int moo = 5;
     }
 
     // Make the handle resident so the GPU can access it blindly via its 64-bit address
@@ -865,5 +952,11 @@ void UXOpenGLHeroLight::MakeTextureResident()
         glMakeTextureHandleResidentARB(BindlessMaskHandle);
         bIsHandleResident = TRUE;
     }
+    else
+    {
+        int moo = 5;
+    }
 }
+
+
 
