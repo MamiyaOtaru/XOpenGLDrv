@@ -34,8 +34,6 @@ private:
     GLuint64 BindlessMaskHandle = 0;
     UBOOL    bIsHandleResident = FALSE;
 
-    BYTE CurrentFaceMask = 0;
-
     BOOL bspDrawn[6] = { FALSE, FALSE, FALSE, FALSE, FALSE, FALSE };
     
     TArray<CachedActorState> LastFrameActors;
@@ -68,6 +66,8 @@ public:
 
     UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<INT, TArray<AActor*>>& StaticLightsMap, UXOpenGLRenderDevice* GL);
     ~UXOpenGLHeroLight();
+
+    BYTE CurrentFaceMask = 0;
 
     UBOOL HasValidShadowMap() const { return (ColorCubemapID != 0); }
 

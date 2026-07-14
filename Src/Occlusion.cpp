@@ -138,6 +138,8 @@ struct FPendingLightmap
     float AtlasMaxU = 0.f;
     float AtlasMinV = 0.f;
     float AtlasMaxV = 0.f;
+
+    TArray<DWORD> LocalRejectionMasks;
 };
 TArray<FPendingLightmap> PendingLightmaps;
 
@@ -533,173 +535,159 @@ UBOOL UXOpenGLRenderDevice::BSPVisibilityRay(
     return !occluded;
 }
 
-inline FVector GammaLiftLum(const FVector& v, float gamma)
-{
-    // Perceptual luminance
-    float L = v.X * 0.299f + v.Y * 0.587f + v.Z * 0.114f;
-
-    // Gamma-lift luminance
-    float Lg = powf(L, 1.0f / gamma);
-
-    // Preserve chroma
-    float invL = (L > 0.0001f) ? (1.0f / L) : 0.0f;
-    FVector chroma = v * invL;
-
-    return chroma * Lg;
-}
-
-// get shadow factor for a single surface point by point by testing visibility to each light and accumulating contribution
-FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(
-    const TArray<AActor*>& Lights,
+// =========================================================================
+// GRID-LEVEL SINGLE LIGHT EVALUATOR (PER-SURFACE METADATA BAKER)
+// Loops through every coordinate pixel on the surface for a single light source.
+// Populates temporary, isolated absolute energy arrays via references.
+// Returns the absolute total unoccluded energy accumulated across the entire grid surface.
+// =========================================================================
+FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(
+    AActor* Light,
     INT iSurf,
-    const FVector& WorldPos,
-    const SurfaceBasis& Basis,
     UModel* Model,
     UBOOL TwoSided,
-    UBOOL isMover)
+    UBOOL bIsMover,
+    INT W, INT H,
+    FLOAT minU, FLOAT maxU,
+    FLOAT minV, FLOAT maxV,
+    const SurfaceBasis& Basis,
+    TArray<FPlane>& TempShadowedGrid,
+    TArray<FPlane>& TempUnshadowedGrid)
 {
-    FPlane Shadowed(0,0,0,0);
-    FPlane Unshadowed(0,0,0,0);
+    // Initialize our temporary light tracking arrays to clean absolute zeros
+    TempShadowedGrid.Empty(W * H);
+    TempUnshadowedGrid.Empty(W * H);
+    TempShadowedGrid.AddZeroed(W * H);
+    TempUnshadowedGrid.AddZeroed(W * H);
 
-    if (Lights.Num() == 0)
-        return FPlane(1,1,1,1); // no obstruction
+    // Track total physical radiometric energy received by this light source across the grid
+    FLOAT TotalGridUnoccludedEnergy = 0.0f;
 
-    for (INT i = 0; i < Lights.Num(); ++i)
+    if (!Light)
+        return 0.0f;
+
+    FakeSpotlightPair* SpotData = GetSpotlightData(Light);
+    UBOOL bIsSpot = (SpotData != nullptr);
+
+    FLOAT Radius = bIsSpot ? SpotData->ReachRadius : Light->WorldLightRadius();
+    if (Radius <= 0.f)
+        return 0.0f;
+
+    FVector TargetLightPos = bIsSpot ? SpotData->TopLight->Location : Light->Location;
+
+    // Pre-calculate structural UV coordinate dimensions
+    FLOAT USize = maxU - minU;
+    FLOAT VSize = maxV - minV;
+
+    // Multipliers utilized to bypass coplanar rounding gaps inside the raycaster
+    FLOAT mult = 2.0f;
+    if (TwoSided) mult = 10.0f;
+    if (bIsMover)  mult = 2.0f;
+
+    // --- HIGH-FREQUENCY 2D GRID SURFACE ITERATION BLOCK ---
+    for (INT y = 0; y < H; ++y)
     {
-        AActor* Light = Lights(i);
-        if (!Light)
-            continue;
+        FLOAT v = (y + 0.5f) / FLOAT(H);
+        FLOAT V = minV + v * VSize;
 
-        FakeSpotlightPair* SpotData = GetSpotlightData(Light);
-        UBOOL bIsSpot = (SpotData != nullptr);
-
-        FLOAT Radius = bIsSpot ? SpotData->ReachRadius : Light->WorldLightRadius();
-        if (Radius <= 0.f)
-            continue;
-
-        // For spotlights, rays emanate from the ceiling fixture (TopLight)
-        // For normal point lights, use their own location vector
-        FVector TargetLightPos = bIsSpot ? SpotData->TopLight->Location : Light->Location;
-
-        // All vector operations now use TargetLightPos safely!
-        FVector L = TargetLightPos - WorldPos;
-        FLOAT Dist = L.Size();
-        if (Dist <= SMALL_NUMBER)
-            continue;
-
-        FVector Ldir = L / Dist;
-        FLOAT NdotL = (Basis.Normal | Ldir);
-        if (TwoSided)
-            NdotL = fabs(NdotL);
-        if (NdotL <= 0.f)
-            continue;
-
-        // Match the GPU's linear falloff
-        FLOAT x = Clamp(Dist / Radius, 0.0f, 1.0f);
-        FLOAT Atten = 1.0f - x;
-
-        if (Atten <= 0.f)
-            continue;
-
-        FPlane RGB;
-        if (Light->LightType == LT_TexturePaletteOnce || Light->LightType == LT_TexturePaletteLoop)
+        for (INT x = 0; x < W; ++x)
         {
-            FLOAT AnimatedBrightness = Light->LightBrightness;
-            RGB = FPlane(AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, 1.0f);
-        }
-        else
-        {
-            // For spotlights, use enhanced brightness profile values from our detection
-            FLOAT BaseBrightness = bIsSpot ? (FLOAT)SpotData->Brightness : Light->LightBrightness;
-            RGB = FGetHSV(
-                Light->LightHue,
-                Light->LightSaturation,
-                (BYTE)BaseBrightness
-            );
-        }
-        // --- SPOTLIGHT CONE FACTOR ---
-        float ConeFactor = 1.0f;
-        if (bIsSpot)
-        {
-            FVector LightDirNorm = (WorldPos - TargetLightPos).SafeNormal();
-            float CosAngle = LightDirNorm | SpotData->SpotDirection;
+            FLOAT u = (x + 0.5f) / FLOAT(W);
+            FLOAT U = minU + u * USize;
 
-            // Completely outside the spotlight beam? Reject the light loop.
-            if (CosAngle < SpotData->SpotCosOuter)
+            // Compute exact real-world 3D point coordinates
+            FVector WorldPos = Basis.Origin + (Basis.TangentU * U) + (Basis.TangentV * V);
+            INT PixelIndex = y * W + x;
+
+            // Evaluate standard distance boundary thresholds
+            FVector L = TargetLightPos - WorldPos;
+            FLOAT Dist = L.Size();
+            if (Dist <= SMALL_NUMBER)
                 continue;
 
-            // Penumbra smooth edge interpolation in Pure Cosine Space
-            if (CosAngle < SpotData->SpotCosInner)
-            {
-                float Range = SpotData->SpotCosInner - SpotData->SpotCosOuter;
-                float CosineGradient = (CosAngle - SpotData->SpotCosOuter) / Max(Range, 0.001f);
-                float BaseCone = Clamp(CosineGradient, 0.0f, 1.0f);
+            FVector Ldir = L / Dist;
+            FLOAT NdotL = (Basis.Normal | Ldir);
+            if (TwoSided)
+                NdotL = fabs(NdotL);
+            if (NdotL <= 0.f)
+                continue;
 
-                // --- ZERO-TRANSCENDENTAL CONTRAST SQUEEZE ---
-                // Raising the pure cosine gradient to a power of 5 or 6 perfectly
-                // counteracts both the cosine distortion and the vertical Lambertian flat-line,
-                // matching your acos^4 look at a fraction of the CPU cycle cost!
-                ConeFactor = BaseCone * BaseCone * BaseCone * BaseCone * BaseCone * BaseCone; 
+            // Match high-precision GPU linear attenuation falloffs
+            FLOAT ClampedDist = Clamp(Dist / Radius, 0.0f, 1.0f);
+            FLOAT Atten = 1.0f - ClampedDist;
+            if (Atten <= 0.f)
+                continue;
+
+            // Quantize base illumination colors via core palettes
+            FPlane RGB;
+            if (Light->LightType == LT_TexturePaletteOnce || Light->LightType == LT_TexturePaletteLoop)
+            {
+                FLOAT AnimatedBrightness = Light->LightBrightness;
+                RGB = FPlane(AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, 1.0f);
+            }
+            else
+            {
+                FLOAT BaseBrightness = bIsSpot ? (FLOAT)SpotData->Brightness : Light->LightBrightness;
+                RGB = FGetHSV(Light->LightHue, Light->LightSaturation, (BYTE)BaseBrightness);
             }
 
-            // Apply your uniform distance intensity booster
-            ConeFactor *= 2.5f; 
-        }
+            // --- OPTIONAL SPOTLIGHT CONE INTERPOLATION ---
+            FLOAT ConeFactor = 1.0f;
+            if (bIsSpot)
+            {
+                FVector LightDirNorm = (WorldPos - TargetLightPos).SafeNormal();
+                FLOAT CosAngle = LightDirNorm | SpotData->SpotDirection;
 
-        // Apply all spatial factors
-        FVector Color = RGB * NdotL * Atten * ConeFactor;
+                if (CosAngle < SpotData->SpotCosOuter)
+                    continue; // Completely outside the beam envelope
 
-        // Always accumulate unshadowed
-        Unshadowed.X += Color.X;
-        Unshadowed.Y += Color.Y;
-        Unshadowed.Z += Color.Z;
+                if (CosAngle < SpotData->SpotCosInner)
+                {
+                    FLOAT Range = SpotData->SpotCosInner - SpotData->SpotCosOuter;
+                    FLOAT CosineGradient = (CosAngle - SpotData->SpotCosOuter) / Max(Range, 0.001f);
+                    FLOAT BaseCone = Clamp(CosineGradient, 0.0f, 1.0f);
 
-        // Occlusion test
-        float mult = 2.0f;
-        if (TwoSided)
-            mult = 10.0f;
-        if (isMover)
-            mult = 2.0f; 
+                    // Zero-Transcendental contrast boost to balance vertical Lambertian flat-lines
+                    ConeFactor = BaseCone * BaseCone * BaseCone * BaseCone * BaseCone * BaseCone;
+                }
 
-        // Start slightly off the surface toward the light source position
-        FVector SamplePos = WorldPos + Basis.Normal * mult;
+                ConeFactor *= 2.5f; // Hardcoded intensity booster constant
+            }
 
-        // FIX: Trace visibility check line directly back up to the ceiling fixture center!
-        bool bUnobstructed = BSPVisibilityRay(Model, iSurf, SamplePos, TargetLightPos);
+            // Compute the absolute raw, unoccluded radiometric energy vector for this coordinate
+            FVector AbsoluteColor = RGB * NdotL * Atten * ConeFactor;
 
-        if (TwoSided)
-        {
-            SamplePos = WorldPos - Basis.Normal * mult;
-            bUnobstructed = bUnobstructed || BSPVisibilityRay(Model, iSurf, SamplePos, TargetLightPos);
-        }
+            // Log raw unshadowed absolute values into the temporary isolated array buffer
+            TempUnshadowedGrid(PixelIndex).X = AbsoluteColor.X;
+            TempUnshadowedGrid(PixelIndex).Y = AbsoluteColor.Y;
+            TempUnshadowedGrid(PixelIndex).Z = AbsoluteColor.Z;
+            TempUnshadowedGrid(PixelIndex).W = 1.0f;
 
-        if (bUnobstructed)
-        {
-            Shadowed.X += Color.X;
-            Shadowed.Y += Color.Y;
-            Shadowed.Z += Color.Z;
+            // Accumulate absolute luminance intensity straight into the surface tracker
+            TotalGridUnoccludedEnergy += (AbsoluteColor.X + AbsoluteColor.Y + AbsoluteColor.Z);
+
+            // --- GEOMETRIC OCCLUSION RAYCAST TRACING ---
+            FVector SamplePos = WorldPos + Basis.Normal * mult;
+            UBOOL bUnobstructed = BSPVisibilityRay(Model, iSurf, SamplePos, TargetLightPos);
+
+            if (TwoSided)
+            {
+                SamplePos = WorldPos - Basis.Normal * mult;
+                bUnobstructed = bUnobstructed || BSPVisibilityRay(Model, iSurf, SamplePos, TargetLightPos);
+            }
+
+            // Commit absolute energies to our shadowed temporary array index ONLY if rays hit
+            if (bUnobstructed)
+            {
+                TempShadowedGrid(PixelIndex).X = AbsoluteColor.X;
+                TempShadowedGrid(PixelIndex).Y = AbsoluteColor.Y;
+                TempShadowedGrid(PixelIndex).Z = AbsoluteColor.Z;
+                TempShadowedGrid(PixelIndex).W = 1.0f;
+            }
         }
     }
 
-    // Compute ratio per channel safely
-    const float eps = 0.0001f;
-    
-    float vanillaLightmapIntensity = 2.0;
-    float hdLightmapIntensity = 2.0; 
-    Unshadowed.X *= hdLightmapIntensity * vanillaLightmapIntensity;   Unshadowed.Y *= hdLightmapIntensity * vanillaLightmapIntensity;   Unshadowed.Z *= hdLightmapIntensity * vanillaLightmapIntensity;
-    Shadowed.X   *= hdLightmapIntensity * vanillaLightmapIntensity;   Shadowed.Y   *= hdLightmapIntensity * vanillaLightmapIntensity;   Shadowed.Z   *= hdLightmapIntensity * vanillaLightmapIntensity;
-
-    float FinalR = Shadowed.X / (Unshadowed.X + eps);
-    float FinalG = Shadowed.Y / (Unshadowed.Y + eps);
-    float FinalB = Shadowed.Z / (Unshadowed.Z + eps);
-
-    FinalR = Clamp(FinalR, 0.0f, 1.0f);
-    FinalG = Clamp(FinalG, 0.0f, 1.0f);
-    FinalB = Clamp(FinalB, 0.0f, 1.0f);
-    
-    float a = 0.2126f*FinalR + 0.7152f*FinalG + 0.0722f*FinalB;
-
-    return FPlane(FinalR, FinalG, FinalB, a);
+    return TotalGridUnoccludedEnergy;
 }
 
 static FString SanitizeFilename(const FString& In)
@@ -809,6 +797,10 @@ void DumpAtlasToDisk(const FString& AtlasName, const TArray<FPendingLightmap>& P
         FLOAT MinV, MaxV;
         FLOAT AtlasMinU, AtlasMaxU;
         FLOAT AtlasMinV, AtlasMaxV;
+
+        // FIXED STRUCT ENCAPSULATION ENHANCEMENT
+        INT   MaskCount;                 // How many DWORD blocks follow in memory
+        DWORD LocalRejectionMasks[0];    // Flexible Array Member: maps memory contiguously!
     };
 
     FString OutKTX2Path = AtlasName;
@@ -821,15 +813,23 @@ void DumpAtlasToDisk(const FString& AtlasName, const TArray<FPendingLightmap>& P
     if (!Ar) 
         return;
 
-    // --- STAGE A: CALCULATE DYNAMIC KVD KEY/VALUE LENGTHS ---
+    // --- STAGE A: CALCULATE DYNAMIC KVD VALUE LENGTHS ---
     const char* KvdKey = "UE1_AtlasMetadata";
-    uint32_t KeyByteLength = 18; // Length of "UE1_AtlasMetadata" + 1 null terminator
-    uint32_t ValueByteLength = (uint32_t)PendingLightmaps.Num() * sizeof(FAtlasEntryBinary);
+    uint32_t KeyByteLength = 18; 
     
-    // Total space for the key, value, and the length header itself
+    // Calculate ValueByteLength using your unified struct footprint rules
+    uint32_t ValueByteLength = 0;
+    for (INT i = 0; i < PendingLightmaps.Num(); ++i)
+    {
+        INT SurfID = PendingLightmaps(i).SurfIndex;
+        
+        // Base size of your unified structural header fields (36 bytes + 4 bytes for MaskCount)
+        ValueByteLength += sizeof(FAtlasEntryBinary);
+        ValueByteLength += PendingLightmaps(i).LocalRejectionMasks.Num() * sizeof(DWORD);
+    }
+    
+    // Total KVD Record Sizes and hardware alignment padding offsets stay identical!
     uint32_t RawKvdRecordSize = sizeof(uint32_t) + KeyByteLength + ValueByteLength;
-    
-    // KTX2 requires every individual KVD record to be 4-byte aligned
     uint32_t KvdRecordPaddingSize = (4 - (RawKvdRecordSize % 4)) % 4;
     uint32_t TotalKvdBlockLength = RawKvdRecordSize + KvdRecordPaddingSize;
 
@@ -890,23 +890,34 @@ void DumpAtlasToDisk(const FString& AtlasName, const TArray<FPendingLightmap>& P
     // C: Stream your raw structs directly into the KTX2 container head
     if (PendingLightmaps.Num() > 0)
     {
-        TArray<FAtlasEntryBinary> BinaryBlock;
-        BinaryBlock.AddZeroed(PendingLightmaps.Num());
-
         for (INT i = 0; i < PendingLightmaps.Num(); ++i)
         {
-            const FPendingLightmap& LM = PendingLightmaps(i);
-            BinaryBlock(i).SurfIndex  = LM.SurfIndex;
-            BinaryBlock(i).MinU       = LM.MinU;
-            BinaryBlock(i).MaxU       = LM.MaxU;
-            BinaryBlock(i).MinV       = LM.MinV;
-            BinaryBlock(i).MaxV       = LM.MaxV;
-            BinaryBlock(i).AtlasMinU  = LM.AtlasMinU;
-            BinaryBlock(i).AtlasMaxU  = LM.AtlasMaxU;
-            BinaryBlock(i).AtlasMinV  = LM.AtlasMinV;
-            BinaryBlock(i).AtlasMaxV  = LM.AtlasMaxV;
+            const FPendingLightmap& Pending = PendingLightmaps(i);
+
+            // Populate your unified structure variables cleanly
+            FAtlasEntryBinary BaseEntry;
+            BaseEntry.SurfIndex = Pending.SurfIndex;
+            BaseEntry.MinU      = Pending.MinU;
+            BaseEntry.MaxU      = Pending.MaxU;
+            BaseEntry.MinV      = Pending.MinV;
+            BaseEntry.MaxV      = Pending.MaxV;
+            BaseEntry.AtlasMinU = Pending.AtlasMinU;
+            BaseEntry.AtlasMaxU = Pending.AtlasMaxU;
+            BaseEntry.AtlasMinV = Pending.AtlasMinV;
+            BaseEntry.AtlasMaxV = Pending.AtlasMaxV;
+        
+            // Store the active mask count directly inside the struct element tracker
+            BaseEntry.MaskCount = Pending.LocalRejectionMasks.Num();
+
+            // 1. Write out the core structured parameters block (including MaskCount)
+            Ar->Serialize(&BaseEntry, sizeof(FAtlasEntryBinary));
+
+            // 2. Immediately write the flexible array elements trailing natively behind it
+            if (BaseEntry.MaskCount > 0)
+            {
+                Ar->Serialize((void*)Pending.LocalRejectionMasks.GetData(), BaseEntry.MaskCount * sizeof(DWORD));
+            }
         }
-        Ar->Serialize(&BinaryBlock(0), ValueByteLength);
     }
 
     // D: Write 4-byte structural record padding if necessary
@@ -1335,89 +1346,154 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
         float USize = Max(0.001f, maxU - minU);
         float VSize = Max(0.001f, maxV - minV);
 
-        TArray<FPlane> Pixels;
-        Pixels.AddZeroed(W * H);
+        // MASTER ACCUMULATION GRIDS FOR LINEAR RADIATION MIXING
+        TArray<FPlane> MasterShadowedGrid;
+        TArray<FPlane> MasterUnshadowedGrid;
+        MasterShadowedGrid.AddZeroed(W * H);
+        MasterUnshadowedGrid.AddZeroed(W * H);
 
-        for (INT y = 0; y < H; ++y)
+        TArray<FPlane> TempShadowedGrid;
+        TArray<FPlane> TempUnshadowedGrid;
+
+        TArray<DWORD> LocalRejectionBitmask;
+        // Calculate how many DWORD blocks we need to cover this surface's local light list width
+        INT NumDwordsNeeded = (Lights.Num() + 31) / 32; 
+        LocalRejectionBitmask.AddZeroed(NumDwordsNeeded);
+
+        // =========================================================================
+        // THE LOOP INVERSION: LOOP LIGHTS FIRST (OUTER LEVEL TRANSITION)
+        // =========================================================================
+        for (INT l = 0; l < Lights.Num(); ++l)
         {
-            // We'll loop here until it's safe to process this row
+            AActor* Light = Lights(l);
+            if (!Light)
+                continue;
+
+            // THREAD-SAFETY MECHANISM: GATE AT THE ENTRY OF EACH INDEPENDENT LIGHT PASS
+            // We'll loop here until it's safe to let this specific light execute its raycasts
             for (;;)
             {
                 ULevel* FrameLevel = GFrameLevel.load(std::memory_order_acquire);
 
-                // Case 1: engine is between frames: pause on this row
+                // Case 1: Engine is between frames: pause and wait
                 if (FrameLevel == nullptr)
                 {
                     if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
                         return;
 
                     std::this_thread::yield();
-                    continue; // stay on the same y, don't enter BSP, don't touch the level - continue goes back to the for (;;)
+                    continue; // Back to the for (;;), retry the same light index
                 }
 
-                // Case 2: level changed: abort this surface/job
+                // Case 2: Level changed entirely: abort this complete surface job
                 if (FrameLevel != Level)
                 {
                     return;
                 }
 
-                // Tentatively enter the danger zone for this row
+                // Tentatively enter the danger zone for this light's full grid execution
                 GOcclusionInBSP.fetch_add(1, std::memory_order_acquire);
 
-                // Re-check after increment to catch races with Unlock/level change
+                // Double-check after increment to catch tight races with Unlock/level changes
                 FrameLevel = GFrameLevel.load(std::memory_order_acquire);
 
-                // Still the same level: we're good, break out and do the row
+                // Still the identical level: we are verified good to break and process the light
                 if (FrameLevel == Level)
                     break;
 
-                // Not the same anymore: back out of the danger zone
+                // Not matching anymore: back cleanly out of the danger zone immediately
                 GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
 
-                // If it's nullptr now, we just slipped between frames: pause and retry this row
+                // If it's nullptr now, we just slipped between frame margins: pause and retry
                 if (FrameLevel == nullptr)
                 {
                     if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
                         return;
 
                     std::this_thread::yield();
-                    continue; // retry same y
+                    continue; // Retry same light index
                 }
 
-                // Otherwise it was a different non-null level: abort
+                // Otherwise, it was a totally different non-null level: hard abort
                 return;
             }
 
-            for (INT x = 0; x < W; ++x)
+            // =========================================================================
+            // EXECUTE HIGH-SPEED ISOLATED SINGLE LIGHT GRID ALLOCATION PASS
+            // =========================================================================
+            FLOAT LightEnergyOnSurface = EvaluateSingleLightContribution(
+                Light, iSurf, Model, TwoSided, isMover, W, H, minU, maxU, minV, maxV, Basis,
+                TempShadowedGrid, TempUnshadowedGrid
+            );
+
+            // --- THE ENERGY-BASED EARLY REJECTION GATE ---
+            if (LightEnergyOnSurface > 0.001f)
             {
-                float u = (x + 0.5f) / float(W);
-                float v = (y + 0.5f) / float(H);
-                float U = minU + u * USize;
-                float V = minV + v * VSize;
+                // The light contributes physical energy to this surface.
+                // Accumulate absolute raw color parameters down into the master buffers!
+                for (INT p = 0; p < W * H; ++p)
+                {
+                    MasterShadowedGrid(p).X   += TempShadowedGrid(p).X;
+                    MasterShadowedGrid(p).Y   += TempShadowedGrid(p).Y;
+                    MasterShadowedGrid(p).Z   += TempShadowedGrid(p).Z;
 
-                FVector WorldPos =
-                    Basis.Origin +
-                    Basis.TangentU * U +
-                    Basis.TangentV * V;
-
-                FPlane Color = EvaluateStaticShadowFactor(Lights, iSurf, WorldPos, Basis, Model, TwoSided, isMover);
-                /*if (IsHighlightTexture(Surf.Texture)) {
-                    Color.X = 1;
-                    Color.Y = 0;
-                    Color.Z = 1;
-                    Color.W = 1;
+                    MasterUnshadowedGrid(p).X += TempUnshadowedGrid(p).X;
+                    MasterUnshadowedGrid(p).Y += TempUnshadowedGrid(p).Y;
+                    MasterUnshadowedGrid(p).Z += TempUnshadowedGrid(p).Z;
                 }
-                else {
-                    Color.X = 0;
-                    Color.Y = 0;
-                    Color.Z = 0;
-                    Color.W = 1;
-                }*/
-                Pixels(y * W + x) = Color;
             }
-            // exit danger zone for row, allow unlock to proceed if waiting
+            else if (!isMover)
+            {
+                // Absolute O(1) Local List Bitmapping
+                // We set the bit matching the exact local index of the light.
+                INT DwordIdx = l / 32;
+                INT BitIdx   = l % 32;
+                LocalRejectionBitmask(DwordIdx) |= (1 << BitIdx);
+            }
+
+            // Exit the danger zone for this specific light pass, allowing unlock sweeps to proceed natively
             GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
+        } // End of outer Lights loop
+
+        // =========================================================================
+        // LATE COMPOSITING PASS: RESOLVE INTENSITIES & COMPILE FINAL RATIOS
+        // =========================================================================
+        TArray<FPlane> Pixels;
+        Pixels.AddZeroed(W * H);
+
+        const float eps = 0.0001f;
+        float vanillaLightmapIntensity = 2.0f;
+        float hdLightmapIntensity      = 2.0f; 
+        float TotalIntensityScale      = hdLightmapIntensity * vanillaLightmapIntensity;
+
+        for (INT p = 0; p < W * H; ++p)
+        {
+            // Scale absolute radiometric energy totals before performing ratio divisions
+            MasterUnshadowedGrid(p).X *= TotalIntensityScale;
+            MasterUnshadowedGrid(p).Y *= TotalIntensityScale;
+            MasterUnshadowedGrid(p).Z *= TotalIntensityScale;
+
+            MasterShadowedGrid(p).X   *= TotalIntensityScale;
+            MasterShadowedGrid(p).Y   *= TotalIntensityScale;
+            MasterShadowedGrid(p).Z   *= TotalIntensityScale;
+
+            // Safely extract linear ratio proportions per channel
+            float FinalR = (MasterUnshadowedGrid(p).X > eps) ? (MasterShadowedGrid(p).X / MasterUnshadowedGrid(p).X) : 0.0f;
+            float FinalG = (MasterUnshadowedGrid(p).Y > eps) ? (MasterShadowedGrid(p).Y / MasterUnshadowedGrid(p).Y) : 0.0f;
+            float FinalB = (MasterUnshadowedGrid(p).Z > eps) ? (MasterShadowedGrid(p).Z / MasterUnshadowedGrid(p).Z) : 0.0f;
+
+            FinalR = Clamp(FinalR, 0.0f, 1.0f);
+            FinalG = Clamp(FinalG, 0.0f, 1.0f);
+            FinalB = Clamp(FinalB, 0.0f, 1.0f);
+        
+            // Calculate your standard alpha luminance factor exactly as before
+            float a = 0.2126f * FinalR + 0.7152f * FinalG + 0.0722f * FinalB;
+
+            Pixels(p) = FPlane(FinalR, FinalG, FinalB, a);
         }
+
+        // Store your fully completed rejection tracking data straight into the lightmap metadata!
+        //LM.OcclusionRejectionMask = OcclusionRejectionMask;
 
         ApplyAntialias(reinterpret_cast<FPlane*>(Pixels.GetData()), W, H);
 
@@ -1561,6 +1637,9 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
         SI->HDLightmap.SurfMaxV  = Pending.MaxV;
         if (SI->IsMover)
             SI->HDLightmap.OriginOffset = SI->LightmapBasis.Origin - SI->Owner->Location;
+
+        SI->LocalRejectionMasks = LocalRejectionBitmask;
+        Pending.LocalRejectionMasks = LocalRejectionBitmask;
 
         ComputeFinalAtlasUVs(*SI,
                                 Pending.Basis,
@@ -2171,20 +2250,87 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
         FLOAT MinV, MaxV;
         FLOAT AtlasMinU, AtlasMaxU;
         FLOAT AtlasMinV, AtlasMaxV;
+        INT   MaskCount;
+        // DWORD LocalRejectionMasks; // Contiguously following on the stream cursor
     };
-    uint32_t RealPayloadBytes = KvdRecordSize - 18;
-    INT EntryCount = RealPayloadBytes / sizeof(FAtlasEntry);
 
-    TArray<FAtlasEntry> Entries;
-    if (EntryCount > 0 && EntryCount < 100000) 
+    uint32_t RealPayloadBytes = KvdRecordSize - 18;
+
+    // --- RUNTIME PLATFORM STRUCT MAPPING ---
+    if (RealPayloadBytes > 0 && RealPayloadBytes < 50000000) 
     {
-        Entries.AddZeroed(EntryCount);
-        // Bulk-serialize our raw structural data matrices directly out of the texture head!
-        Ar->Serialize(&Entries(0), RealPayloadBytes);
+        // Allocate a temporary heap buffer to pull the raw chunk from disk
+        TArray<BYTE> RawBlockBuffer;
+        RawBlockBuffer.AddZeroed(RealPayloadBytes);
+        Ar->Serialize(RawBlockBuffer.GetData(), RealPayloadBytes);
+
+        BYTE* StreamCursor = reinterpret_cast<BYTE*>(RawBlockBuffer.GetData());
+        BYTE* StreamEndGate = StreamCursor + RealPayloadBytes;
+        INT Entries = 0;
+
+        // Stream unpacker: Read through the variable-width blocks sequentially
+        while (StreamCursor < StreamEndGate)
+        {
+            // 1. Cast the current address directly to your base struct layout
+            FAtlasEntry* BaseHeader = reinterpret_cast<FAtlasEntry*>(StreamCursor);
+            StreamCursor += sizeof(FAtlasEntry);
+
+            // Fetch our long-lived permanent surface allocation handle
+            FSurfInfo* SI = GetSurfInfoByID(BaseHeader->SurfIndex);
+            if (SI != nullptr)
+            {
+                // Hydrate the baseline properties cleanly
+                SI->HasHDLightmap = true;
+
+                // RESTORED NATIVE RUNTIME GEOMETRY MATRIX BUILDS
+                FBspSurf& Surf = Level->Model->Surfs(BaseHeader->SurfIndex);
+                UXOpenGLRenderDevice::SurfaceBasis Basis = BuildSurfaceBasis(SI, Level, Surf);
+                SI->LightmapBasis = Basis;
+
+                FSurfaceLightmap& LM = SI->HDLightmap;
+                LM.AtlasMinU = BaseHeader->AtlasMinU; 
+                LM.AtlasMaxU = BaseHeader->AtlasMaxU;
+                LM.AtlasMinV = BaseHeader->AtlasMinV; 
+                LM.AtlasMaxV = BaseHeader->AtlasMaxV;
+                LM.SurfMinU  = BaseHeader->MinU;       
+                LM.SurfMaxU  = BaseHeader->MaxU;
+                LM.SurfMinV  = BaseHeader->MinV;       
+                LM.SurfMaxV  = BaseHeader->MaxV;
+            
+                if (SI->IsMover)
+                    LM.OriginOffset = SI->LightmapBasis.Origin - SI->Owner->Location;
+
+                // RESTORED NATIVE UV COMPOSITING MATHEMATICS
+                ComputeFinalAtlasUVs(*SI, Basis, BaseHeader->MinU, BaseHeader->MaxU, BaseHeader->MinV, BaseHeader->MaxV, BaseHeader->AtlasMinU, BaseHeader->AtlasMaxU, BaseHeader->AtlasMinV, BaseHeader->AtlasMaxV);
+            }
+
+            // 2. Extract the flexible array elements trailing natively behind it
+            if (BaseHeader->MaskCount > 0)
+            {
+                if (SI != nullptr)
+                {
+                    // Dynamic array sizing allocation safety layer
+                    SI->LocalRejectionMasks.Empty(BaseHeader->MaskCount);
+                    SI->LocalRejectionMasks.AddZeroed(BaseHeader->MaskCount);
+                
+                    SIZE_T MaskBytesWidth = BaseHeader->MaskCount * sizeof(DWORD);
+                    appMemcpy(SI->LocalRejectionMasks.GetData(), StreamCursor, MaskBytesWidth);
+                }
+            
+                // Move stream cursor past the flexible array data block contiguously
+                StreamCursor += (BaseHeader->MaskCount * sizeof(DWORD));
+            }
+            else if (SI != nullptr)
+            {
+                SI->LocalRejectionMasks.Empty();
+            }
+            Entries++;
+        }
+        debugf(TEXT("XOpenGL: Successfully ingested single-file KTX2 lightmap package %s [%d entries loaded]"), *AtlasKTX2, Entries);
     }
     else
     {
-        debugf(TEXT("XOpenGL: Corrupt or out-of-bounds dictionary entry allocation size: %d"), EntryCount);
+        debugf(TEXT("XOpenGL: Corrupt or out-of-bounds dictionary entry allocation size: %u"), RealPayloadBytes);
         Ar->Close(); delete Ar; return false;
     }
 
@@ -2199,12 +2345,6 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
     // We are completely finished reading from disk! Close the file archive stream cleanly.
     Ar->Close();
     delete Ar;
-
-    if (Entries.Num() == 0)
-    {
-        debugf(TEXT("XOpenGL: No valid atlas lightmap allocations mapped inside %s"), *AtlasKTX2);
-        return false;
-    }
 
     // 6. STREAM COMPRESSED PAYLOAD STRAIGHT TO VRAM
     glGenTextures(1, &GStaticLightmapAtlasTex);
@@ -2235,33 +2375,58 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) { debugf(TEXT("KTX2 upload GL error: %d"), err); }
 
-    // =========================================================================
-    // --- STAGE C: RUNTIME PLATFORM STRUCT MAPPING ---
-    // =========================================================================
-    for (INT i = 0; i < Entries.Num(); i++)
+    // populate the occlusion aware per surface light list
+    // Wipe out any old trailing tracking states from the previous map
+     // Wipe out any old tracking states from the previous map
+    StaticLightsForFacetOC.Empty();
+
+    for (TMap<INT, TArray<AActor*>>::TIterator It(StaticLightsForFacet); It; ++It)
     {
-        const FAtlasEntry& E = Entries(i);
-        FSurfInfo* SI = SurfaceInfoMap.Find(E.SurfIndex);
-        if (!SI) continue;
+        INT SurfIndex = It.Key();
+        const TArray<AActor*>& StandardList = It.Value();
 
-        SI->HasHDLightmap = true;
+        // CREATE A FRESH, BLANK DESTINATION ARRAY IN THE MAP
+        TArray<AActor*>& FilteredList = StaticLightsForFacetOC.Set(SurfIndex, TArray<AActor*>());
 
-        FBspSurf& Surf = Level->Model->Surfs(E.SurfIndex);
-        UXOpenGLRenderDevice::SurfaceBasis Basis = BuildSurfaceBasis(SI, Level, Surf);
-        SI->LightmapBasis = Basis;
+        FSurfInfo* pSI = GetSurfInfoByID(SurfIndex);
+        if (pSI != nullptr && pSI->LocalRejectionMasks.Num() > 0)
+        {
+            // Pre-allocate memory capacity wide open to prevent incremental reallocations
+            FilteredList.Empty(StandardList.Num()); 
 
-        FSurfaceLightmap& LM = SI->HDLightmap;
-        LM.AtlasMinU = E.AtlasMinU; LM.AtlasMaxU = E.AtlasMaxU;
-        LM.AtlasMinV = E.AtlasMinV; LM.AtlasMaxV = E.AtlasMaxV;
-        LM.SurfMinU  = E.MinU;       LM.SurfMaxU  = E.MaxU;
-        LM.SurfMinV  = E.MinV;       LM.SurfMaxV  = E.MaxV;
-        if (SI->IsMover)
-            LM.OriginOffset = SI->LightmapBasis.Origin - SI->Owner->Location;
+            // ITERATE FORWARD: Clear, readable, and perfectly synchronized!
+            for (INT l = 0; l < StandardList.Num(); ++l)
+            {
+                INT DwordIndex = l / 32;
+                INT BitIndex   = l % 32;
 
-        ComputeFinalAtlasUVs(*SI, Basis, E.MinU, E.MaxU, E.MinV, E.MaxV, E.AtlasMinU, E.AtlasMaxU, E.AtlasMinV, E.AtlasMaxV);
+                UBOOL bIsOccluded = FALSE;
+                if (DwordIndex < pSI->LocalRejectionMasks.Num())
+                {
+                    // Check if the bit for this specific local index position is a 1
+                    if (pSI->LocalRejectionMasks(DwordIndex) & (1 << BitIndex))
+                    {
+                        bIsOccluded = TRUE; 
+                    }
+                }
+
+                // Only add the light to the new list if it is NOT occluded!
+                if (!bIsOccluded)
+                {
+                    FilteredList.AddItem(StandardList(l));
+                }
+            }
+            
+            // Shrink the array to release unused capacity padding bytes
+            FilteredList.Shrink(); 
+        }
+        else
+        {
+            // Fallback: If no mask is resident, do a clean, direct full copy
+            FilteredList = StandardList;
+        }
     }
 
-    debugf(TEXT("XOpenGL: Successfully ingested single-file KTX2 lightmap package %s [%d entries loaded]"), *AtlasKTX2, Entries.Num());
     return true;
 }
 

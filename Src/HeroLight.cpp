@@ -48,8 +48,9 @@ UXOpenGLHeroLight::UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<
     for (INT SurfIndex = 0; SurfIndex < Model->Surfs.Num(); ++SurfIndex)
     {
         const FBspSurf& Surf = Model->Surfs(SurfIndex);
-        if (Surf.Actor && Surf.Actor->IsA(AMover::StaticClass())) 
-            continue;
+        // this should get fixed in PerPixel
+        //if (Surf.Actor && Surf.Actor->IsA(AMover::StaticClass())) 
+        //    continue;
 
         const TArray<AActor*>* LightsForThisSurf = StaticLightsMap.Find(SurfIndex);
         if (!LightsForThisSurf || LightsForThisSurf->Num() == 0)
@@ -449,9 +450,7 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
 
     BYTE FaceBit = (1 << FaceIndex);
 
-    // =========================================================
     // PASS 1: TRIANGLES (BSP + STATIC MESHES)
-    // =========================================================
     {
         if (!bspDrawn[FaceIndex])
         {
@@ -498,9 +497,7 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
         GL->EndShadowMapFace(ActiveFaceVertexCount); // triangle program flush
     }
 
-    // =========================================================
     // PASS 2: SPLATS (ANIMATED MESHES)
-    // =========================================================
     {
         GL->BeginShadowMapSplatsFace(FaceIndex, ViewMatrix, ProjMatrix, Eye, Radius);
 
@@ -791,11 +788,8 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 	if (ChangedFaceMask == 0)
 		return;
 
-    // =========================================================================
-	// STEP 1: ONE-TIME BASE CUBEMAP BACKING VRAM ALLOCATION
 	// Allocate the raw texture coordinates ONCE per light if they don't exist, 
 	// but do NOT construct any FBO containers yet!
-	// =========================================================================
 	if (ColorCubemapID == 0)
 	{
         INT size = shadowmapSize;
@@ -844,11 +838,8 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 		if (!(ChangedFaceMask & (1 << face)))
 			continue;
 
-        // =========================================================================
-		// STEP 2: HYPER-EFFICIENT PER-FACE LAZY LOADING
 		// The individual face FBO is only constructed right here, at the exact split-second 
 		// its frustum index passes the visibility mask, saving thousands of FBO handles!
-		// =========================================================================
 		if (!FaceFbos[face])
 		{
 			FaceFbos[face] = new Fbo(shadowmapSize, ColorCubemapID, DepthCubemapID, face);

@@ -193,13 +193,23 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		}
 		else
 		{
-			TArray<AActor*>* SurfaceLightList = StaticLightsForFacet.Find(facetSurfId);
+			UBOOL bUseOptimizedOcclusion = (HDLightMap && GOcclusionState == EOcclusionState::Ready);
+			TMap<INT, TArray<AActor*>>& TargetMap = bUseOptimizedOcclusion ? StaticLightsForFacetOC : StaticLightsForFacet;
+
+			TArray<AActor*>* SurfaceLightList = TargetMap.Find(facetSurfId);
 			if (!SurfaceLightList)
 			{
+				// Generate the baseline proximate light list natively on the fly
 				TArray<AActor*> list;
 				ComputeStaticLightsForFacet(Frame->Level, facetSurfId, list, LevelLightCap - 10);
+				
+				// Since no entry exists, there is no occlusion data. 
+				// Simply add the raw list to both maps instantly with zero redundant loops!
 				StaticLightsForFacet.Set(facetSurfId, list);
-				SurfaceLightList = StaticLightsForFacet.Find(facetSurfId);
+				StaticLightsForFacetOC.Set(facetSurfId, list);
+
+				// Re-point our operational handle straight to the freshly initialized map target
+				SurfaceLightList = TargetMap.Find(facetSurfId);
 			}
 
 			// Dynamic lights (cheap)
@@ -207,7 +217,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 			staticList = *SurfaceLightList;
 		} // end else is static BSP facet with valid key
-		
+
 		int NumSurfaceLights = staticList.Num() + dynamicList.Num();
 		if (NumSurfaceLights > LevelLightCap)
 			NumSurfaceLights = LevelLightCap;

@@ -1125,33 +1125,21 @@ void UXOpenGLRenderDevice::NewLevelPP()
 
         for (INT SurfIndex = 0; SurfIndex < NumSurfs; SurfIndex++)
         {
-            // Movers have no static lights
+            // Movers have no static lights.  
+            // rather when rendering they use all, until we can sort out which affect it at all possible positions
+            // but we really should associate some lights with them, so they get associated with lights and are handled in shadowmapping
+            // until we can sort out which surfaces affect movers at all possible positions, 
+            // this won't affect drawComplex because that checks isMover before StaticLightsForFacet
             const FBspSurf& Surf = Model->Surfs(SurfIndex);
-			AActor* Owner = Surf.Actor;
-			bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
-            if (isMover)
-               continue;
+			//AActor* Owner = Surf.Actor;
+			//bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
+            //if (isMover)
+            //    continue;
 
             // Build static light list
             TArray<AActor*> StaticList;
             ComputeStaticLightsForFacet(LastLevel, SurfIndex, StaticList, LevelLightCap - 10);
             StaticLightsForFacet.Set(SurfIndex, StaticList);
-
-            // Debug surfaces exceeding threshold
-            /*if (StaticList.Num() > 256)
-            {
-                debugf(TEXT("Surface %d exceeds 256 lights: %d lights, %d nodes"),
-                    SurfIndex,
-                    StaticList.Num(),
-                    Surf.Nodes.Num()
-                );
-
-                // Optional: dump node indices
-                for (INT i = 0; i < Surf.Nodes.Num(); i++)
-                {
-                    debugf(TEXT("    Node[%d] = %d"), i, Surf.Nodes(i));
-                }
-            }*/
 
             // Preload bump/height maps
             FTextureInfo Info;
@@ -1185,7 +1173,7 @@ INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle)
     return Cap;
 }
 
-
+// textures allowed to be depth-faded (sorted for binary search)
 static const char* DepthFadeKeys[] = {
     "ancflame1", // ??
     "ancflame2", // yellow flame in DM-ArcaneTemple

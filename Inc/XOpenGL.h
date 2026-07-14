@@ -1829,10 +1829,14 @@ class UXOpenGLRenderDevice : public URenderDevice
 		bool HasHDLightmap = false;
 		FSurfaceLightmap HDLightmap; // our HD lightmap info
 		SurfaceBasis LightmapBasis;
+
+		// This array holds the dynamically sized local light-rejection bitmask blocks.
+		TArray<DWORD> LocalRejectionMasks;
 	};
 
 	// per pixel resources
 	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
+	TMap<INT, TArray<AActor*>> StaticLightsForFacetOC; // same but without fully occluded lights (for use with the occlusion map)
 	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
 	// per level list of all static lights that movers use during occlusion generation
 	TArray<AActor*> StaticLevelLights;
@@ -1891,7 +1895,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// occlusion map stuff
 	static UBOOL BSPVisibilityRay(UModel* Model, INT OriginSurfIndex, const FVector& Start, const FVector& End);
 	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf);
-	FPlane UXOpenGLRenderDevice::EvaluateStaticShadowFactor(const TArray<AActor*>& Lights, INT iSurf, const FVector& WorldPos, const SurfaceBasis& Basis, UModel* Model, UBOOL TwoSided, UBOOL IsMover);
+	FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(AActor* Light, INT iSurf, UModel* Model, UBOOL TwoSided, UBOOL bIsMover, INT W, INT H, FLOAT minU, FLOAT maxU, FLOAT minV, FLOAT maxV, const SurfaceBasis& Basis, TArray<FPlane>& TempShadowedGrid, TArray<FPlane>& TempUnshadowedGrid);
 	void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(FSurfInfo& SI, const SurfaceBasis& Basis, FLOAT MinU, FLOAT MaxU, FLOAT MinV, FLOAT MaxV, FLOAT AtlasMinU, FLOAT AtlasMaxU, FLOAT AtlasMinV, FLOAT AtlasMaxV);
     void UXOpenGLRenderDevice::ProcessNodeSurface(INT ni, ULevel* Level); // build occlusion map for one surface (called from WorkerThread)
 	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasName);
@@ -1959,7 +1963,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	void UXOpenGLRenderDevice::NewLevelBSP();
 
-	// Map surface index -> FSurfInfoInternal (built by BuildSmoothVertexNormalsForLevel)
+	// Map surface index -> FSurfInfo (built by BuildSmoothVertexNormalsForLevel)
 	TMap<INT, FSurfInfo> SurfaceInfoMap;
 	FSurfInfo* GetSurfInfoByID(INT SurfIndex)
     {
