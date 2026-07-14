@@ -2006,6 +2006,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			}
 
 			GLuint64 MaskHandle = 0; // Default: 0 means no bindless shadow map
+			FLOAT packedFaceMask = 0.0f;
 			if (ShadowMaps)
 			{
 				// Instant O(1) pointer lookup inside the active map
@@ -2016,6 +2017,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 					UseBindlessTextures)
 				{
 					MaskHandle = (*FoundHeroPtr)->GetBindlessMaskHandle();
+					packedFaceMask = (GLfloat)((*FoundHeroPtr)->CurrentFaceMask);
 				}
 			}
 
@@ -2160,7 +2162,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			// --- SAFE TO STUFF: UT-only path utilizes the dead Z and W components perfectly! ---
 			LightData->LightData5[i] = glm::vec4(
 				Actor->LightRadius * 10, 
-				1.0f, 
+				packedFaceMask, 
 				*reinterpret_cast<float*>(&LowerBits), // Type pun bitcast into Z
 				*reinterpret_cast<float*>(&UpperBits)  // Type pun bitcast into W
 			);
@@ -2168,23 +2170,23 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			LightData->LightData4[i] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
 			LightData->LightData5[i] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
 #endif
-		// --- POPULATE THE NEW SPOTLIGHT PROPERTY CHANNELS ---
-		if (bIsSpot)
-		{
-			LightData->LightData6[i] = glm::vec4(
-				SpotData->SpotDirection.X,
-				SpotData->SpotDirection.Y,
-				SpotData->SpotDirection.Z,
-				SpotData->SpotCosOuter
-			);
-			// Overwrite the LightCone tracking dimension within LightData1 so your shader has inner cone values
-			LightData->LightData1[i].w = SpotData->SpotCosInner;
-		}
-		else
-		{
-			// Safe baseline fallbacks for regular lights
-			LightData->LightData6[i] = glm::vec4(0.0f, 0.0f, 0.0f, -1.0f);
-		}
+			// --- POPULATE THE NEW SPOTLIGHT PROPERTY CHANNELS ---
+			if (bIsSpot)
+			{
+				LightData->LightData6[i] = glm::vec4(
+					SpotData->SpotDirection.X,
+					SpotData->SpotDirection.Y,
+					SpotData->SpotDirection.Z,
+					SpotData->SpotCosOuter
+				);
+				// Overwrite the LightCone tracking dimension within LightData1 so your shader has inner cone values
+				LightData->LightData1[i].w = SpotData->SpotCosInner;
+			}
+			else
+			{
+				// Safe baseline fallbacks for regular lights
+				LightData->LightData6[i] = glm::vec4(0.0f, 0.0f, 0.0f, -1.0f);
+			}
 
 			CurrentLightToIndex.Set(LightList(i), i);
 		}

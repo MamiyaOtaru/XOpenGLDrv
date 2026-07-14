@@ -580,6 +580,62 @@ float GetSoftActorShadow(samplerCube shadowMap, vec3 sampleDir)
     // Return the averaged shadow factor (0.0 = fully occluded, 1.0 = fully unshadowed)
     return 1.0 - (shadowSample / 9.0);
 }
+// =========================================================================
+// UNIFIED HYBRID SURFACE VISIBILITY GATE
+// Moves the initial baseline texture tap inside the active face bit check.
+// Bypasses all hardware texture fetches entirely if the face is idle!
+// =========================================================================
+float EvaluateOmniShadow(
+    samplerCube shadowMap, 
+    int activeFaceMask, 
+    vec3 sampleDir, 
+    float currentPixelDist, 
+    float worldLightRadius)
+{
+    vec3 absL = abs(sampleDir);
+    
+    // 1. Fast bitwise axis check first
+    int localFaceIndex = 0;
+    if (absL.x > absL.y && absL.x > absL.z) 
+    {
+        localFaceIndex = (sampleDir.x > 0.0) ? 0 : 1;
+    } 
+    else if (absL.y > absL.x && absL.y > absL.z) 
+    {
+        localFaceIndex = (sampleDir.y > 0.0) ? 2 : 3;
+    } 
+    else 
+    {
+        localFaceIndex = (sampleDir.z > 0.0) ? 4 : 5;
+    }
+
+    // INTRA-FRAME EARLY OUT
+    // If the bit is 0, no dynamic meshes are here. Bypass ALL texture taps entirely!
+    if (((activeFaceMask >> localFaceIndex) & 1) == 0)
+    {
+        return 1.0; 
+    }
+
+    // =========================================================================
+    // STEP 2: MOVED INITIAL TEXTURE TAP INSIDE THE ACTIVE FACE ENVELOPE
+    // This hardware fetch ONLY executes if a bot is actively occupying this face!
+    // =========================================================================
+    vec4 shadowData = texture(shadowMap, sampleDir);
+    float bspDepthNormalized = shadowData.r;
+    float staticBspWorldDist = bspDepthNormalized * worldLightRadius;
+    float depthBias = 125.0f;
+
+    // If the current pixel sits DEEPER in the level than the first solid wall,
+    // it is inside a pre-occluded back room. No dynamic actor shadows can reach here.
+    if (currentPixelDist > staticBspWorldDist + depthBias)
+    {
+        return 1.0;
+    }
+
+    // --- PROCEED TO HEAVY SHADOW SAMPLING PIPELINE ---
+    // The pixel is in front of a relevant wall inside an active face quadrant!
+    return GetSoftActorShadow(shadowMap, sampleDir);
+}
 #endif
 vec3 applyReinhard(vec3 color, float threshold) {
     // Normalize the range down to a 0-1 baseline
@@ -935,30 +991,22 @@ return;
       if (handleBits.x != 0u || handleBits.y != 0u)
       {
         samplerCube shadowMap = samplerCube(handleBits);
+        int activeFacesMask = int(LightData5[i].y); 
 
         // Reconstruct true world coordinates (Your stable, locked-down math!)
         vec3 X = FrameCoords[1].xyz; vec3 Y = FrameCoords[2].xyz; vec3 Z = FrameCoords[3].xyz;
         mat3 ViewToWorld = mat3(X, Y, Z);
         vec3 pixelWorldPos = FrameCoords[0].xyz + ViewToWorld * vCoords;
 
-        //Compute absolute world distance metrics
+        // Compute absolute world distance metrics
         vec3 rawLookupWS = LightPos[i].xyz - pixelWorldPos;
         float currentPixelDist = length(rawLookupWS); 
         vec3 shadowLookupDirWS = vec3(rawLookupWS.x, -rawLookupWS.y, rawLookupWS.z);
 
-        // do a single texture tap here to see if the pixel is behind a wall.
-        vec4 shadowData = texture(shadowMap, shadowLookupDirWS);
-        float bspDepthNormalized = shadowData.r;
-        float staticBspWorldDist = bspDepthNormalized * WorldLightRadius;
-        float depthBias = 125.0f; 
-
-        // If the current pixel sits DEEPER in the level than the first solid wall,
-        // it is inside a pre-occluded back room. We bypass the shadow completely!
-        if (currentPixelDist <= staticBspWorldDist + depthBias)// && shadowData.a > 0.5) // doesn't seem to speed it up, and looks worse
-        {
-            // The pixel is in front of the wall! Run a 4-tap PCF kernel.
-            shadowFactor = GetSoftActorShadow(shadowMap, shadowLookupDirWS);
-        }
+        // INSTANT SECURE ASSIGNMENT
+        // EvaluateOmniShadow handles the axis mask check, the backroom culling,
+        // and the 9-tap soft PCF distribution smoothly in a single call pass.
+        shadowFactor = EvaluateOmniShadow(shadowMap, activeFacesMask, shadowLookupDirWS, currentPixelDist, LightData4[i].x);
       }
 #endif    
       // literally linear attenuation
