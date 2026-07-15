@@ -667,6 +667,9 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
         if (!A || A->bStatic || A->bDeleteMe || A->bHidden) continue;
         if (A->DrawType != DT_Mesh && A->DrawType != DT_Brush) continue;
         if (A->Style != STY_Normal) continue;
+        if (A->GetClass()->GetFName() == FName(TEXT("SmallSpark")))
+            continue; // skip sparks
+        // TODO maybe skip if the actor is far enough from the player
 
         // sourceLocation being where the light is for point lights, or the location of the upper light in spotlight pairs (set in constructor)
         FVector ToActor = A->Location - SourceLocation;

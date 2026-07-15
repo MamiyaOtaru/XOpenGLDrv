@@ -593,6 +593,9 @@ inline void GetAxes(FRotator R, FVector& X, FVector& Y, FVector& Z)
 FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, AActor* Actor)
 {
     FVector S = P;
+
+    S -= L->Origin;
+
     S.X *= L->Scale.X;
     S.Y *= L->Scale.Y;
     S.Z *= L->Scale.Z;
@@ -622,6 +625,8 @@ void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TA
 {
     if (!L || !Actor || L->Faces.Num() == 0 || L->Verts.Num() == 0)
         return;
+
+    //const TCHAR* NativeClassName = Actor->GetClass()->GetName();
 
     MeshCapsuleCache& Cache = GetCapsuleCacheForMesh(L);
     if (Cache.Capsules.Num() == 0 || Cache.UsedVerts.Num() == 0)
@@ -827,8 +832,8 @@ void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, T
     //const TCHAR* NativeClassName = Actor->GetClass()->GetName();
 
     // classification via fname target checks
-    UBOOL bIsProjectile = Actor->IsA(AProjectile::StaticClass());
-    UBOOL bIsRocket = Actor->GetClass()->GetFName() == FName(TEXT("RocketMk2")) || 
+    /*UBOOL bIsProjectile = Actor->IsA(AProjectile::StaticClass());
+    UBOOL bIsRocket = Actor->GetClass()->GetFName() == FName(TEXT("RocketMk2")) ||
                       Actor->GetClass()->GetFName() == FName(TEXT("UT_Grenade"));
                       
     UBOOL bIsPulseBeam = Actor->GetClass()->GetFName() == FName(TEXT("StarterBolt")) || 
@@ -838,7 +843,7 @@ void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, T
     if (bIsPulseBeam)
     {
         return; 
-    }
+    }*/
 
     const INT MemoryStride = (L->FrameVerts > 0) ? L->FrameVerts : L->ModelVerts;
     const INT DrawVerts    = L->ModelVerts;
@@ -906,36 +911,7 @@ void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, T
 
     for (INT i = 0; i < MemoryStride; i++)
     {
-        FVector P = PosedVerts(i);
-
-        // Scale raw coordinates uniformly on their native axes
-        P.X *= L->Scale.X;
-        P.Y *= L->Scale.Y;
-        P.Z *= L->Scale.Z;
-
-        FVector RotatedP;
-
-        // Clean streamlined geometry filters isolation mapping
-        /*if (bStaticMesh && !bIsProjectile)
-        {
-            // static decoration and pickup path
-            P -= L->Origin;
-        }*/
-        RotatedP.X = (P.X * MX.X) + (P.Y * MY.X) + (P.Z * MZ.X);
-        RotatedP.Y = (P.X * MX.Y) + (P.Y * MY.Y) + (P.Z * MZ.Y);
-        RotatedP.Z = (P.X * MX.Z) + (P.Y * MY.Z) + (P.Z * MZ.Z);
-
-        // Apply Global Actor DrawScale
-        RotatedP *= Actor->DrawScale;
-
-        // forward world rotation pass
-        FVector WorldP;
-        WorldP.X = (RotatedP.X * AX.X) + (RotatedP.Y * AY.X) + (RotatedP.Z * AZ.X);
-        WorldP.Y = (RotatedP.X * AX.Y) + (RotatedP.Y * AY.Y) + (RotatedP.Z * AZ.Y);
-        WorldP.Z = (RotatedP.X * AX.Z) + (RotatedP.Y * AY.Z) + (RotatedP.Z * AZ.Z);
-
-        WorldP += Actor->Location;
-        PosedVerts(i) = WorldP;
+        PosedVerts(i) = TransformMeshSpaceToWorld(PosedVerts(i), L, Actor);
     }
 
     // pack out final world space shadow map triangles

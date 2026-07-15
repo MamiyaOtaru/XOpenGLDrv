@@ -1895,7 +1895,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// occlusion map stuff
 	static UBOOL BSPVisibilityRay(UModel* Model, INT OriginSurfIndex, const FVector& Start, const FVector& End);
 	SurfaceBasis UXOpenGLRenderDevice::BuildSurfaceBasis(FSurfInfo* SI, ULevel* Level, const FBspSurf& Surf);
-	FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(AActor* Light, INT iSurf, UModel* Model, UBOOL TwoSided, UBOOL bIsMover, INT W, INT H, FLOAT minU, FLOAT maxU, FLOAT minV, FLOAT maxV, const SurfaceBasis& Basis, TArray<FPlane>& TempShadowedGrid, TArray<FPlane>& TempUnshadowedGrid);
+	FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(AActor* Light, INT iSurf, ULevel* Level, UBOOL TwoSided, UBOOL bIsMover, INT W, INT H, FLOAT minU, FLOAT maxU, FLOAT minV, FLOAT maxV, const SurfaceBasis& Basis, TArray<FPlane>& TempShadowedGrid, TArray<FPlane>& TempUnshadowedGrid);
 	void UXOpenGLRenderDevice::ComputeFinalAtlasUVs(FSurfInfo& SI, const SurfaceBasis& Basis, FLOAT MinU, FLOAT MaxU, FLOAT MinV, FLOAT MaxV, FLOAT AtlasMinU, FLOAT AtlasMaxU, FLOAT AtlasMinV, FLOAT AtlasMaxV);
     void UXOpenGLRenderDevice::ProcessNodeSurface(INT ni, ULevel* Level); // build occlusion map for one surface (called from WorkerThread)
 	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasName);

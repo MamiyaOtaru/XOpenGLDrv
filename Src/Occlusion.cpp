@@ -544,7 +544,7 @@ UBOOL UXOpenGLRenderDevice::BSPVisibilityRay(
 FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(
     AActor* Light,
     INT iSurf,
-    UModel* Model,
+    ULevel* Level,
     UBOOL TwoSided,
     UBOOL bIsMover,
     INT W, INT H,
@@ -563,18 +563,66 @@ FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(
     // Track total physical radiometric energy received by this light source across the grid
     FLOAT TotalGridUnoccludedEnergy = 0.0f;
 
-    if (!Light)
-        return 0.0f;
+    // THREAD-SAFETY MECHANISM: GATE AT THE ENTRY OF EACH ROW
+    // We'll loop here until it's safe to let this specific light execute its raycasts
+    for (;;)
+    {
+        ULevel* FrameLevel = GFrameLevel.load(std::memory_order_acquire);
 
+        // Case 1: Engine is between frames: pause and wait
+        if (FrameLevel == nullptr)
+        {
+            if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
+                return;
+
+            std::this_thread::yield();
+            continue; // Back to the for (;;), retry the same light index
+        }
+
+        // Case 2: Level changed entirely: abort this complete surface job
+        if (FrameLevel != Level)
+        {
+            return;
+        }
+
+        // Tentatively enter the danger zone for this light's full grid execution
+        GOcclusionInBSP.fetch_add(1, std::memory_order_acquire);
+
+        // Double-check after increment to catch tight races with Unlock/level changes
+        FrameLevel = GFrameLevel.load(std::memory_order_acquire);
+
+        // Still the identical level: we are verified good to break and process the light
+        if (FrameLevel == Level)
+            break;
+
+        // Not matching anymore: back cleanly out of the danger zone immediately
+        GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
+
+        // If it's nullptr now, we just slipped between frame margins: pause and retry
+        if (FrameLevel == nullptr)
+        {
+            if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
+                return;
+
+            std::this_thread::yield();
+            continue; // Retry same light index
+        }
+
+        // Otherwise, it was a totally different non-null level: hard abort
+        return;
+    }
+
+    if (!Light) { GOcclusionInBSP.fetch_sub(1, std::memory_order_release); return 0.0f; }
+
+    UModel* Model = Level->Model;
     FakeSpotlightPair* SpotData = GetSpotlightData(Light);
     UBOOL bIsSpot = (SpotData != nullptr);
-
     FLOAT Radius = bIsSpot ? SpotData->ReachRadius : Light->WorldLightRadius();
-    if (Radius <= 0.f)
-        return 0.0f;
+
+    if (Radius <= 0.f) { GOcclusionInBSP.fetch_sub(1, std::memory_order_release); return 0.0f; }
 
     FVector TargetLightPos = bIsSpot ? SpotData->TopLight->Location : Light->Location;
-
+    
     // Pre-calculate structural UV coordinate dimensions
     FLOAT USize = maxU - minU;
     FLOAT VSize = maxV - minV;
@@ -584,9 +632,31 @@ FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(
     if (TwoSided) mult = 10.0f;
     if (bIsMover)  mult = 2.0f;
 
+    // DROP THE LOCK IMMEDIATELY AFTER SETUP COMPLETION!
+    GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
+
+    if (!Light)
+        return 0.0f;
+
     // --- HIGH-FREQUENCY 2D GRID SURFACE ITERATION BLOCK ---
     for (INT y = 0; y < H; ++y)
     {
+        // same thread safety mechanism (brevity version)
+        for (;;)
+        {
+            ULevel* FrameLevel = GFrameLevel.load(std::memory_order_acquire);
+            if (FrameLevel == nullptr) { if (OcclusionJob.bAbort.load(std::memory_order_relaxed)) return 0.0f; std::this_thread::yield(); continue; }
+            if (FrameLevel != Level) return 0.0f;
+
+            GOcclusionInBSP.fetch_add(1, std::memory_order_acquire);
+            FrameLevel = GFrameLevel.load(std::memory_order_acquire);
+            if (FrameLevel == Level) break; // Line safe to raycast!
+
+            GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
+            if (FrameLevel == nullptr) { if (OcclusionJob.bAbort.load(std::memory_order_relaxed)) return 0.0f; std::this_thread::yield(); continue; }
+            return 0.0f;
+        }
+
         FLOAT v = (y + 0.5f) / FLOAT(H);
         FLOAT V = minV + v * VSize;
 
@@ -684,8 +754,10 @@ FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(
                 TempShadowedGrid(PixelIndex).Z = AbsoluteColor.Z;
                 TempShadowedGrid(PixelIndex).W = 1.0f;
             }
-        }
-    }
+        } // end loop through x
+        // Exit the danger zone for this specific row, allowing unlock sweeps to proceed natively
+        GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
+    } // end loop through y
 
     return TotalGridUnoccludedEnergy;
 }
@@ -1369,60 +1441,11 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
             if (!Light)
                 continue;
 
-            // THREAD-SAFETY MECHANISM: GATE AT THE ENTRY OF EACH INDEPENDENT LIGHT PASS
-            // We'll loop here until it's safe to let this specific light execute its raycasts
-            for (;;)
-            {
-                ULevel* FrameLevel = GFrameLevel.load(std::memory_order_acquire);
-
-                // Case 1: Engine is between frames: pause and wait
-                if (FrameLevel == nullptr)
-                {
-                    if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
-                        return;
-
-                    std::this_thread::yield();
-                    continue; // Back to the for (;;), retry the same light index
-                }
-
-                // Case 2: Level changed entirely: abort this complete surface job
-                if (FrameLevel != Level)
-                {
-                    return;
-                }
-
-                // Tentatively enter the danger zone for this light's full grid execution
-                GOcclusionInBSP.fetch_add(1, std::memory_order_acquire);
-
-                // Double-check after increment to catch tight races with Unlock/level changes
-                FrameLevel = GFrameLevel.load(std::memory_order_acquire);
-
-                // Still the identical level: we are verified good to break and process the light
-                if (FrameLevel == Level)
-                    break;
-
-                // Not matching anymore: back cleanly out of the danger zone immediately
-                GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
-
-                // If it's nullptr now, we just slipped between frame margins: pause and retry
-                if (FrameLevel == nullptr)
-                {
-                    if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
-                        return;
-
-                    std::this_thread::yield();
-                    continue; // Retry same light index
-                }
-
-                // Otherwise, it was a totally different non-null level: hard abort
-                return;
-            }
-
             // =========================================================================
             // EXECUTE HIGH-SPEED ISOLATED SINGLE LIGHT GRID ALLOCATION PASS
             // =========================================================================
             FLOAT LightEnergyOnSurface = EvaluateSingleLightContribution(
-                Light, iSurf, Model, TwoSided, isMover, W, H, minU, maxU, minV, maxV, Basis,
+                Light, iSurf, Level, TwoSided, isMover, W, H, minU, maxU, minV, maxV, Basis,
                 TempShadowedGrid, TempUnshadowedGrid
             );
 
@@ -1450,9 +1473,6 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
                 INT BitIdx   = l % 32;
                 LocalRejectionBitmask(DwordIdx) |= (1 << BitIdx);
             }
-
-            // Exit the danger zone for this specific light pass, allowing unlock sweeps to proceed natively
-            GOcclusionInBSP.fetch_sub(1, std::memory_order_release);
         } // End of outer Lights loop
 
         // =========================================================================
