@@ -590,35 +590,32 @@ inline void GetAxes(FRotator R, FVector& X, FVector& Y, FVector& Z)
 }
 
 // helper: mesh-space -> world-space (no animation here)
-FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, AActor* Actor)
+inline FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(
+    const FVector& P, 
+    ULodMesh* L, 
+    const FVector& MX, const FVector& MY, const FVector& MZ, // Mesh Axes
+    const FVector& AX, const FVector& AY, const FVector& AZ, // Actor Axes
+    FLOAT DrawScale, const FVector& ActorLocation, const FVector& PrePivot)
 {
-    FVector S = P;
-
-    S -= L->Origin;
+    FVector S = P - L->Origin;
 
     S.X *= L->Scale.X;
     S.Y *= L->Scale.Y;
     S.Z *= L->Scale.Z;
-
-    FVector MX, MY, MZ;
-    GetAxes(L->RotOrigin, MX, MY, MZ);
 
     FVector R;
     R.X = S.X * MX.X + S.Y * MY.X + S.Z * MZ.X;
     R.Y = S.X * MX.Y + S.Y * MY.Y + S.Z * MZ.Y;
     R.Z = S.X * MX.Z + S.Y * MY.Z + S.Z * MZ.Z;
 
-    R *= Actor->DrawScale;
-
-    FVector AX, AY, AZ;
-    GetAxes(Actor->Rotation, AX, AY, AZ);
+    R *= DrawScale;
 
     FVector W;
     W.X = R.X * AX.X + R.Y * AY.X + R.Z * AZ.X;
     W.Y = R.X * AX.Y + R.Y * AY.Y + R.Z * AZ.Y;
     W.Z = R.X * AX.Z + R.Y * AY.Z + R.Z * AZ.Z;
 
-    return W + Actor->Location + Actor->PrePivot;
+    return W + ActorLocation + PrePivot;
 }
 
 void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TArray<FCapsuleSplat>& OutCapsules)
@@ -684,8 +681,16 @@ void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TA
     TArray<FVector> WorldVerts;
     WorldVerts.AddZeroed(UsedCount);
 
-    // --- interpolate only used verts, then transform to world ---
+    // precompute engine structural transforms outside the loop
+    FVector MX, MY, MZ, AX, AY, AZ;
+    GetAxes(L->RotOrigin, MX, MY, MZ);
+    GetAxes(Actor->Rotation, AX, AY, AZ);
 
+    FLOAT DrawScale = Actor->DrawScale;
+    FVector ActorLoc = Actor->Location;
+    FVector PrePivot = Actor->PrePivot;
+
+    // --- interpolate only used verts, then transform to world ---
     for (INT i = 0; i < UsedCount; ++i)
     {
         const INT v = Cache.UsedVerts(i);
@@ -703,7 +708,8 @@ void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TA
             P = VA + (VB - VA) * Alpha;
         }
 
-        WorldVerts(i) = TransformMeshSpaceToWorld(P, L, Actor);
+        // fast call with zero redundant trig evaluations
+        WorldVerts(i) = TransformMeshSpaceToWorld(P, L, MX, MY, MZ, AX, AY, AZ, DrawScale, ActorLoc, PrePivot);
     }
 
     // --- build final splats from cached capsules + per-frame world verts ---
@@ -792,10 +798,20 @@ void UXOpenGLRenderDevice::ExtractMappedAnimatedTriangles(
                        (L->Verts(VertB_Addr).Vector() - L->Verts(VertA_Addr).Vector()) * Alpha;
     }
 
-    // Apply the spatial transformation matrix directly to the animated points
+
+    // precompute the structural matrices prior to vertex iteration
+    FVector MX, MY, MZ, AX, AY, AZ;
+    GetAxes(L->RotOrigin, MX, MY, MZ);
+    GetAxes(Actor->Rotation, AX, AY, AZ);
+
+    FLOAT DrawScale = Actor->DrawScale;
+    FVector ActorLoc = Actor->Location;
+    FVector PrePivot = Actor->PrePivot;
+
+    // Apply the spatial transformation matrix cleanly to the animated points
     for (INT i = 0; i < MemoryStride; i++)
     {
-        PosedVerts(i) = TransformMeshSpaceToWorld(PosedVerts(i), L, Actor);
+        PosedVerts(i) = TransformMeshSpaceToWorld(PosedVerts(i), L, MX, MY, MZ, AX, AY, AZ, DrawScale, ActorLoc, PrePivot);
     }
 
     // --- Blueprint Unrolling ---
@@ -900,7 +916,7 @@ void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, T
                        (L->Verts(VertB_Addr).Vector() - L->Verts(VertA_Addr).Vector()) * Alpha;
     }
 
-    // spacial transform matrix conversions
+     // Precompute the structural axes ONCE before entering the loop
     FRotator ImportRotation = L->RotOrigin;
 
     FVector MX, MY, MZ;
@@ -909,9 +925,20 @@ void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, T
     FVector AX, AY, AZ;
     GetAxes(Actor->Rotation, AX, AY, AZ);
 
+    // Pre-cache actor properties to keep CPU registers warm
+    FLOAT DrawScale = Actor->DrawScale;
+    FVector ActorLocation = Actor->Location;
+    FVector PrePivot = Actor->PrePivot;
+
+    // Run the unified, high-speed loop pass
     for (INT i = 0; i < MemoryStride; i++)
     {
-        PosedVerts(i) = TransformMeshSpaceToWorld(PosedVerts(i), L, Actor);
+        PosedVerts(i) = TransformMeshSpaceToWorld(
+            PosedVerts(i), L, 
+            MX, MY, MZ, 
+            AX, AY, AZ, 
+            DrawScale, ActorLocation, PrePivot
+        );
     }
 
     // pack out final world space shadow map triangles

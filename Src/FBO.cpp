@@ -181,6 +181,9 @@ Fbo::Fbo(int w, int h,
 Fbo::Fbo(int size, GLuint sharedColorCubemapID, GLuint sharedDepthCubemapID, int faceIndex)
     : width(size), height(size), samples(1), isCubemap(true)
 {
+    prevFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&prevFbo);
+
     // Instantiate our hardware frame target block cleanly
     glGenFramebuffers(1, &fboID);
     glBindFramebuffer(GL_FRAMEBUFFER, fboID);
@@ -208,6 +211,8 @@ Fbo::Fbo(int size, GLuint sharedColorCubemapID, GLuint sharedDepthCubemapID, int
     glDrawBuffers(1, bufs);
 
     CheckStatus();
+
+    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 }
 
 // all in one cubemap constructor

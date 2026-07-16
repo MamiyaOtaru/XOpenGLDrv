@@ -213,60 +213,6 @@ void UXOpenGLRenderDevice::DrawShadowMapSurface(
     unguard;
 }
 
-static const DOUBLE AngleScale = (2.0 * PI) / 65536.0;
-inline void GetAxes(FRotator R, FVector& X, FVector& Y, FVector& Z)
-{
-    // Convert the 16-bit integer Unreal angles into standard radians
-    // UT99 angles map 65536 units to a full 360-degree circle (2 * PI)
-    DOUBLE SP = appSin((DOUBLE)R.Pitch * AngleScale);
-    DOUBLE CP = appCos((DOUBLE)R.Pitch * AngleScale);
-    
-    DOUBLE SY = appSin((DOUBLE)R.Yaw   * AngleScale);
-    DOUBLE CY = appCos((DOUBLE)R.Yaw   * AngleScale);
-    
-    DOUBLE SR = appSin((DOUBLE)R.Roll  * AngleScale);
-    DOUBLE CR = appCos((DOUBLE)R.Roll  * AngleScale);
-
-    // FORWARD VECTOR (X Axis)
-    X.X = (FLOAT)(CP * CY);
-    X.Y = (FLOAT)(CP * SY);
-    X.Z = (FLOAT)SP;
-
-    // RIGHT VECTOR (Y Axis)
-    Y.X = (FLOAT)((SR * SP * CY) - (CR * SY));
-    Y.Y = (FLOAT)((SR * SP * SY) + (CR * CY));
-    Y.Z = (FLOAT)(-SR * CP);
-
-    // UP VECTOR (Z Axis)
-    Z.X = (FLOAT)(-(CR * SP * CY) - (SR * SY));
-    Z.Y = (FLOAT)(-(CR * SP * SY) + (SR * CY));
-    Z.Z = (FLOAT)(CR * CP);
-}
-
-FORCEINLINE INT ResolveLodMeshVertex(
-    const ULodMesh* L,
-    INT wedgeIndex,
-    INT level
-)
-{
-    // Collapse wedge (LOD collapse)
-    INT w = wedgeIndex;
-    for (int t = 0; t < level; t++)
-        if (L->CollapseWedgeThus.Num() > 0)
-            w = L->CollapseWedgeThus(w);
-
-    // Map wedge -> original vertex index
-    INT v = L->Wedges(w).iVertex;
-
-    // Collapse vertex (LOD collapse)
-    for (int t = 0; t < level; t++)
-        if (L->CollapsePointThus.Num() > 0)
-            v = L->CollapsePointThus(v);
-
-    // v is now the correct index into the posed vertex array
-    return v;
-}
-
 void UXOpenGLRenderDevice::DrawShadowMapMesh(
     const FSceneNode* Frame,
     AActor* Actor,

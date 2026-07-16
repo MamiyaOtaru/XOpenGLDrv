@@ -563,7 +563,7 @@ FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(
     // Track total physical radiometric energy received by this light source across the grid
     FLOAT TotalGridUnoccludedEnergy = 0.0f;
 
-    // THREAD-SAFETY MECHANISM: GATE AT THE ENTRY OF EACH ROW
+    // THREAD-SAFETY MECHANISM: GATE AT THE ENTRY OF SETUP
     // We'll loop here until it's safe to let this specific light execute its raycasts
     for (;;)
     {
@@ -573,7 +573,7 @@ FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(
         if (FrameLevel == nullptr)
         {
             if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
-                return;
+                return 0.0f;
 
             std::this_thread::yield();
             continue; // Back to the for (;;), retry the same light index
@@ -582,7 +582,7 @@ FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(
         // Case 2: Level changed entirely: abort this complete surface job
         if (FrameLevel != Level)
         {
-            return;
+            return 0.0f;
         }
 
         // Tentatively enter the danger zone for this light's full grid execution
@@ -602,14 +602,14 @@ FLOAT UXOpenGLRenderDevice::EvaluateSingleLightContribution(
         if (FrameLevel == nullptr)
         {
             if (OcclusionJob.bAbort.load(std::memory_order_relaxed))
-                return;
+                return 0.0f;
 
             std::this_thread::yield();
             continue; // Retry same light index
         }
 
         // Otherwise, it was a totally different non-null level: hard abort
-        return;
+        return 0.0f;
     }
 
     if (!Light) { GOcclusionInBSP.fetch_sub(1, std::memory_order_release); return 0.0f; }
@@ -2397,8 +2397,13 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
 
     // populate the occlusion aware per surface light list
     // Wipe out any old trailing tracking states from the previous map
-     // Wipe out any old tracking states from the previous map
+    // Wipe out any old tracking states from the previous map
     StaticLightsForFacetOC.Empty();
+
+    INT TotalIntersectingLights = 0;
+    INT TotalRejectedLights = 0;
+    INT TotalSurfacesProcessed = 0;
+    INT TotalOcclusionCapableSurfaces = 0;
 
     for (TMap<INT, TArray<AActor*>>::TIterator It(StaticLightsForFacet); It; ++It)
     {
@@ -2408,11 +2413,17 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
         // CREATE A FRESH, BLANK DESTINATION ARRAY IN THE MAP
         TArray<AActor*>& FilteredList = StaticLightsForFacetOC.Set(SurfIndex, TArray<AActor*>());
 
+        TotalSurfacesProcessed++;
+        TotalIntersectingLights += StandardList.Num();
+
         FSurfInfo* pSI = GetSurfInfoByID(SurfIndex);
         if (pSI != nullptr && pSI->LocalRejectionMasks.Num() > 0)
         {
             // Pre-allocate memory capacity wide open to prevent incremental reallocations
-            FilteredList.Empty(StandardList.Num()); 
+            FilteredList.Empty(StandardList.Num());
+
+            TotalOcclusionCapableSurfaces++;
+            INT SurfRejectedCount = 0;
 
             // ITERATE FORWARD: Clear, readable, and perfectly synchronized!
             for (INT l = 0; l < StandardList.Num(); ++l)
@@ -2435,7 +2446,14 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
                 {
                     FilteredList.AddItem(StandardList(l));
                 }
+                else {
+                    SurfRejectedCount++;
+                    TotalRejectedLights++;
+                }
             }
+
+            // Uncomment this to trace line-item performance on specific hotspots
+            // debugf(TEXT("XOpenGL: SurfIndex %5d | Standard Lights: %2d | Kept: %2d | Rejected: %2d"), SurfIndex, StandardList.Num(), FilteredList.Num(), SurfRejectedCount);
             
             // Shrink the array to release unused capacity padding bytes
             FilteredList.Shrink(); 
@@ -2445,6 +2463,23 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
             // Fallback: If no mask is resident, do a clean, direct full copy
             FilteredList = StandardList;
         }
+    }
+
+    if (TotalIntersectingLights > 0)
+    {
+        FLOAT RejectionPct = ((FLOAT)TotalRejectedLights / (FLOAT)TotalIntersectingLights) * 100.0f;
+        FLOAT AvgTotalPerSurf = (FLOAT)TotalIntersectingLights / (FLOAT)TotalSurfacesProcessed;
+        FLOAT AvgKeptPerSurf = (FLOAT)(TotalIntersectingLights - TotalRejectedLights) / (FLOAT)TotalSurfacesProcessed;
+
+        debugf(TEXT("XOpenGL: ========================================================"));
+        debugf(TEXT("XOpenGL: ==== BSP Occlusion Filter Optimization Report ===="));
+        debugf(TEXT("XOpenGL: Total Facet Map Surfaces Evaluated:   %d"), TotalSurfacesProcessed);
+        debugf(TEXT("XOpenGL: Surfaces with Active Occlusion Masks: %d"), TotalOcclusionCapableSurfaces);
+        debugf(TEXT("XOpenGL: Total Lights Touching Surface Bounds: %d (Avg %.2f per surf)"), TotalIntersectingLights, AvgTotalPerSurf);
+        debugf(TEXT("XOpenGL: Total Lights Blocked via Raycaster:  %d (Avg %.2f per surf)"), TotalRejectedLights, (FLOAT)TotalRejectedLights / (FLOAT)TotalSurfacesProcessed);
+        debugf(TEXT("XOpenGL: Total Lights Passed to Pixel Shaders: %d (Avg %.2f per surf)"), TotalIntersectingLights - TotalRejectedLights, AvgKeptPerSurf);
+        debugf(TEXT("XOpenGL: Dynamic Raycast Rejection Ratio:   %.2f%% Fewer Shader Pass Ties!"), RejectionPct);
+        debugf(TEXT("XOpenGL: ========================================================"));
     }
 
     return true;

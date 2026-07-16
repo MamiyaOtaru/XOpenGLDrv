@@ -179,6 +179,7 @@ void UXOpenGLRenderDevice::FinishGouraudCall(FTextureInfo& Info, DWORD DrawFlags
 // -----------------------------------------------------------------------------
 static FName GLastActiveTextureName = NAME_None;
 static QWORD GShadowCacheIDLock     = 0;
+static FName NAME_EnergyMark(TEXT("energymark"));
 inline UBOOL IsBlobShadow(const FTextureInfo& Info, FTransTexture* const* Pts)
 {
 	// STATE TRACKING LAYER:
@@ -188,7 +189,7 @@ inline UBOOL IsBlobShadow(const FTextureInfo& Info, FTransTexture* const* Pts)
         GLastActiveTextureName = Info.Texture->GetFName();
         
         // If this is explicitly the footprint shadow texture, lock its active CacheID!
-        if (GLastActiveTextureName == FName(TEXT("energymark")))
+        if (GLastActiveTextureName == NAME_EnergyMark)
         {
             GShadowCacheIDLock = Info.CacheID;
         }
@@ -200,7 +201,7 @@ inline UBOOL IsBlobShadow(const FTextureInfo& Info, FTransTexture* const* Pts)
     // B: The texture pointer is missing, but the incoming CacheID matches our locked shadow CacheID!
     UBOOL bIsShadowMeshCall = FALSE;
     
-    if (Info.Texture && GLastActiveTextureName == FName(TEXT("energymark")))
+    if (Info.Texture && GLastActiveTextureName == NAME_EnergyMark)
     {
         bIsShadowMeshCall = TRUE;
     }

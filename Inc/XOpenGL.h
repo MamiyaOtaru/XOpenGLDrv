@@ -1946,7 +1946,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// per frame worldpos data
 	TMap<AActor*, CachedActorSplatArray> PerFrameActorSplatCache;
 	TMap<AActor*, CachedStaticMeshGeometry> PerFrameStaticMeshCache;
-	FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, AActor* Actor);
+	inline FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, const FVector& MX, const FVector& MY, const FVector& MZ, const FVector& AX, const FVector& AY, const FVector& AZ, FLOAT DrawScale, const FVector& ActorLocation, const FVector& PrePivot);
 	void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TArray<FCapsuleSplat>& OutCapsules);
 	void UXOpenGLRenderDevice::ExtractMappedAnimatedTriangles(ULodMesh* L, AActor* Actor, const FMeshConnectivity& Blueprint, TArray<FShadowTriangle>& OutTris);
 	void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, TArray<FShadowTriangle>& OutTris);

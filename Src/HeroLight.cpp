@@ -659,6 +659,7 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
     }
 
     TArray<CachedActorState> CurrentFrameActors;
+    static FName NAME_SmallSpark(TEXT("SmallSpark"));
 
     // --- Fast Structural Scan ---
     for (INT i = 0; i < Level->Actors.Num(); ++i)
@@ -667,7 +668,7 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
         if (!A || A->bStatic || A->bDeleteMe || A->bHidden) continue;
         if (A->DrawType != DT_Mesh && A->DrawType != DT_Brush) continue;
         if (A->Style != STY_Normal) continue;
-        if (A->GetClass()->GetFName() == FName(TEXT("SmallSpark")))
+        if (A->GetClass()->GetFName() == NAME_SmallSpark)
             continue; // skip sparks
         // TODO maybe skip if the actor is far enough from the player
 
