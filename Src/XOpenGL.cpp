@@ -2647,7 +2647,7 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 	// Only run the transition handler for real levels
 	if (levelChanged && LastLevel && !LastLevel->IsEntry)
 	{
-		DebugDepthProgram = glCreateProgram();
+		/*DebugDepthProgram = glCreateProgram();
 
 		if (!ShaderLoader::LoadExternalShaders(
 				DebugDepthProgram,
@@ -2655,7 +2655,7 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 				"xopengl/shaders/debug_depth.frag"))
 		{
 			debugf(TEXT("Failed to load DebugDepth shader"));
-		}
+		}*/
 
 		NewLevelBSP(); // gathers geometry and adds normals
 		NewLevelPP(); // gathers lights for geometry and preloads textures

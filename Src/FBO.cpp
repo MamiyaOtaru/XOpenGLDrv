@@ -306,6 +306,7 @@ Fbo::Fbo(int size, int numColorAttachments, GLenum colorFormat)
     // =========================================================================
 
     CheckStatus();
+
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 }
 
@@ -330,6 +331,35 @@ GLuint Fbo::GetColorTexID(GLuint index) {
     return colorTexIDs[index];
 }
 
+GLuint64 Fbo::GetColorBindlessHandle(int index)
+{
+    // Early boundary checks to prevent vector out-of-range memory corruption
+    if (index < 0 || index >= (int)colorTexIDs.size() || colorTexIDs[index] == 0)
+        return 0;
+
+    // Dynamically expand our handle storage array if it hasn't been initialized yet
+    if (colorBindlessHandles.size() != colorTexIDs.size())
+    {
+        colorBindlessHandles.resize(colorTexIDs.size(), 0);
+    }
+
+    // If this handle has never been requested before, register it with the GPU driver once!
+    if (colorBindlessHandles[index] == 0)
+    {
+        // Generate the permanent 64-bit virtual memory address for the texture
+        colorBindlessHandles[index] = glGetTextureHandleARB(colorTexIDs[index]);
+        
+        // Commit the asset to permanent VRAM residency so the shaders can execute lock-free reads
+        glMakeTextureHandleResidentARB(colorBindlessHandles[index]);
+        
+        // Toggle our tracking state so our destructor knows it has resident memory to free
+        handlesAreResident = true; 
+    }
+
+    return colorBindlessHandles[index];
+}
+
+
 GLuint Fbo::GetDepthTexID() {
     return depthTexID;
 }
@@ -345,21 +375,64 @@ void Fbo::BindColorCubemap(GLuint attachmentIndex, GLuint textureUnit)
 void Fbo::Dispose() {
     if (fboID == 0) return;
 
+    // =========================================================================
+    // RECOVER VRAM HOOKS: Turn off all bindless hardware memory allocation locks!
+    // This MUST run before we attempt to delete any underlying OpenGL texture assets.
+    // =========================================================================
+    // Safely drop residency for all dynamically generated color slot handles
+    for (size_t i = 0; i < colorBindlessHandles.size(); ++i)
+    {
+        if (colorBindlessHandles[i] != 0)
+        {
+            glMakeTextureHandleNonResidentARB(colorBindlessHandles[i]);
+            colorBindlessHandles[i] = 0; // Clear the handle record
+        }
+    }
+    colorBindlessHandles.clear();
+
+    // Safely drop residency for your existing depth path handle
+    if (depthBindlessHandle != 0)
+    {
+        glMakeTextureHandleNonResidentARB(depthBindlessHandle);
+        depthBindlessHandle = 0;
+    }
+
+    // Reset tracking flags cleanly for the next lifecycle run
+    handlesAreResident = false;
+    // =========================================================================
+
+    // Safely unbind before pulling the rug out from the hardware target pipeline
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     for (GLuint tex : colorTexIDs)
-        glDeleteTextures(1, &tex);
+    {
+        if (tex != 0)
+            glDeleteTextures(1, &tex);
+    }
+    colorTexIDs.clear();
 
     if (depthTexID)
+    {
         glDeleteTextures(1, &depthTexID);
+        depthTexID = 0;
+    }
 
     if (depthRboID)
+    {
         glDeleteRenderbuffers(1, &depthRboID);
+        depthRboID = 0;
+    }
+
+    if (depthSampler)
+    {
+        glDeleteSamplers(1, &depthSampler);
+        depthSampler = 0;
+    }
 
     glDeleteFramebuffers(1, &fboID);
-
     fboID = 0;
 }
+
 
 void Fbo::CheckStatus() {
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);

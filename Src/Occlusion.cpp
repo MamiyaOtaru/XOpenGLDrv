@@ -2465,7 +2465,7 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
         }
     }
 
-    if (TotalIntersectingLights > 0)
+    /*if (TotalIntersectingLights > 0)
     {
         FLOAT RejectionPct = ((FLOAT)TotalRejectedLights / (FLOAT)TotalIntersectingLights) * 100.0f;
         FLOAT AvgTotalPerSurf = (FLOAT)TotalIntersectingLights / (FLOAT)TotalSurfacesProcessed;
@@ -2480,7 +2480,7 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
         debugf(TEXT("XOpenGL: Total Lights Passed to Pixel Shaders: %d (Avg %.2f per surf)"), TotalIntersectingLights - TotalRejectedLights, AvgKeptPerSurf);
         debugf(TEXT("XOpenGL: Dynamic Raycast Rejection Ratio:   %.2f%% Fewer Shader Pass Ties!"), RejectionPct);
         debugf(TEXT("XOpenGL: ========================================================"));
-    }
+    }*/
 
     return true;
 }

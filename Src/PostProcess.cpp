@@ -221,11 +221,10 @@ void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame)
         SSAOKernel = GenerateSSAOKernel(kernelSize);
 
 	// Upload kernel samples
-	for (int i = 0; i < kernelSize; i++)
-	{
-		if (Shader->uSamples[i] != -1)
-			glUniform3fv(Shader->uSamples[i], 1, &SSAOKernel[i].x);
-	}
+    if (Shader->uSamples[0] != -1)
+    {
+        glUniform3fv(Shader->uSamples[0], kernelSize, &SSAOKernel[0].x);
+    }
 
 	if (Shader->uKernelSize != -1)
 		glUniform1i(Shader->uKernelSize, kernelSize);

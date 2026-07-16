@@ -17,6 +17,8 @@ public:
     GLuint depthTexID = 0;
     GLuint depthRboID = 0;
     std::vector<GLuint> colorTexIDs;
+    std::vector<GLuint64> colorBindlessHandles;
+    bool handlesAreResident = false;
 
     int width = 0;
     int height = 0;
@@ -46,6 +48,7 @@ public:
     void Bind();
     void Unbind();
     GLuint GetColorTexID(GLuint index);
+    GLuint64 Fbo::GetColorBindlessHandle(int index);
     GLuint GetDepthTexID();
     void BindColorCubemap(GLuint attachmentIndex, GLuint textureUnit);
     void Dispose();

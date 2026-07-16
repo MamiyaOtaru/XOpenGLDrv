@@ -407,13 +407,15 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	// should be excluded here as well.
 	if (BumpMaps && AmbientOcclusion && IsSolidBSP && (SI && !SI->IsMover) && !(NextPolyFlags & PF_TwoSided)) // only works in per pixel
 	{
-		glActiveTexture(GL_TEXTURE0 + PostProcessIndex);
-		glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
-
-		DrawCallParams->TexHandles[PostProcessIndex] =
-			glGetTextureHandleARB(SsaoFbo->colorTexIDs[0]);
-
-		glMakeTextureHandleResidentARB(DrawCallParams->TexHandles[PostProcessIndex]);
+		if (UsingBindlessTextures)
+		{
+			DrawCallParams->TexHandles[PostProcessIndex] = SsaoFbo->GetColorBindlessHandle(0);
+		}
+		else
+		{
+			glActiveTexture(GL_TEXTURE0 + PostProcessIndex);
+			glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
+		}
 
 		DrawFlags |= ShaderDrawFlags::DF_AmbientOcclusion;
 	}
