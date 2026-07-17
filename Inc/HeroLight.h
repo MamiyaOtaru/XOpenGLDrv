@@ -34,8 +34,6 @@ private:
     GLuint64 BindlessMaskHandle = 0;
     UBOOL    bIsHandleResident = FALSE;
 
-    BOOL bspDrawn[6] = { FALSE, FALSE, FALSE, FALSE, FALSE, FALSE };
-    
     TArray<CachedActorState> LastFrameActors;
     BYTE LastFrameFaceMask; // Which faces had actors last frame
 
@@ -51,6 +49,13 @@ private:
     FLOAT   ReachRadius;
     FVector SourceLocation;
 
+    // record moving BSP surfaces
+    TArray<AActor*> TrackedMovers;          // Local minimized array of movers affecting this light
+    TMap<AActor*, FVector> MoverHomePositions; // Maps movers to their default BasePos coordinates
+    UBOOL faceBspDirty[6] = { TRUE, TRUE, TRUE, TRUE, TRUE, TRUE };
+    // Keeps track of where the movers were during the last frame check
+    TMap<AActor*, FVector> LastMoverLocations;
+
     // internal helper to assign surfaces to faces of the cubemap
     void UXOpenGLHeroLight::PartitionBSPSurfaces(UModel* Model, UXOpenGLRenderDevice* GL);
 
@@ -59,6 +64,7 @@ private:
         FSceneNode* Frame,
         INT FaceIndex,
         TArray<CachedActorState> CurrentFrameActors,
+        UBOOL bspNeedsDrawn,
         UXOpenGLRenderDevice* GL
     );
 

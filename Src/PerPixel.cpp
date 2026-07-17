@@ -510,6 +510,169 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         OutTopLights.AddItem(Ranked(i).Light);
 }
 
+static const DOUBLE AngleScale = (2.0 * PI) / 65536.0;
+void UXOpenGLRenderDevice::GetAxes(FRotator R, FVector& X, FVector& Y, FVector& Z)
+{
+    // Convert the 16-bit integer Unreal angles into standard radians
+    // UT99 angles map 65536 units to a full 360-degree circle (2 * PI)
+    DOUBLE SP = appSin((DOUBLE)R.Pitch * AngleScale);
+    DOUBLE CP = appCos((DOUBLE)R.Pitch * AngleScale);
+    
+    DOUBLE SY = appSin((DOUBLE)R.Yaw   * AngleScale);
+    DOUBLE CY = appCos((DOUBLE)R.Yaw   * AngleScale);
+    
+    DOUBLE SR = appSin((DOUBLE)R.Roll  * AngleScale);
+    DOUBLE CR = appCos((DOUBLE)R.Roll  * AngleScale);
+
+    // FORWARD VECTOR (X Axis)
+    X.X = (FLOAT)(CP * CY);
+    X.Y = (FLOAT)(CP * SY);
+    X.Z = (FLOAT)SP;
+
+    // RIGHT VECTOR (Y Axis)
+    Y.X = (FLOAT)((SR * SP * CY) - (CR * SY));
+    Y.Y = (FLOAT)((SR * SP * SY) + (CR * CY));
+    Y.Z = (FLOAT)(-SR * CP);
+
+    // UP VECTOR (Z Axis)
+    Z.X = (FLOAT)(-(CR * SP * CY) - (SR * SY));
+    Z.Y = (FLOAT)(-(CR * SP * SY) + (SR * CY));
+    Z.Z = (FLOAT)(CR * CP);
+}
+
+void UXOpenGLRenderDevice::ComputeStaticLightsForMover(
+    ULevel* Level,
+    INT iSurf,
+    TArray<AActor*>& OutTopLights,
+    int MaxStaticLights)
+{
+    // --- PART 1: Initialization, validation, and surface centroid calculation ---
+    OutTopLights.Empty();
+    if (!Level || !Level->Model || iSurf < 0 || iSurf >= Level->Model->Surfs.Num())
+        return;
+
+    FBspSurf& bspSurf = Level->Model->Surfs(iSurf);
+    AMover* Mover = Cast<AMover>(bspSurf.Actor);
+    if (!Mover) return;
+
+    FSurfInfo* SurfaceInfo = SurfaceInfoMap.Find(iSurf);
+    if (!SurfaceInfo || SurfaceInfo->Verts.Num() < 3) return;
+
+    // Calculate baseline centroid in REST WORLD SPACE (FSurfInfo::Verts are rest-space world verts)
+    FVector RestCentroid(0.f, 0.f, 0.f);
+    for (INT v = 0; v < SurfaceInfo->Verts.Num(); ++v)
+    {
+        RestCentroid += SurfaceInfo->Verts(v);
+    }
+    RestCentroid /= (FLOAT)SurfaceInfo->Verts.Num();
+
+    // Convert centroid to LOCAL REST SPACE relative to mover's rest pivot (BasePos)
+    FVector RestLocal = RestCentroid - Mover->BasePos;
+
+    UBOOL specialLit = (bspSurf.PolyFlags & PF_SpecialLit) != 0;
+    TArray<RankedLight> Ranked;
+    Ranked.Reserve(Level->Actors.Num());
+    AActor* DummyLight = nullptr;
+
+    FVector FacetNormal = Level->Model->Vectors(bspSurf.vNormal);
+
+    // Loop through actors to find potential static lights
+    for (INT i = 0; i < Level->Actors.Num(); ++i)
+    {
+        AActor* L = Level->Actors(i);
+        if (!L || !IsStaticLight(L) || (L->bSpecialLit != 0) != specialLit)
+            continue;
+
+        if (!DummyLight) DummyLight = L;
+
+        FakeSpotlightPair* SpotData = GetSpotlightData(L);
+        bool bIsSpot = (SpotData != nullptr);
+        float Radius = bIsSpot ? SpotData->ReachRadius : L->WorldLightRadius();
+        if (Radius <= 0.f) continue;
+
+        FVector LightPos = bIsSpot ? SpotData->TopLight->Location : L->Location;
+
+        float MaxScore = 0.0f;
+
+        // Iterate through all mover keyframes, reconstructing position and calculating illumination
+        for (INT k = 0; k < Mover->NumKeys; ++k)
+        {
+            // Correct rest-space ? keyframe-space transform
+            FRotator KeyRotation = Mover->BaseRot + Mover->KeyRot[k];
+            FVector  KeyPos      = Mover->BasePos + Mover->KeyPos[k];
+
+            // Extract axes for rotation
+            FVector RX, RY, RZ;
+            GetAxes(KeyRotation, RX, RY, RZ);
+
+            // Rotate rest-local centroid into keyframe orientation
+            FVector Rotated;
+            Rotated.X = RestLocal.X * RX.X + RestLocal.Y * RY.X + RestLocal.Z * RZ.X;
+            Rotated.Y = RestLocal.X * RX.Y + RestLocal.Y * RY.Y + RestLocal.Z * RZ.Y;
+            Rotated.Z = RestLocal.X * RX.Z + RestLocal.Y * RY.Z + RestLocal.Z * RZ.Z;
+
+            // Reconstruct world-space centroid for this keyframe
+            FVector KeyWorldCentroid = KeyPos + Rotated;
+
+            // Distance check against light radius
+            FVector LightToTarget = KeyWorldCentroid - LightPos;
+            float dist = LightToTarget.Size();
+            if (dist > Radius) continue;
+
+            // Calculate attenuation and spot cone factor if applicable
+            float x = Clamp(dist / Radius, 0.0f, 1.0f);
+            float attenuation = (1.f - x) / (1.f + 4.f * x * x);
+
+            float ConeFactor = 1.0f;
+            if (bIsSpot)
+            {
+                FVector LightDirNorm = LightToTarget.SafeNormal();
+                float CosAngle = LightDirNorm | SpotData->SpotDirection;
+                if (CosAngle < SpotData->SpotCosOuter) continue;
+                if (CosAngle < SpotData->SpotCosInner)
+                    ConeFactor = Clamp(
+                        (CosAngle - SpotData->SpotCosOuter) /
+                        Max(SpotData->SpotCosInner - SpotData->SpotCosOuter, 0.001f),
+                        0.0f, 1.0f);
+            }
+
+            float BaseBrightness = bIsSpot ? (float)SpotData->Brightness : (float)L->LightBrightness;
+            FPlane RGBColor = FGetHSV(L->LightHue, L->LightSaturation, (BYTE)BaseBrightness);
+            float lum = 0.299f * Clamp(RGBColor.X / 255.0f, 0.0f, 1.0f)
+                      + 0.587f * Clamp(RGBColor.Y / 255.0f, 0.0f, 1.0f)
+                      + 0.114f * Clamp(RGBColor.Z / 255.0f, 0.0f, 1.0f);
+
+            float score = attenuation * Max(lum, BaseBrightness / 255.f) * ConeFactor;
+            if (score > MaxScore)
+                MaxScore = score;
+        }
+
+        if (MaxScore > 0.0f)
+        {
+            RankedLight R;
+            R.Light = L;
+            R.Score = MaxScore;
+            Ranked.AddItem(R);
+        }
+    }
+
+    if (Ranked.Num() == 0)
+    {
+        RankedLight R;
+        R.Light = DummyLight;
+        R.Score = 0.0f;
+        R.IsStatic = true;
+        Ranked.AddItem(R);
+    }
+
+    Sort(&Ranked(0), Ranked.Num());
+
+    int Count = Min(MaxStaticLights, Ranked.Num());
+    OutTopLights.Empty(Count);
+    for (int i = 0; i < Count; ++i)
+        OutTopLights.AddItem(Ranked(i).Light);
+}
+
 void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(
     ULevel* Level,
     INT iSurf,
@@ -1131,14 +1294,18 @@ void UXOpenGLRenderDevice::NewLevelPP()
             // until we can sort out which surfaces affect movers at all possible positions, 
             // this won't affect drawComplex because that checks isMover before StaticLightsForFacet
             const FBspSurf& Surf = Model->Surfs(SurfIndex);
-			//AActor* Owner = Surf.Actor;
-			//bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
+			AActor* Owner = Surf.Actor;
+			bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
             //if (isMover)
             //    continue;
 
             // Build static light list
             TArray<AActor*> StaticList;
-            ComputeStaticLightsForFacet(LastLevel, SurfIndex, StaticList, LevelLightCap - 10);
+            if (isMover)
+                ComputeStaticLightsForMover(LastLevel, SurfIndex, StaticList, LevelLightCap - 10);
+            else
+                ComputeStaticLightsForFacet(LastLevel, SurfIndex, StaticList, LevelLightCap - 10);
+
             StaticLightsForFacet.Set(SurfIndex, StaticList);
 
             // Preload bump/height maps

@@ -162,9 +162,31 @@ void UXOpenGLRenderDevice::DrawShadowMapSurface(
     PolyVertices.AddZeroed(NumPts);
     TArray<glm::uint>& TriIdx = SI.TriIdx;
 
-    for (INT vi = 0; vi < NumPts; ++vi) {
-        FVector Vert = SI.Verts(vi);
-        PolyVertices(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
+    if (SI.IsMover)
+    {
+        CachedMoverGeometry* CachedMesh = PerFrameMoverCache.Find(SI.iSurf);
+        if (!CachedMesh)
+        {
+            // Cache Miss! First face/light processing this static mesh on this tick.
+            CachedMoverGeometry NewCache;
+
+            ExtractMoverVertices(SI, NewCache.Verts);
+            
+            PerFrameMoverCache.Set(SI.iSurf, NewCache);
+            CachedMesh = PerFrameMoverCache.Find(SI.iSurf);
+        }
+        for (INT vi = 0; vi < NumPts; vi++)
+        {
+            FVector Vert = CachedMesh->Verts(vi);
+            PolyVertices(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
+        }
+    }
+    else
+    {
+        for (INT vi = 0; vi < NumPts; ++vi) {
+            FVector Vert = SI.Verts(vi);
+            PolyVertices(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
+        }
     }
 
     // Grab the current active DrawID. Because the face loop manages starting the call, 

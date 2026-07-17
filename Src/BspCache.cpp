@@ -69,6 +69,7 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 			SurfaceInfoMap.Set(iSurf, FSurfInfo());
 			pSI = SurfaceInfoMap.Find(iSurf);
 
+			pSI->iSurf = iSurf;
 			pSI->SurfaceNormal = Level->Model->Vectors(Surf.vNormal).SafeNormal();
 			pSI->IsMover = isMover;
 			pSI->Owner = Owner;

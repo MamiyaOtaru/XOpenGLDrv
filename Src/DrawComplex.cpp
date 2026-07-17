@@ -201,8 +201,12 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			{
 				// Generate the baseline proximate light list natively on the fly
 				TArray<AActor*> list;
-				ComputeStaticLightsForFacet(Frame->Level, facetSurfId, list, LevelLightCap - 10);
-				
+				if (SI && SI->IsMover)
+					ComputeStaticLightsForMover(Frame->Level, facetSurfId, list, LevelLightCap - 10);
+				else
+					ComputeStaticLightsForFacet(Frame->Level, facetSurfId, list, LevelLightCap - 10);
+        
+
 				// Since no entry exists, there is no occlusion data. 
 				// Simply add the raw list to both maps instantly with zero redundant loops!
 				StaticLightsForFacet.Set(facetSurfId, list);

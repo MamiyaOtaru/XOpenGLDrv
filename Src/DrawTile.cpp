@@ -129,17 +129,26 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 		!(PolyFlags & PF_Masked) &&
         !(PolyFlags & PF_Modulated) &&
         !(PolyFlags & PF_AlphaBlend);
-	// unfortunately also includes muzzle flashes and crosshairs.  
-	// Filtering out crosshairs below, need to do something similar for muzzleflash
-	// OR if no matches just render same size as normal (and hope all real coronas actually match so their size doesn't jump around)
+	// unfortunately also includes muzzle flashes and crosshairs and other HUD.  Filtering them out below
 
 	if (Info.Texture)
 	{
-		const TCHAR* name = Info.Texture->GetName();
-
-		if (!appStrnicmp(name, TEXT("CHair"), 5))
+		UObject* Outer = Info.Texture->GetOuter();
+		//while (Outer) // in case we don't want to list subpackages, can hit all of Botpack with a while loop instead
+		//{
+		if (Outer)
 		{
-			bIsCorona = false;
+			const TCHAR* pkg = Outer->GetName();
+
+			// UI packages — skip corona logic
+			if (!appStricmp(pkg, TEXT("Botpack")) ||
+				!appStricmp(pkg, TEXT("Skins")) || // muzzleflashes
+				!appStricmp(pkg, TEXT("Icons"))) // all the HUD (with crosshair)
+			{
+				bIsCorona = false;
+				//break;
+			}
+			//Outer = Outer->GetOuter();
 		}
 	}
 
@@ -166,9 +175,6 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 				Best   = &L;
 			}
 		}
-
-		//if (BestD2 > .00001f)
-        //    return; // No corona is close enough to this tile to be worth scaling for
 
         if (Best && BestD2 <= .00001f) // otherwise is muzzle flash or something that shouldn't scale
 		{
@@ -205,16 +211,6 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 			Y += (oldYL - YL) * 0.5f;
 		}
 	} // end if coronaScaling and this is a corona
-	if (bIsCorona) // per pixel mode is darker.  Lower their alpha more to compensate or they look very not transparent
-	{
-		// below less important if we adjust gamma of per pixel path, but still needs some tweaking
-		// need to lower alpha even if we don't scale
-		if (BumpMaps)
-		{
-			//alpha *= 0.5f;
-		}
-		DrawColor *= alpha;
-	}
 
 	bool safeToReadDepth = !(PolyFlags & PF_Occlude);
 	if (safeToReadDepth && Z > 1.0f)

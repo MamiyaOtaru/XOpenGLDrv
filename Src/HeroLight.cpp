@@ -60,6 +60,22 @@ UXOpenGLHeroLight::UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<
         {
             if ((*LightsForThisSurf)(l) == LightActor)
             {
+                // record movers
+                UXOpenGLRenderDevice::FSurfInfo* pSI = GL->GetSurfInfoByID(SurfIndex);
+                if (pSI && pSI->IsMover && pSI->Owner)
+                {
+                    if (TrackedMovers.FindItemIndex(pSI->Owner) == INDEX_NONE)
+                    {
+                        TrackedMovers.AddItem(pSI->Owner);
+                    
+                        AMover* Mov = Cast<AMover>(pSI->Owner);
+                        if (Mov)
+                        {
+                            MoverHomePositions.Set(Mov, Mov->BasePos);
+                        }
+                    }
+                }
+
                 for (INT n = 0; n < Surf.Nodes.Num(); ++n)
                 {
                     INT NodeIndex = Surf.Nodes(n);
@@ -291,6 +307,11 @@ void UXOpenGLHeroLight::PartitionBSPSurfaces(UModel* Model, UXOpenGLRenderDevice
         if (!pSI || pSI->TriIdx.Num() == 0) 
             continue;
 
+        AMover* Mover = nullptr;
+        if (pSI->IsMover)
+            Mover = Cast<AMover>(Model->Surfs(iSurf).Actor);
+        UBOOL bIsMoverSurface = (Mover != nullptr);
+
         const TArray<FVector>& Verts = pSI->Verts;
         const TArray<glm::uint>& TriIdx = pSI->TriIdx;
 
@@ -302,6 +323,31 @@ void UXOpenGLHeroLight::PartitionBSPSurfaces(UModel* Model, UXOpenGLRenderDevice
             Triangles.AddItem(Verts(TriIdx(t+2)));
         }
 
+        // Rest-local offsets (undo BaseRot) for movers
+        TArray<FVector> RestLocalOffsets;
+        if (bIsMoverSurface)
+        {
+            RestLocalOffsets.Reserve(Triangles.Num());
+
+            // Axes for BaseRot (to remove it)
+            FVector BRX, BRY, BRZ;
+            UXOpenGLRenderDevice::GetAxes(Mover->BaseRot, BRX, BRY, BRZ);
+
+            for (INT v = 0; v < Triangles.Num(); ++v)
+            {
+                // World at rest, already rotated by BaseRot
+                FVector Local = Triangles(v) - Mover->BasePos;
+
+                // Undo BaseRot to get true rest-local
+                FVector RestLocal;
+                RestLocal.X = Local.X * BRX.X + Local.Y * BRX.Y + Local.Z * BRX.Z;
+                RestLocal.Y = Local.X * BRY.X + Local.Y * BRY.Y + Local.Z * BRY.Z;
+                RestLocal.Z = Local.X * BRZ.X + Local.Y * BRZ.Y + Local.Z * BRZ.Z;
+
+                RestLocalOffsets.AddItem(RestLocal);
+            }
+        }
+
         for (INT f = 0; f < 6; ++f)
         {
             // This handles the positions correctly anywhere in the map.
@@ -311,72 +357,107 @@ void UXOpenGLHeroLight::PartitionBSPSurfaces(UModel* Model, UXOpenGLRenderDevice
             FMatrix ViewMatrix = MakeLookAt(LightPos, -FaceDirs[f], FaceUps[f]);
             UBOOL bIntrudesInFrustumAndRadius = FALSE;
 
-            for (INT t = 0; t < Triangles.Num(); t += 3)
+            // PATH SWEEP: Check 1 snapshot for static BSP, or scan all keyframe steps for movers
+            INT MaxSteps = bIsMoverSurface ? Mover->NumKeys : 1;
+
+            for (INT step = 0; step < MaxSteps; ++step)
             {
                 if (bIntrudesInFrustumAndRadius) break;
 
-                FVector wA = Triangles(t);
-                FVector wB = Triangles(t+1);
-                FVector wC = Triangles(t+2);
-
-                // Transform world positions into View Space using your shared helper's output
-                FVector vA = ViewMatrix.TransformFVector(wA);
-                FVector vB = ViewMatrix.TransformFVector(wB);
-                FVector vC = ViewMatrix.TransformFVector(wC);
-
-                // Simple Near-Z plane check (skip if the whole triangle is behind the lens)
-                if (vA.Z < 8.0f && vB.Z < 8.0f && vC.Z < 8.0f) 
-                    continue;
-
-                // Setup the clipping pipeline input
-                FClippedPolygon PolyStage0;
-                PolyStage0.Verts[0] = vA; 
-                PolyStage0.Verts[1] = vB; 
-                PolyStage0.Verts[2] = vC;
-                PolyStage0.NumVerts = 3;
-
-                // Slice by the camera's Near Z plane (8.0f)
-                FClippedPolygon PolyStage1; 
-                ClipPolygonByNearPlane(PolyStage0, PolyStage1, 8.0f);
-
-                if (PolyStage1.NumVerts < 3) continue;
-
-                // Slice by the 4 3D side frustum boundaries in View Space
-                FClippedPolygon PolyStage2; ClipPolygonByPlane(PolyStage1, PolyStage2, 0, -1.0f); // Left
-                FClippedPolygon PolyStage3; ClipPolygonByPlane(PolyStage2, PolyStage3, 0,  1.0f); // Right
-                FClippedPolygon PolyStage4; ClipPolygonByPlane(PolyStage3, PolyStage4, 1, -1.0f); // Bottom
-                FClippedPolygon FinalClippedPoly; ClipPolygonByPlane(PolyStage4, FinalClippedPoly, 1, 1.0f); // Top
-
-                // If nothing is left inside this view window, skip this face
-                if (FinalClippedPoly.NumVerts < 3)
-                    continue;
-
-                // Proximity check over the isolated sub-polygon patch
-                for (INT i = 1; i < FinalClippedPoly.NumVerts - 1; ++i)
+                // Reconstruct world space triangles for this specific frame state
+                TArray<FVector> ActiveTriangles;
+                if (bIsMoverSurface)
                 {
-                    FVector pA = FinalClippedPoly.Verts[0];
-                    FVector pB = FinalClippedPoly.Verts[i];
-                    FVector pC = FinalClippedPoly.Verts[i+1];
+                    ActiveTriangles.Reserve(RestLocalOffsets.Num());
 
-                    FVector triangleNormal = ((pB - pA) ^ (pC - pA)).SafeNormal();
-                    float planeDist = pA | triangleNormal;
-                    FVector projectedLightPos = triangleNormal * planeDist;
+                    FRotator KeyRotation = Mover->BaseRot + Mover->KeyRot[step];
+                    FVector  KeyLocation = Mover->BasePos + Mover->KeyPos[step];
 
-                    FVector closestPointInFrustum;
-                    if (GL->PointInTriangle(projectedLightPos, pA, pB, pC, triangleNormal))
+                    FVector RX, RY, RZ;
+                    UXOpenGLRenderDevice::GetAxes(KeyRotation, RX, RY, RZ);
+
+                    for (INT v = 0; v < RestLocalOffsets.Num(); ++v)
                     {
-                        closestPointInFrustum = projectedLightPos;
+                        FVector RL = RestLocalOffsets(v);
+
+                        FVector Rotated;
+                        Rotated.X = RL.X * RX.X + RL.Y * RY.X + RL.Z * RZ.X;
+                        Rotated.Y = RL.X * RX.Y + RL.Y * RY.Y + RL.Z * RZ.Y;
+                        Rotated.Z = RL.X * RX.Z + RL.Y * RY.Z + RL.Z * RZ.Z;
+
+                        ActiveTriangles.AddItem(KeyLocation + Rotated);
                     }
-                    else
-                    {
-                        closestPointInFrustum = GL->ClosestPointOnTriangle(projectedLightPos, pA, pB, pC);
-                    }
+                }
+                else
+                {
+                    // Fast alias reference to avoid copying standard static arrays
+                    ActiveTriangles = Triangles;
+                }
 
-                    // Check radius limits relative to the view-space origin (0,0,0)
-                    if (closestPointInFrustum.SizeSquared() < RadiusSq)
+                // --- RUNTIME FRUSTUM CLIPPING EVALUATION PASS ---
+                for (INT t = 0; t < ActiveTriangles.Num(); t += 3)
+                {
+                    if (bIntrudesInFrustumAndRadius) break;
+
+                    FVector wA = ActiveTriangles(t);
+                    FVector wB = ActiveTriangles(t+1);
+                    FVector wC = ActiveTriangles(t+2);
+
+                    // Transform world positions into View Space using your shared helper's output
+                    FVector vA = ViewMatrix.TransformFVector(wA);
+                    FVector vB = ViewMatrix.TransformFVector(wB);
+                    FVector vC = ViewMatrix.TransformFVector(wC);
+
+                    // Simple Near-Z plane check (skip if the whole triangle is behind the lens)
+                    if (vA.Z < 8.0f && vB.Z < 8.0f && vC.Z < 8.0f) 
+                        continue;
+
+                    // Setup the clipping pipeline input
+                    FClippedPolygon PolyStage0;
+                    PolyStage0.Verts[0] = vA; PolyStage0.Verts[1] = vB; PolyStage0.Verts[2] = vC;
+                    PolyStage0.NumVerts = 3;
+
+                    // Slice by the camera's Near Z plane (8.0f)
+                    FClippedPolygon PolyStage1; 
+                    ClipPolygonByNearPlane(PolyStage0, PolyStage1, 8.0f);
+                    if (PolyStage1.NumVerts < 3) continue;
+
+                    // Slice by the 4 3D side frustum boundaries in View Space
+                    FClippedPolygon PolyStage2; ClipPolygonByPlane(PolyStage1, PolyStage2, 0, -1.0f);
+                    FClippedPolygon PolyStage3; ClipPolygonByPlane(PolyStage2, PolyStage3, 0,  1.0f);
+                    FClippedPolygon PolyStage4; ClipPolygonByPlane(PolyStage3, PolyStage4, 1, -1.0f);
+                    FClippedPolygon FinalClippedPoly; ClipPolygonByPlane(PolyStage4, FinalClippedPoly, 1, 1.0f);
+
+                    // If nothing is left inside this view window, skip this face
+                    if (FinalClippedPoly.NumVerts < 3) continue;
+
+                    // Proximity check over the isolated sub-polygon patch
+                    for (INT i = 1; i < FinalClippedPoly.NumVerts - 1; ++i)
                     {
-                        bIntrudesInFrustumAndRadius = TRUE;
-                        break;
+                        FVector pA = FinalClippedPoly.Verts[0];
+                        FVector pB = FinalClippedPoly.Verts[i];
+                        FVector pC = FinalClippedPoly.Verts[i+1];
+
+                        FVector triangleNormal = ((pB - pA) ^ (pC - pA)).SafeNormal();
+                        float planeDist = pA | triangleNormal;
+                        FVector projectedLightPos = triangleNormal * planeDist;
+
+                        FVector closestPointInFrustum;
+                        if (UXOpenGLRenderDevice::PointInTriangle(projectedLightPos, pA, pB, pC, triangleNormal))
+                        {
+                            closestPointInFrustum = projectedLightPos;
+                        }
+                        else
+                        {
+                            closestPointInFrustum = UXOpenGLRenderDevice::ClosestPointOnTriangle(projectedLightPos, pA, pB, pC);
+                        }
+
+                        // Check radius limits relative to the view-space origin (0,0,0)
+                        if (closestPointInFrustum.SizeSquared() < RadiusSq)
+                        {
+                            bIntrudesInFrustumAndRadius = TRUE;
+                            break;
+                        }
                     }
                 }
             }
@@ -435,7 +516,7 @@ BOOL IsStaticMesh(AActor* Actor)
 // ------------------------------------------------------------
 // Internal Face Projection & Matrix Pass
 // ----------------------RenderFaceGeometry--------------------------------------
-void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT FaceIndex, TArray<CachedActorState> ActiveActors, UXOpenGLRenderDevice* GL)
+void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT FaceIndex, TArray<CachedActorState> ActiveActors, UBOOL bspNeedsDrawn, UXOpenGLRenderDevice* GL)
 {
     guard(UXOpenGLHeroLight::RenderFaceGeometry);
 
@@ -452,8 +533,15 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
 
     // PASS 1: TRIANGLES (BSP + STATIC MESHES)
     {
-        if (!bspDrawn[FaceIndex])
+        if (bspNeedsDrawn)
         {
+            glDepthMask(GL_TRUE); // Open depth writes wide for the baseline pass
+        
+            // Re-render baseline pass: clear everything (color + depth) completely fresh
+            GLfloat ClearValues[] = { 1.0f, 0.0f, 0.0f, 0.0f };
+            glClearBufferfv(GL_COLOR, 0, ClearValues);
+            glClear(GL_DEPTH_BUFFER_BIT); // Wipes only this face's independent canvas layer
+
             INT ActiveFaceVertexCount = 0;
             GL->BeginShadowMapFace(FaceIndex, ViewMatrix, ProjMatrix, Eye, Radius);
             // A: BSP Surfaces (Cached subset)
@@ -466,9 +554,18 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
                     GL->DrawShadowMapSurface(Frame, *pSI, ActiveFaceVertexCount);
                 }
             }
-            bspDrawn[FaceIndex] = TRUE;
+            faceBspDirty[FaceIndex] = FALSE;
             GL->EndShadowMapFace(ActiveFaceVertexCount); // triangle program flush
             glDepthMask(GL_FALSE); // don't write to depth buffer for meshes, only BSP
+        }
+        else {
+            glDepthMask(GL_FALSE);
+
+            // BSP already cached: only clear .a channel (mesh data) while preserving .r (BSP depth)
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);  // Alpha only
+            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);  // Restore color channels
         }
 
         INT ActiveFaceVertexCount = 0;
@@ -532,6 +629,8 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
 // Maps the unique GetIndex pointer to its position in the LastFrameActors array.
 TMap<INT, INT> LastFrameLookup;
 TMap<INT, INT> CurrentFrameLookup;
+
+static FName NAME_SmallSpark(TEXT("SmallSpark"));
 
 // ------------------------------------------------------------
 // The Master Evaluation & Render Dispatcher
@@ -659,8 +758,6 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
     }
 
     TArray<CachedActorState> CurrentFrameActors;
-    static FName NAME_SmallSpark(TEXT("SmallSpark"));
-
     // --- Fast Structural Scan ---
     for (INT i = 0; i < Level->Actors.Num(); ++i)
     {
@@ -737,19 +834,19 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
         for (INT i = 0; i < CurrentFrameActors.Num(); ++i)
         {
             const CachedActorState& Curr = CurrentFrameActors(i);
-            
+
             // O(1) Intrinsic Pointer Lookup
-            INT* prevIndexPtr = LastFrameLookup.Find(Curr.ActorIndex); 
+            INT* prevIndexPtr = LastFrameLookup.Find(Curr.ActorIndex);
 
             UBOOL bChanged = TRUE;
             if (prevIndexPtr != nullptr) // Actor intrinsically matched from last frame!
             {
                 const CachedActorState& Prev = LastFrameActors(*prevIndexPtr);
-                if (Curr.Location  == Prev.Location && 
-                    Curr.Rotation  == Prev.Rotation && 
+                if (Curr.Location == Prev.Location &&
+                    Curr.Rotation == Prev.Rotation &&
                     Curr.AnimFrame == Prev.AnimFrame)
                 {
-                    bChanged = FALSE; 
+                    bChanged = FALSE;
                 }
                 else
                 {
@@ -761,6 +858,33 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
             if (bChanged)
             {
                 ChangedFaceMask |= Curr.FaceMask;
+            }
+
+            // If this actor is a mover brush, evaluate its spatial track and dirty state
+            if (Curr.Actor && Curr.Actor->IsA(AMover::StaticClass()))
+            {
+                AMover* Mover = Cast<AMover>(Curr.Actor);
+                FVector* LastLoc = LastMoverLocations.Find(Mover);
+
+                if (!LastLoc)
+                {
+                    // Register initial location baseline tracking entry
+                    LastMoverLocations.Set(Mover, Mover->Location);
+                    continue;
+                }
+
+                // Condition A: Mover drifted or slid this frame tick!
+                if (Mover->Location != *LastLoc)
+                {
+                    for (INT f = 0; f < 6; ++f)
+                    {
+                        if (Curr.FaceMask & (1 << f))
+                        {
+                            faceBspDirty[f] = TRUE;
+                        }
+                    }
+                    *LastLoc = Mover->Location; // Update our position register cache
+                }
             }
         }
 
@@ -782,13 +906,27 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
         }
     }
 
-// --- Execution Pipeline Transition ---
+    // --- Execution Pipeline Transition ---
 	LastFrameActors.Empty();
 	LastFrameActors   = CurrentFrameActors;
 	LastFrameFaceMask = CurrentFaceMask;
 	LastRadius        = Radius;
 	LastLocation      = SourceLocation;
 
+    UBOOL bMoverForcesUpdate = FALSE;
+    for (INT f = 0; f < 6; ++f)
+    {
+        // If a face is currently in-view AND marked dirty by a moving brush, 
+        // we MUST override the exit gate and force the pipeline forward!
+        if (faceBspDirty[f] && (CurrentFaceMask & (1 << f)))
+        {
+            bMoverForcesUpdate = TRUE;
+        
+            // Dynamically append this specific face bit directly to the execution mask 
+            // to guarantee our upcoming FaceFbos[face]->Bind() loop picks it up!
+            ChangedFaceMask |= (1 << f);
+        }
+    }
 	if (ChangedFaceMask == 0)
 		return;
 
@@ -856,35 +994,15 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 		glDrawBuffers(1, DrawBuffers);
 
 		// --- SELECTIVE CLEARING BASED ON BSP CACHE ---
-		if (!bspDrawn[face])
-		{
-			glDepthMask(GL_TRUE); // Open depth writes wide for the baseline pass
-			
-			// First time rendering this face: clear everything (color + depth)
-			GLfloat ClearValues[] = { 1.0f, 0.0f, 0.0f, 0.0f };
-			glClearBufferfv(GL_COLOR, 0, ClearValues);
-			glClear(GL_DEPTH_BUFFER_BIT); // Wipes only this face's independent canvas layer
-		}
-		else
-		{
-			// --- HARDWARE TILE CACHE LOCK ---
-			// We freeze depth mutations explicitly BEFORE running the color clear!
-			// This locks your cached depth face layer, telling the driver it is read-only
-			// and preventing the color clear from invalidating its Hi-Z tiles.
-			glDepthMask(GL_FALSE);
-
-			// BSP already cached: only clear .a channel (mesh data) while preserving .r (BSP depth)
-			glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);  // Alpha only
-			glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-			glClear(GL_COLOR_BUFFER_BIT);
-			glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);  // Restore
-		}
+        UBOOL bIsFaceInActiveFrustum = (CurrentFaceMask & (1 << face)) != 0;
+        // draw BSP if it has not before, or if some BSP moved
+        UBOOL bspNeedsDrawn = faceBspDirty[face] && bIsFaceInActiveFrustum;
 
 		// Keep glDepthMask(GL_FALSE) active here if the BSP is cached!
 		// This protects your write-once static world depth maps from being corrupted by dynamic actors.
 		if (CurrentFaceMask & (1 << face))
 		{
-			RenderFaceGeometry(Level, Frame, face, CurrentFrameActors, GL);
+			RenderFaceGeometry(Level, Frame, face, CurrentFrameActors, bspNeedsDrawn, GL);
 		}
 
 		// Restore standard depth writing capability before stepping to the next face quadrant

@@ -559,36 +559,6 @@ static MeshCapsuleCache& GetCapsuleCacheForMesh(ULodMesh* Mesh)
     return NewCache;
 }
 
-static const DOUBLE AngleScale = (2.0 * PI) / 65536.0;
-inline void GetAxes(FRotator R, FVector& X, FVector& Y, FVector& Z)
-{
-    // Convert the 16-bit integer Unreal angles into standard radians
-    // UT99 angles map 65536 units to a full 360-degree circle (2 * PI)
-    DOUBLE SP = appSin((DOUBLE)R.Pitch * AngleScale);
-    DOUBLE CP = appCos((DOUBLE)R.Pitch * AngleScale);
-    
-    DOUBLE SY = appSin((DOUBLE)R.Yaw   * AngleScale);
-    DOUBLE CY = appCos((DOUBLE)R.Yaw   * AngleScale);
-    
-    DOUBLE SR = appSin((DOUBLE)R.Roll  * AngleScale);
-    DOUBLE CR = appCos((DOUBLE)R.Roll  * AngleScale);
-
-    // FORWARD VECTOR (X Axis)
-    X.X = (FLOAT)(CP * CY);
-    X.Y = (FLOAT)(CP * SY);
-    X.Z = (FLOAT)SP;
-
-    // RIGHT VECTOR (Y Axis)
-    Y.X = (FLOAT)((SR * SP * CY) - (CR * SY));
-    Y.Y = (FLOAT)((SR * SP * SY) + (CR * CY));
-    Y.Z = (FLOAT)(-SR * CP);
-
-    // UP VECTOR (Z Axis)
-    Z.X = (FLOAT)(-(CR * SP * CY) - (SR * SY));
-    Z.Y = (FLOAT)(-(CR * SP * SY) + (SR * CY));
-    Z.Z = (FLOAT)(CR * CP);
-}
-
 // helper: mesh-space -> world-space (no animation here)
 inline FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(
     const FVector& P, 
@@ -965,6 +935,56 @@ void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, T
         OutTris.AddItem(T);
     }
 }
+
+void UXOpenGLRenderDevice::ExtractMoverVertices(
+    const FSurfInfo& SI,
+    TArray<FVector>& OutVerts)
+{
+    OutVerts.Empty();
+
+    if (!SI.IsMover || !SI.Owner)
+        return;
+
+    AMover* Mov = Cast<AMover>(SI.Owner);
+    if (!Mov)
+        return;
+
+    // Engine's current transform
+    FVector  CurPos = Mov->Location;
+    FRotator CurRot = Mov->Rotation;
+    FRotator BaseRot = Mov->BaseRot;
+
+    // Axes for current rotation
+    FVector RXc, RYc, RZc;
+    GetAxes(CurRot, RXc, RYc, RZc);
+
+    // Axes for inverse base rotation
+    FVector RXb, RYb, RZb;
+    GetAxes(BaseRot, RXb, RYb, RZb);
+
+    OutVerts.Reserve(SI.Verts.Num());
+
+    for (INT i = 0; i < SI.Verts.Num(); ++i)
+    {
+        // Remove BaseRot from the stored world-space vertex
+        FVector Local = SI.Verts(i) - Mov->BasePos;
+
+        FVector RestLocal;
+        RestLocal.X = Local.X * RXb.X + Local.Y * RXb.Y + Local.Z * RXb.Z;
+        RestLocal.Y = Local.X * RYb.X + Local.Y * RYb.Y + Local.Z * RYb.Z;
+        RestLocal.Z = Local.X * RZb.X + Local.Y * RZb.Y + Local.Z * RZb.Z;
+
+        // Apply current rotation
+        FVector Rotated;
+        Rotated.X = RestLocal.X * RXc.X + RestLocal.Y * RYc.X + RestLocal.Z * RZc.X;
+        Rotated.Y = RestLocal.X * RXc.Y + RestLocal.Y * RYc.Y + RestLocal.Z * RZc.Y;
+        Rotated.Z = RestLocal.X * RXc.Z + RestLocal.Y * RYc.Z + RestLocal.Z * RZc.Z;
+
+        OutVerts.AddItem(CurPos + Rotated);
+    }
+}
+
+
 
 // -----------------------------------------------------------------------------
 // Explicitly chains a child local joint matrix onto an outcoded parent matrix
@@ -1542,6 +1562,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
 {
     PerFrameActorSplatCache.Empty();
     PerFrameStaticMeshCache.Empty();
+    PerFrameMoverCache.Empty();
 
     INT TotalLights = HeroLights.Num();
     if (TotalLights <= 0) return;

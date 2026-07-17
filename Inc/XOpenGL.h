@@ -1806,6 +1806,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// Per-surface runtime info accessible to other renderer code.
 	struct FSurfInfo
 	{
+		INT iSurf;
+
 		TArray<FVector> Verts;           // vertex instances (all nodes appended)
 		TArray<FVector> UVs;
 		TArray<FVector> LightmapUVs;
@@ -1864,9 +1866,11 @@ class UXOpenGLRenderDevice : public URenderDevice
     // per level mapping from texture to roughness value, used to avoid expensive String allocations on every frame for every surface
 	TMap<UTexture*, float> RoughnessCache;
 
+	static void UXOpenGLRenderDevice::GetAxes(FRotator R, FVector& X, FVector& Y, FVector& Z);
 	INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet& Facet);
 	void UXOpenGLRenderDevice::GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, TArray<FVector>& OutVerts);
 	void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(ULevel* Level, INT iSurf, TArray<AActor*>& outLights, int MaxStaticLights);
+	void UXOpenGLRenderDevice::ComputeStaticLightsForMover(ULevel* Level, INT iSurf, TArray<AActor*>& OutTopLights, int MaxStaticLights);
 	void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(ULevel* Level, INT iSurf, TArray<AActor*>& outLights);
 	void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(FSceneNode* Frame, FSurfaceFacet& Facet, TArray<AActor*>& OutStaticLights, TArray<AActor*>& OutDynamicLights, INT MaxLights);
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
@@ -1879,8 +1883,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle);
 
 	// util functions used also by eg. HeroLightstatic UBOOL UXOpenGLRenderDevice::PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N)
-	UBOOL UXOpenGLRenderDevice::PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N);
-   	FVector UXOpenGLRenderDevice::ClosestPointOnTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C);
+	static UBOOL UXOpenGLRenderDevice::PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N);
+   	static FVector UXOpenGLRenderDevice::ClosestPointOnTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C);
 
 	// list of lights with coronas so we can shrink them based on distance
 	struct FCoronaLight
@@ -1942,14 +1946,20 @@ class UXOpenGLRenderDevice : public URenderDevice
 		TArray<INT> TriangleIndices; // Pure engine index stream
 	};
 	BOOL UXOpenGLRenderDevice::HasMappedTopology(AActor* Actor);
+	struct CachedMoverGeometry
+	{
+		TArray<FVector> Verts; // Fully transformed world-space verts
+	};
 
 	// per frame worldpos data
 	TMap<AActor*, CachedActorSplatArray> PerFrameActorSplatCache;
 	TMap<AActor*, CachedStaticMeshGeometry> PerFrameStaticMeshCache;
+	TMap<INT, CachedMoverGeometry> PerFrameMoverCache;
 	inline FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, const FVector& MX, const FVector& MY, const FVector& MZ, const FVector& AX, const FVector& AY, const FVector& AZ, FLOAT DrawScale, const FVector& ActorLocation, const FVector& PrePivot);
 	void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TArray<FCapsuleSplat>& OutCapsules);
 	void UXOpenGLRenderDevice::ExtractMappedAnimatedTriangles(ULodMesh* L, AActor* Actor, const FMeshConnectivity& Blueprint, TArray<FShadowTriangle>& OutTris);
 	void UXOpenGLRenderDevice::ExtractLodMeshTriangles(ULodMesh* L, AActor* Actor, TArray<FShadowTriangle>& OutTris);
+	void UXOpenGLRenderDevice::ExtractMoverVertices(const FSurfInfo& SI, TArray<FVector>& OutVerts);
 	void UXOpenGLRenderDevice::ExtractSkeletalMeshTriangles(USkeletalMesh* S, AActor* Actor, TArray<FShadowTriangle>& OutTris);
 	void UXOpenGLRenderDevice::ExtractUMeshTriangles(UMesh* M, AActor* Actor, TArray<FShadowTriangle>& OutTris);
 
