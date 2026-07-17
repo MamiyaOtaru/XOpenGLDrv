@@ -1215,7 +1215,6 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 
 	debugf(TEXT("XOpenGL::SetRes %dx%d - Fullscreen %d"), NewX, NewY, Fullscreen);
 
-	// If not fullscreen, and color bytes hasn't changed, do nothing.
 	if (glContext &&
 		CurrentGLContext &&
 		glContext == CurrentGLContext &&
@@ -1236,7 +1235,6 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 		}
 #endif
 		glViewport(0, 0, NewX, NewY);
-		return 1;
 	}
 
 #if _WIN32
@@ -1302,7 +1300,7 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 			}
 			debugf(NAME_DevGraphics, TEXT("XOpenGL: ChangeDisplaySettings: %ix%i"), NewX, NewY);
 		}
-	}
+	} // end if fullscreen
 	else UnsetRes();
 #else
     if (!Window)
@@ -1421,7 +1419,7 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 		FALSE
 	);
 
-    if (AmbientOcclusion || IndirectIllumination)
+    //if (AmbientOcclusion || IndirectIllumination) // just make these so turning on from off doesn't die
     {
         gbufferFbo = new Fbo(
             SceneWidth,
