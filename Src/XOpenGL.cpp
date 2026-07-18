@@ -1209,6 +1209,8 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 {
 	guard(UXOpenGLRenderDevice::SetRes);
 
+	if (NewX <= 0 || NewY <= 0) return 0;
+
 	DesiredColorBits = NewColorBytes <= 2 ? 16 : 32;
 	DesiredStencilBits = NewColorBytes <= 2 ? 0 : 8;
 	DesiredDepthBits = NewColorBytes <= 2 ? 16 : 24;
