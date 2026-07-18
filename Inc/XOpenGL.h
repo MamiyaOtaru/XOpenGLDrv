@@ -1770,19 +1770,19 @@ class UXOpenGLRenderDevice : public URenderDevice
 	struct FSurfaceLightmap
 	{
 		// Atlas UV rectangle (0..1 in atlas space)
-		float AtlasMinU;
-		float AtlasMaxU;
-		float AtlasMinV;
-		float AtlasMaxV;
+		FLOAT AtlasMinU;
+		FLOAT AtlasMaxU;
+		FLOAT AtlasMinV;
+		FLOAT AtlasMaxV;
 
 		// Offset between baked basis origin and actor's default location
 		FVector OriginOffset;
 
 		// Surf extents in basis space (needed to normalize raw U/V into [0,1])
-		float SurfMinU;
-		float SurfMaxU;
-		float SurfMinV;
-		float SurfMaxV;
+		FLOAT SurfMinU;
+		FLOAT SurfMaxU;
+		FLOAT SurfMinV;
+		FLOAT SurfMaxV;
 	};
 
 	// used primarily in the BSP walker
@@ -1790,7 +1790,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	{
 		TArray<glm::uint> VertIndices;   // indices into SI.Verts (vertex instances)
 		FVector PlaneNormal;             // true BSP node plane normal
-		float   PlaneW;                  // true BSP node plane W
+		FLOAT   PlaneW;                  // true BSP node plane W
 		INT TriStart = 0;  // index into SurfaceTriIndices[iSurf]
 		INT TriCount = 0;  // number of indices (multiple of 3)
 		INT iNode = 0;
@@ -1820,15 +1820,15 @@ class UXOpenGLRenderDevice : public URenderDevice
 		// This avoids doing triangulation at draw-time.
 		TArray<glm::uint> TriIdx;
 
-		float   Area;                    // polygon area (computed from VertIndices)
+		FLOAT   Area;                    // polygon area (computed from VertIndices)
 		FVector SurfaceNormal;           // editor normal (FBspSurf.vNormal)
-		int LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
+		INT LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
 
-		bool IsMover = false;
+		UBOOL IsMover = false;
 		AActor* Owner;
 		DWORD PolyFlags = 0;
 
-		bool HasHDLightmap = false;
+		UBOOL HasHDLightmap = false;
 		FSurfaceLightmap HDLightmap; // our HD lightmap info
 		SurfaceBasis LightmapBasis;
 
@@ -1904,6 +1904,7 @@ class UXOpenGLRenderDevice : public URenderDevice
     void UXOpenGLRenderDevice::ProcessNodeSurface(INT ni, ULevel* Level); // build occlusion map for one surface (called from WorkerThread)
 	void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FString& AtlasName);
 	void UXOpenGLRenderDevice::BuildingPoll();
+	void UXOpenGLRenderDevice::CleanupOCThreads();
 	UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString& AtlasName);
 	void UXOpenGLRenderDevice::NewLevelOC();
 

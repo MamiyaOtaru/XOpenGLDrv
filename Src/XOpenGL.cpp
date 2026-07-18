@@ -2655,6 +2655,10 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 			debugf(TEXT("Failed to load DebugDepth shader"));
 		}*/
 
+		// end any in flight occlusion threads
+		// must be called from here instead of from NewLevelOC as by that time NewLevelBSP has run and changed SurfaceInfoMap
+		CleanupOCThreads();
+
 		NewLevelBSP(); // gathers geometry and adds normals
 		NewLevelPP(); // gathers lights for geometry and preloads textures
 		NewLevelOC(); // loads or generates occlusion map
@@ -2752,21 +2756,6 @@ void UXOpenGLRenderDevice::UpdateOrtho()
 
 void UXOpenGLRenderDevice::DrawSolidRect(float x, float y, float w, float h, const FPlane& color)
 {
-    // --- Save state we’re about to touch ---
-    GLint prevProg = 0;
-    GLint prevVAO  = 0;
-    GLint prevArrayBuf = 0;
-
-    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
-    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVAO);
-    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevArrayBuf);
-
-    GLboolean prevBlend = glIsEnabled(GL_BLEND);
-    GLboolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
-    GLboolean prevCull  = glIsEnabled(GL_CULL_FACE);
-    GLboolean prevStencil = glIsEnabled(GL_STENCIL_TEST);
-    GLboolean prevScissor = glIsEnabled(GL_SCISSOR_TEST);
-
     // --- Our rect setup ---
     float verts[8] =
     {
@@ -2796,23 +2785,31 @@ void UXOpenGLRenderDevice::DrawSolidRect(float x, float y, float w, float h, con
     glBlendEquation(GL_FUNC_ADD);
 
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-
-    // --- Restore previous state ---
-    glBindBuffer(GL_ARRAY_BUFFER, prevArrayBuf);
-    glBindVertexArray(prevVAO);
-    glUseProgram(prevProg);
-
-    if (prevBlend)   glEnable(GL_BLEND);   else glDisable(GL_BLEND);
-    if (prevDepth)   glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (prevCull)    glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
-    if (prevStencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
-    if (prevScissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
 }
 
 void UXOpenGLRenderDevice::DrawProgressBar()
 {
     if (ProgressTotal <= 0)
         return;
+
+	// --- Save state we're about to touch ---
+    GLint prevProg = 0;
+    GLint prevVAO  = 0;
+    GLint prevArrayBuf = 0;
+
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVAO);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevArrayBuf);
+
+    GLboolean prevBlend = glIsEnabled(GL_BLEND);
+    GLboolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean prevCull  = glIsEnabled(GL_CULL_FACE);
+    GLboolean prevStencil = glIsEnabled(GL_STENCIL_TEST);
+    GLboolean prevScissor = glIsEnabled(GL_SCISSOR_TEST);
+
+	GLint oldSrc, oldDst;
+    glGetIntegerv(GL_BLEND_SRC, &oldSrc);
+    glGetIntegerv(GL_BLEND_DST, &oldDst);
 
     float progress = float(ProgressDone.load()) / float(ProgressTotal);
     progress = Clamp(progress, 0.0f, 1.0f);
@@ -2842,6 +2839,16 @@ void UXOpenGLRenderDevice::DrawProgressBar()
     DrawSolidRect(x+pad, y+pad, filled, innerH, FPlane(0.2f,0.8f,0.2f,1));
 
 	// Reset GL state to something sane for the rest of the frame
+    glBindBuffer(GL_ARRAY_BUFFER, prevArrayBuf);
+    glBindVertexArray(prevVAO);
+    glUseProgram(prevProg);
+
+    if (prevBlend)   glEnable(GL_BLEND);   else glDisable(GL_BLEND);
+    if (prevDepth)   glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (prevCull)    glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
+    if (prevStencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+    if (prevScissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    glBlendFunc(oldSrc, oldDst);
 	SetProgram(No_Prog);
 	SceneFbo->Bind();
 	glViewport(0, 0, SceneWidth, SceneHeight);
@@ -3302,6 +3309,8 @@ void UXOpenGLRenderDevice::Exit()
 		SharedBindMap = NULL;
 	}
 
+	CleanupOCThreads(); // delete scratch file if any
+
 	// Delete UBOs
 	FrameStateBuffer.DeleteBuffer();
 	LightInfoBuffer.DeleteBuffer();
@@ -3445,6 +3454,8 @@ void UXOpenGLRenderDevice::ShutdownAfterError()
 
 	if (hDC)
 		ReleaseDC(hWnd, hDC);
+
+	CleanupOCThreads(); // delete scratch file if any
 
 #endif
 

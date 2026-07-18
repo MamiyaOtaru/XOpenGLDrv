@@ -1432,18 +1432,13 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
         INT NumDwordsNeeded = (Lights.Num() + 31) / 32; 
         LocalRejectionBitmask.AddZeroed(NumDwordsNeeded);
 
-        // =========================================================================
-        // THE LOOP INVERSION: LOOP LIGHTS FIRST (OUTER LEVEL TRANSITION)
-        // =========================================================================
+        // Loop lights
         for (INT l = 0; l < Lights.Num(); ++l)
         {
             AActor* Light = Lights(l);
             if (!Light)
                 continue;
 
-            // =========================================================================
-            // EXECUTE HIGH-SPEED ISOLATED SINGLE LIGHT GRID ALLOCATION PASS
-            // =========================================================================
             FLOAT LightEnergyOnSurface = EvaluateSingleLightContribution(
                 Light, iSurf, Level, TwoSided, isMover, W, H, minU, maxU, minV, maxV, Basis,
                 TempShadowedGrid, TempUnshadowedGrid
@@ -1475,9 +1470,7 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
             }
         } // End of outer Lights loop
 
-        // =========================================================================
-        // LATE COMPOSITING PASS: RESOLVE INTENSITIES & COMPILE FINAL RATIOS
-        // =========================================================================
+        // compositing pass: resolve intensities and compile final ratios
         TArray<FPlane> Pixels;
         Pixels.AddZeroed(W * H);
 
@@ -1511,9 +1504,6 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
 
             Pixels(p) = FPlane(FinalR, FinalG, FinalB, a);
         }
-
-        // Store your fully completed rejection tracking data straight into the lightmap metadata!
-        //LM.OcclusionRejectionMask = OcclusionRejectionMask;
 
         ApplyAntialias(reinterpret_cast<FPlane*>(Pixels.GetData()), W, H);
 
@@ -2048,7 +2038,7 @@ void UXOpenGLRenderDevice::BuildPerSurfaceStaticLight(ULevel* Level, const FStri
     }
     else
     {
-        // Fallback: heap (Keep this exactly as you have it just in case disk creation fails)
+        // Fallback: heap (Keep this in case disk creation fails)
         AtlasData = (FPlane*)appMalloc(AtlasSizeBytes, TEXT("OcclusionAtlas"));
         if (!AtlasData)
         {
@@ -2147,11 +2137,10 @@ void UXOpenGLRenderDevice::BuildingPoll()
             GOcclusionState = EOcclusionState::Failed;
         }
 
-        // =====================================================================
-        // --- UNIFIED CLEANUP RUNS REGARDLESS OF ABORT OR COMPLETION ---
-        // =====================================================================
         // By placing this right here at the base of the outer else scope, 
         // we guarantee it executes for both finished maps and early aborts
+        // except BuildingPoll is not called again if GOcclusionState != EOcclusionState::Building
+        // so duplicated some of the cleanup in CleanupOCThreads() :-/
         PendingLightmaps.Empty();  
         
 #if _WIN32
@@ -2181,6 +2170,52 @@ void UXOpenGLRenderDevice::BuildingPoll()
         AtlasSizeBytes = 0;
         bAtlasMapped   = false; 
     }
+}
+
+void UXOpenGLRenderDevice::CleanupOCThreads()
+{
+    // Stop occlusion job
+    OcclusionJob.bAbort.store(true, std::memory_order_seq_cst);
+    OcclusionJob.StopAndJoin();
+
+    // Stop any in-flight atlas worker
+    if (AtlasThread.joinable())
+        AtlasThread.join();
+    AtlasFinished.store(false, std::memory_order_relaxed);
+
+    // Now safe to reset state / destroy old atlas / start new build
+    GOcclusionState = EOcclusionState::Idle;
+
+    PendingLightmaps.Empty();
+
+#if _WIN32
+    if (bAtlasMapped)
+    {
+        MappedAtlas.Destroy();
+            
+        // Fixed path assignment format using our step-by-step operator+=
+        FString TargetScratchFile = AtlasName;
+        TargetScratchFile += TEXT("_scratch.tmp");
+            
+        if (FileWriteMutex)
+        {
+            delete FileWriteMutex; 
+            FileWriteMutex = nullptr;
+        }
+        DeleteFileW(*TargetScratchFile);
+    }
+#endif
+
+    if (AtlasData)
+    {
+        appFree(AtlasData);
+        AtlasData = nullptr;
+    }
+
+    AtlasData      = nullptr;
+    AtlasSizeBytes = 0;
+    bAtlasMapped   = false; 
+    OcclusionJob.bAbort.store(false, std::memory_order_relaxed);
 }
 
 // Simple UE1-style file-exists helper.
@@ -2396,7 +2431,7 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
     if (err != GL_NO_ERROR) { debugf(TEXT("KTX2 upload GL error: %d"), err); }
 
     // populate the occlusion aware per surface light list
-    // Wipe out any old trailing tracking states from the previous map
+
     // Wipe out any old tracking states from the previous map
     StaticLightsForFacetOC.Empty();
 
@@ -2410,7 +2445,7 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
         INT SurfIndex = It.Key();
         const TArray<AActor*>& StandardList = It.Value();
 
-        // CREATE A FRESH, BLANK DESTINATION ARRAY IN THE MAP
+        // create a fresh, blank destination array in the map
         TArray<AActor*>& FilteredList = StaticLightsForFacetOC.Set(SurfIndex, TArray<AActor*>());
 
         TotalSurfacesProcessed++;
@@ -2425,7 +2460,6 @@ UBOOL UXOpenGLRenderDevice::LoadStaticLightmapAtlas(ULevel* Level, const FString
             TotalOcclusionCapableSurfaces++;
             INT SurfRejectedCount = 0;
 
-            // ITERATE FORWARD: Clear, readable, and perfectly synchronized!
             for (INT l = 0; l < StandardList.Num(); ++l)
             {
                 INT DwordIndex = l / 32;
@@ -2489,18 +2523,6 @@ void UXOpenGLRenderDevice::NewLevelOC()
 {
     NextAllowedMessageTime = 0;
 
-    // Stop occlusion job
-    OcclusionJob.bAbort.store(true, std::memory_order_seq_cst);
-    OcclusionJob.StopAndJoin();
-    OcclusionJob.bAbort.store(false, std::memory_order_relaxed);
-
-    // Stop any in-flight atlas worker
-    if (AtlasThread.joinable())
-        AtlasThread.join();
-    AtlasFinished.store(false, std::memory_order_relaxed);
-
-    // Now safe to reset state / destroy old atlas / start new build
-    GOcclusionState = EOcclusionState::Idle;
     for (TMap<INT, FSurfInfo>::TIterator It(SurfaceInfoMap); It; ++It)
     {
         FSurfInfo& SI = It.Value();
@@ -2528,7 +2550,6 @@ void UXOpenGLRenderDevice::NewLevelOC()
     // Check if our binary atlas data components are active and ready
     if (FileExistsUE1(AtlasKTX2))
     {
-        // Inside LoadStaticLightmapAtlas, you pass your clean extensionless AtlasName parameter!
         if (LoadStaticLightmapAtlas(LastLevel, AtlasName))
         {
             GOcclusionState = EOcclusionState::Ready;
