@@ -401,23 +401,46 @@ vec4 ApplyPolyFlags(vec4 Color, uint DrawFlags)
 
 static void GetTypeInfo(const char* TypeName, INT& SizeBytes, INT& Components)
 {
-	if (!strcmp("vec4", TypeName) || !strcmp("uvec4", TypeName))
-	{
-		SizeBytes = 16;
-		Components = 4;
-	}
-	else if (!strcmp("vec2", TypeName) || !strcmp("uvec2", TypeName))
-	{
-		SizeBytes = 8;
-		Components = 2;
-	}
-	else if (!strcmp("int", TypeName) || !strcmp("uint", TypeName) || !strcmp("float", TypeName))
-	{
-		SizeBytes = 4;
-		Components = 1;
-	}
-	else
-		appErrorf(TEXT("Unknown GLSL type: %ls"), appFromAnsi(TypeName));
+    if (!strcmp(TypeName, "float") ||
+        !strcmp(TypeName, "int")   ||
+        !strcmp(TypeName, "uint"))
+    {
+        SizeBytes  = 4;
+        Components = 1;
+    }
+    else if (!strcmp(TypeName, "vec2") ||
+             !strcmp(TypeName, "uvec2"))
+    {
+        SizeBytes  = 8;
+        Components = 2;
+    }
+    else if (!strcmp(TypeName, "vec4") ||
+             !strcmp(TypeName, "uvec4"))
+    {
+        SizeBytes  = 16;
+        Components = 4;
+    }
+    else if (!strcmp(TypeName, "mat4"))
+    {
+        // GLSL std140 rules: mat4 is stored as 4 vec4 columns
+        SizeBytes  = 64;   // 4 * 16
+        Components = 16;   // 4x4
+    }
+    else if (!strcmp(TypeName, "mat3"))
+    {
+        // std140: mat3 is stored as 3 vec4 columns (48 bytes)
+        SizeBytes  = 48;
+        Components = 12;
+    }
+    else if (!strcmp(TypeName, "sampler2D") ||
+             !strcmp(TypeName, "samplerCube"))
+    {
+        // Samplers are bound separately, not stored in UBOs.
+        SizeBytes  = 0;
+        Components = 0;
+    }
+    else
+   		appErrorf(TEXT("Unknown GLSL type: %ls"), appFromAnsi(TypeName));
 }
 
 INT UXOpenGLRenderDevice::ShaderProgram::GetMaximumUniformBufferSize(const DrawCallParameterInfo* Info) const

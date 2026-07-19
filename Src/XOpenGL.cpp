@@ -251,11 +251,12 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	CoronaScaling = 1;
 	GammaMultiplier = 1.75f;
 	GammaMultiplierUED  = 1.75f;
-	ParallaxVersion = Parallax_Disabled;
+	ParallaxVersion = Parallax_Relief;
 	UseTrilinear = 1;
 	NoAATiles = 1;
 	UseMeshBuffering = 0; //Buffer (Static)Meshes for drawing.
 	UseBindlessTextures = 1;
+	UsePersistentBuffers = 1;
 #if UNREAL_OLDUNREAL || UNREAL_TOURNAMENT_OLDUNREAL
 	//UseShaderDrawParameters = 1; // setting this to true slightly improves performance on nvidia cards // stijn: disabled by default because many AMD drivers choke on it
 #endif
@@ -591,26 +592,34 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 
 #if UNREAL_OLDUNREAL || UNREAL_TOURNAMENT_OLDUNREAL
     // Doing after extensions have been checked.
+	// this is GL_ARB_buffer_storage
 	UsingPersistentBuffers = UsePersistentBuffers ? true : false;
-    // Per-pixel lighting requires SSBO (persistent buffers).
+
+	// this is GL_ARB_shader_draw_parameters.  For draw parameters, must support that (duh) and SSBOs aka GL_ARB_shader_storage_buffer_object
+	UsingShaderDrawParameters = UseShaderDrawParameters ? true : false;
+
+	// Per-pixel lighting requires persistent buffers.  seems to survive without drawParameters.  why???  Pretty sure I need an SSBO for all lights.  
     if (!UsingPersistentBuffers)
     {
         if (BumpMaps)
-            debugf(TEXT("XOpenGL: Disabling BumpMaps (requires SSBO)"));
+            debugf(TEXT("XOpenGL: Disabling BumpMaps (requires PersistentBuffers)"));
         if (PhongShading)
-            debugf(TEXT("XOpenGL: Disabling PhongShading (requires SSBO)"));
+            debugf(TEXT("XOpenGL: Disabling PhongShading (requires PersistentBuffers)"));
         if (AmbientOcclusion)
-            debugf(TEXT("XOpenGL: Disabling AmbientOcclusion (requires SSBO)"));
+            debugf(TEXT("XOpenGL: Disabling AmbientOcclusion (requires PersistentBuffers)"));
 		if (IndirectIllumination)
-            debugf(TEXT("XOpenGL: Disabling IndirectIllumination (requires SSBO)"));
+            debugf(TEXT("XOpenGL: Disabling IndirectIllumination (requires PersistentBuffers)"));
         if (HDLightMap)
-            debugf(TEXT("XOpenGL: Disabling HDLightMap (requires SSBO)"));
+            debugf(TEXT("XOpenGL: Disabling HDLightMap (requires PersistentBuffers)"));
+		if (ShadowMaps)
+            debugf(TEXT("XOpenGL: Disabling ShadowMaps (requires PersistentBuffers)"));
 
         BumpMaps     = 0;
         PhongShading = 0;
         AmbientOcclusion    = 0;
 		IndirectIllumination = 0;
         HDLightMap   = 0;
+		ShadowMaps = 0;
 
         // Grey them out in the config UI
         FindField<UBoolProperty>(GetClass(), TEXT("BumpMaps"))    ->PropertyFlags |= CPF_EditConst;
@@ -618,9 +627,8 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
         FindField<UBoolProperty>(GetClass(), TEXT("AmbientOcclusion"))   ->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("IndirectIllumination"))   ->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("HDLightMap"))  ->PropertyFlags |= CPF_EditConst;
+        FindField<UByteProperty>(GetClass(), TEXT("ShadowMaps"))  ->PropertyFlags |= CPF_EditConst;
     }
-
-	UsingShaderDrawParameters = UseShaderDrawParameters ? true : false;
 
 	if (OpenGLVersion == GL_ES)
     {
@@ -647,7 +655,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
         ShadowMaps     = ShadowMaps_Disabled;
 
         // Grey them out in the config UI
-        FindField<UBoolProperty>(GetClass(), TEXT("ShadowMaps"))    ->PropertyFlags |= CPF_EditConst;
+        FindField<UByteProperty>(GetClass(), TEXT("ShadowMaps"))    ->PropertyFlags |= CPF_EditConst;
     }
 
 	if (OpenGLVersion == GL_Core

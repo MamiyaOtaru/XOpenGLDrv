@@ -1493,7 +1493,17 @@ class UXOpenGLRenderDevice : public URenderDevice
 				// We might have to rebind the parameters buffer here because things like PushClipPlane and
 				// PopClipPlane can temporarily bind another UBO.
 				ParametersBuffer.Bind();
-				ParametersBuffer.BufferData(false);
+				if (UseSSBOParametersBuffer && !RenDev->UsingPersistentBuffers)
+				{
+					// Non-persistent SSBO: full reinit
+					// wasn't necessary upstream and TBH I'm not sure why it is now
+					ParametersBuffer.BufferData(true);
+				}
+				else
+				{
+					// Persistent SSBO or UBO: partial update is fine
+					ParametersBuffer.BufferData(false);
+				}
 
 				// Upload index/meta rings if present
 				/*if (FacetIndexRing.GetSubBufferSize() > 0)
@@ -2184,8 +2194,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	{
 		glm::vec3 Coords;   // 12 bytes (Offset 0)
 		glm::uint DrawID;   // 4 bytes  (Offset 12)
-		glm::uint Class; // 4 bytes  (Offset 16)
-		glm::uint Padding; // 4 bytes  (Offset 20) -> Maintains 24-byte alignment stride
+		glm::uint Class;    // 4 bytes  (Offset 16)
+		glm::uint Padding;  // 4 bytes  (Offset 20) -> Maintains 24-byte alignment stride
 	};
 	static_assert(sizeof(DrawShadowMapVertex) == 24, "Invalid shadow map vertex size");
 
@@ -2218,14 +2228,6 @@ class UXOpenGLRenderDevice : public URenderDevice
 		INT& FaceVertexCounter
 	);
 
-	/*struct DrawShadowMapSplatsVertex
-	{
-		glm::vec3 Center;  // location = 0
-		float     Radius;  // location = 1
-		uint32_t  DrawID;  // location = 2
-	};
-	static_assert(sizeof(DrawShadowMapSplatsVertex) == 20, "Invalid shadow map splats vertex size");
-	*/
 	struct DrawShadowMapSplatsVertex
 	{
 		glm::vec3 P0;     // end A in world space
