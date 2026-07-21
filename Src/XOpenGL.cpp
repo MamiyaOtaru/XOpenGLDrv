@@ -167,7 +167,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	//new(GetClass(), TEXT("UseAASmoothing"), RF_Public)UBoolProperty(CPP_PROPERTY(UseAASmoothing), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("GammaCorrectScreenshots"), RF_Public)UBoolProperty(CPP_PROPERTY(GammaCorrectScreenshots), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("MacroTextures"), RF_Public)UBoolProperty(CPP_PROPERTY(MacroTextures), TEXT("Options"), CPF_Config);
-	new(GetClass(), TEXT("BumpMaps"), RF_Public)UBoolProperty(CPP_PROPERTY(BumpMaps), TEXT("Options"), CPF_Config);
+	new(GetClass(), TEXT("PerPixelLighting"), RF_Public)UBoolProperty(CPP_PROPERTY(BumpMaps), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("ParallaxVersion"), RF_Public)UByteProperty(CPP_PROPERTY(ParallaxVersion), TEXT("Options"), CPF_Config, ParallaxVersions);
 	new(GetClass(), TEXT("PhongShading"), RF_Public)UBoolProperty(CPP_PROPERTY(PhongShading), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("AmbientOcclusion"), RF_Public)UBoolProperty(CPP_PROPERTY(AmbientOcclusion), TEXT("Options"), CPF_Config);
@@ -469,7 +469,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 
 	debugf(NAME_DevLoad, TEXT("GammaCorrectScreenshots %i"), GammaCorrectScreenshots);
 	debugf(NAME_DevLoad, TEXT("MacroTextures %i"), MacroTextures);
-	debugf(NAME_DevLoad, TEXT("BumpMaps %i"), BumpMaps);
+	debugf(NAME_DevLoad, TEXT("PerPixelLighting %i"), BumpMaps);
 	debugf(NAME_DevLoad, TEXT("ParallaxVersion %i (%ls)"),ParallaxVersion, ParallaxVersion == Parallax_Basic ? TEXT("Basic") : ParallaxVersion == Parallax_Occlusion ? TEXT("Occlusion") : ParallaxVersion == Parallax_Relief ? TEXT("Relief") : TEXT("Disabled"));
 	debugf(NAME_DevLoad, TEXT("PhongShading %i"), PhongShading);
 	debugf(NAME_DevLoad, TEXT("AmbientOcclusion %i"), AmbientOcclusion);
@@ -622,7 +622,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 		ShadowMaps = 0;
 
         // Grey them out in the config UI
-        FindField<UBoolProperty>(GetClass(), TEXT("BumpMaps"))    ->PropertyFlags |= CPF_EditConst;
+        FindField<UBoolProperty>(GetClass(), TEXT("PerPixelLighting"))    ->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("PhongShading"))->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("AmbientOcclusion"))   ->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("IndirectIllumination"))   ->PropertyFlags |= CPF_EditConst;
@@ -1885,7 +1885,8 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 	// DYNAMIC HERO SHADOWMAP CUBEMAP GENERATION
 	// =========================================================================
 	// doing this above light gather so we can mark if a hero light is active
-	if (ShadowMaps && !ShadowMapDone && LastLevel && !LastLevel->IsEntry)
+	// needs per pixel path.
+	if (BumpMaps && ShadowMaps && !ShadowMapDone && LastLevel && !LastLevel->IsEntry)
 	{
 		if (LastLevel && LastLevel->Actors.Num() > 0 && LastLevel->Actors(0))
 		{
@@ -3381,7 +3382,7 @@ void UXOpenGLRenderDevice::Exit()
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("DetailTextures"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(DetailTextures)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("GammaCorrectScreenshots"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(GammaCorrectScreenshots)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("MacroTextures"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(MacroTextures)));
-	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("BumpMaps"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(BumpMaps)));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("PerPixelLighting"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(BumpMaps)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("ParallaxVersion"), *FString::Printf(TEXT("%ls"), ParallaxVersion == Parallax_Basic ? TEXT("Basic") : ParallaxVersion == Parallax_Occlusion ? TEXT("Occlusion") : ParallaxVersion == Parallax_Relief ? TEXT("Relief") : TEXT("None")));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("PhongShading"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(PhongShading)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("AmbientOcclusion"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(AmbientOcclusion)));
