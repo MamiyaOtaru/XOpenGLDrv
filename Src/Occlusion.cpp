@@ -1425,6 +1425,7 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
         LocalRejectionBitmask.AddZeroed(NumDwordsNeeded);
 
         // Loop lights
+        int numAccepted = 0;
         for (INT l = 0; l < Lights.Num(); ++l)
         {
             AActor* Light = Lights(l);
@@ -1437,8 +1438,11 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
             );
 
             // --- THE ENERGY-BASED EARLY REJECTION GATE ---
-            if (LightEnergyOnSurface > 0.001f || Lights.Num() == 1) // ensure at least one light to avoid fullbright bug
+            // ensure at least one lights makes it through (a dummy light is how the shader knows
+            // the difference between fully occluded surfaces and ones like sky meant to be lit by the lightmap
+            if (LightEnergyOnSurface > 0.001f || (numAccepted == 0 && l == Lights.Num() - 1))
             {
+                numAccepted++;
                 // The light contributes physical energy to this surface.
                 // Accumulate absolute raw color parameters down into the master buffers!
                 for (INT p = 0; p < W * H; ++p)

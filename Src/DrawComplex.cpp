@@ -115,7 +115,7 @@ INT UploadLights(UXOpenGLRenderDevice::FSurfInfo* SI,
 			facetPtr->LightMeta = glm::uvec4(startIndex, staticCount, dynamicCount, 0);
 		}
 	}
-	if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+	if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)
 	{
 		const UXOpenGLRenderDevice::FSurfaceLightmap& LM = SI->HDLightmap;
 		facetPtr->StaticUVMinMax = glm::vec4(LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
@@ -187,7 +187,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		TArray<AActor*> staticList;
 		TArray<AActor*> dynamicList;
 
-		if (facetSurfId == INDEX_NONE || SI && SI->IsMover)
+		if (facetSurfId == INDEX_NONE)
 		{
 			ComputeStaticAndDynamicLightsForFacet(Frame, Facet, staticList, dynamicList, LevelLightCap);
 		}
@@ -208,11 +208,11 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
         
 
 				// Since no entry exists, there is no occlusion data. 
-				// Simply add the raw list to both maps instantly with zero redundant loops!
+				// Add the raw list to both maps for future lookup
 				StaticLightsForFacet.Set(facetSurfId, list);
 				StaticLightsForFacetOC.Set(facetSurfId, list);
 
-				// Re-point our operational handle straight to the freshly initialized map target
+				// Re-point the operational handle straight to the freshly initialized map target
 				SurfaceLightList = TargetMap.Find(facetSurfId);
 			}
 
@@ -281,14 +281,14 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		SetBlend(NextPolyFlags);
 	}
 
-	// Write static lightmap params (if present).  Only do mover if we have a Node match
+	// Write static lightmap params (if present).
 	INT facetIDForVerts = 0;
 	if (BumpMaps ||
-		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)
 	{
 		// absolute index into FacetMeta SSBO
 		facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
-		if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+		if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)
 			DrawFlags |= ShaderDrawFlags::DF_HDLightMap;
 	}
 	

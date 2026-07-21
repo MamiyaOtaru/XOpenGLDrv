@@ -883,6 +883,8 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
         }
     }
     // If no lights contributed, insert a dummy so BSP is not fullbright
+    // need a better way to differentiate between surfaces meant to have no lights (sky etc.)
+    // that are lit by the lightmap and those that are just legitimately occluded from everything
     if (Ranked.Num() == 0)
     {
         RankedLight R;

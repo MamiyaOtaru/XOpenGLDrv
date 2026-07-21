@@ -899,7 +899,6 @@ return;
 
     float rough = DrawDrawComplexParams[vDrawID].Roughness;
 
-    //vec3 TotalBumpColor = vec3(0.0);
     vec3 totalStaticLight = vec3(0.0);
     vec3 totalSubtractedLight = vec3(0.0);
     vec3 totalDynamicLight = vec3(0.0);
@@ -911,7 +910,7 @@ return;
     uint numDynamicLights = meta.z;
     numSurfaceLights = clamp(numStaticLights + numDynamicLights, uint(0), uint(MAX_SURFACE_LIGHTS));
 
-    for (uint li = 0u; li < numSurfaceLights; ++li)
+    for (uint li = 0u; li < numSurfaceLights; li++)
     {
       uint i = FacetIndicesArr[start + li];
 
@@ -971,17 +970,9 @@ return;
       vec3 originVS = vec3(vCoords.x, vCoords.y, vCoords.z);
       vec3 lightPosVS = vec3(InLightPos.x, InLightPos.y, InLightPos.z);
       
-      // screenspace shadows (boo)
-      //if (ShadowForLight(vCoords, lightPosVS) != 0)
-      //  continue;
-
-
       float shadowFactor = 1.0f;
  #if OPT_ShadowMaps   
-      // ====================================================================
-      // --- UNPACK BINDLESS HERO SHADOW MAP HANDLE (Z and W of LightData5) ---
-      // ====================================================================
-      // unpack the type-punned float bits back into raw 32-bit unsigned ints
+      // unpack the type-punned float bits (Z and W of LightData5) back into raw 32-bit unsigned ints
       uvec2 handleBits = uvec2(
         floatBitsToUint(LightData5[i].z), // Lower 32 bits
         floatBitsToUint(LightData5[i].w)  // Upper 32 bits
