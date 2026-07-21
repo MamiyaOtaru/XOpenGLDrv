@@ -126,6 +126,8 @@ precision lowp int;
 	Out << "#define DF_AlphaBlended " << ShaderDrawFlags::DF_AlphaBlended << "u" << END_LINE;
 	Out << "#define DF_TwoSided " << ShaderDrawFlags::DF_TwoSided << "u" << END_LINE;
 	Out << "#define DF_Selected " << ShaderDrawFlags::DF_Selected << "u" << END_LINE;
+	Out << "#define DF_FakeSky " << ShaderDrawFlags::DF_FakeSky << "u" << END_LINE;
+
 
 	// Texture indices into the texhandles array
 	Out << "#define DiffuseTextureIndex " << DiffuseTextureIndex << "u" << END_LINE;

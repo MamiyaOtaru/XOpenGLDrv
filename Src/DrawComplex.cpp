@@ -132,6 +132,257 @@ void UploadOcclusionMap(UXOpenGLRenderDevice::FSurfInfo* SI,
 	facetPtr->StaticUVMinMax = glm::vec4(LM.AtlasMinU, LM.AtlasMaxU, LM.AtlasMinV, LM.AtlasMaxV);
 }
 
+void UXOpenGLRenderDevice::RenderSkybox(FSceneNode* Frame, DrawComplexProgram* Shader)
+{
+    if (LocalSkySurfaces.Num() > 0 && Shader)
+    {
+		//DWORD SavedBlendPolyFlags = CurrentBlendPolyFlags;
+		//Shader->Flush(false);
+
+		// 1. Configure depth targets to sort behind everything natively
+		/*glEnable(GL_DEPTH_TEST);
+		glDepthMask(GL_FALSE);  
+		glDepthFunc(GL_LEQUAL);
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);*/
+
+		SetProgram(Complex_Prog);
+
+        glm::vec4 fallbackT = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        glm::vec4 fallbackB = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+
+        TArray<glm::vec4> SkyPolyVertices;
+        TArray<glm::vec4> SkyPolyNormals;
+
+        // Loop through our compact cached list of indices
+        for (INT s = 0; s < LocalSkySurfaces.Num(); ++s)
+        {
+            FCustomSkySurface& CustomSky = LocalSkySurfaces(s);
+            
+            FSurfInfo* pSI = SurfaceInfoMap.Find(CustomSky.iSurf);
+            if (!pSI || pSI->TriIdx.Num() == 0)
+                continue;
+
+            FSurfInfo& SI = *pSI;
+            const FBspSurf& Surf = LastLevel->Model->Surfs(SI.iSurf);
+            
+            INT NumPts = SI.Verts.Num();
+            INT TotalTriVerts = SI.TriIdx.Num();
+
+            // Capacity check using the master buffer requirements
+            UBOOL CanBuffer = Shader->VertBuffer.CanBuffer(TotalTriVerts);
+            
+            // Texture Lock block
+            FTextureInfo SkyTexInfo;
+            bool bTextureValid = false;
+            if (CustomSky.bParamsCaptured)
+            {
+				SkyTexInfo = CustomSky.CachedDiffuseInfo;
+				if (Surf.Texture)
+				{
+					// replace stored texture pointer with actual
+					SkyTexInfo.Texture = Surf.Texture;
+					bTextureValid = SkyTexInfo.Texture != nullptr;
+				}
+            }
+
+			DWORD SkyBlendFlags = SI.PolyFlags;// &~PF_Occlude;
+
+            // Lazy Dispatching evaluations
+            if (WillBlendStateChange(CurrentBlendPolyFlags, SkyBlendFlags) || 
+                (bTextureValid && WillTextureStateChange(DiffuseTextureIndex, SkyTexInfo, SkyBlendFlags)) || 
+                !CanBuffer)
+            {
+
+                Shader->Flush(!CanBuffer);
+				//SkyBlendFlags &= ~PF_Occlude;
+                SetBlend(SkyBlendFlags);
+            }
+
+			//glEnable(GL_DEPTH_TEST);
+			//glDepthMask(GL_FALSE);  
+			//glDepthFunc(GL_LEQUAL);
+			//glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+            // Open up parameters mapping track slot
+            Shader->DrawBuffer.StartDrawCall();
+            GLuint DrawID = Shader->DrawBuffer.GetDrawID();
+            INT FacetVertexCount = 0;
+
+            DrawComplexParameters* DrawCallParams = Shader->ParametersBuffer.GetCurrentElementPtr();
+            memset(DrawCallParams, 0, sizeof(DrawComplexParameters));
+
+            DWORD SkyDrawFlags = ShaderDrawFlags::DF_DiffuseTexture | ShaderDrawFlags::DF_FakeSky;
+            GetPolyFlagsAndDrawFlags(SI.PolyFlags, SkyDrawFlags, FALSE);
+			SkyDrawFlags |= ShaderDrawFlags::DF_FakeSky;
+			SkyDrawFlags |= ShaderDrawFlags::DF_Unlit;
+
+            // Build orientation axes using the original map vectors database arrays
+			FVector MapX = LastLevel->Model->Vectors(Surf.vTextureU);
+            FVector MapY = LastLevel->Model->Vectors(Surf.vTextureV);
+            FVector MapZ = LastLevel->Model->Vectors(Surf.vNormal).SafeNormal();
+            FVector Base = LastLevel->Model->Points(Surf.pBase);
+
+            FVector SkyboxOrigin = CustomSky.SkyZone ? CustomSky.SkyZone->Location : FVector(0.f, 0.f, 0.f);
+            FVector PlayerCamPos = Frame->Coords.Origin;
+
+            // rotate the texture axes into viewspace
+            FVector ViewMapX = MapX.TransformVectorBy(Frame->Coords);
+            FVector ViewMapY = MapY.TransformVectorBy(Frame->Coords);
+            FVector ViewMapZ = MapZ.TransformVectorBy(Frame->Coords).SafeNormal();
+
+            // transform the texture basepoint into viewspace
+            FVector ZeroCenteredBase = Base - SkyboxOrigin;
+            FVector VirtualWorldBase = ZeroCenteredBase + PlayerCamPos;
+            FVector ViewSpaceBase    = VirtualWorldBase.TransformPointBy(Frame->Coords);
+
+            // reconstruct runtime panning values
+            FLOAT GameTime = CustomSky.SkyZone ? CustomSky.SkyZone->GetLevel()->TimeSeconds.GetFloat() : 0.0f;
+            FLOAT ShiftU = 0.0f; FLOAT ShiftV = 0.0f;
+            if (SI.PolyFlags & PF_AutoUPan) ShiftU = GameTime * CustomSky.TexUPanSpeed * 256.0f;
+            if (SI.PolyFlags & PF_AutoVPan) ShiftV = GameTime * CustomSky.TexVPanSpeed * 256.0f;
+
+            // assemble translation anchors
+             float ScaleU = MapX.Size();
+            float ScaleV = MapY.Size();
+
+            // Calculate baseline translation anchors using the un-normalized view-space vectors
+            float UDotVal = (ViewMapX | ViewSpaceBase);
+            float VDotVal = (ViewMapY | ViewSpaceBase);
+
+            // Keep the exact code that you noted let the lightmaps work for the mountains!
+            UDotVal -= (static_cast<FLOAT>(CustomSky.BasePanU) + ShiftU) * ScaleU;
+            VDotVal -= (static_cast<FLOAT>(CustomSky.BasePanV) + ShiftV) * ScaleV;
+
+            // pack uniforms in view space
+            DrawCallParams->XAxis = glm::vec4(ViewMapX.X, ViewMapX.Y, ViewMapX.Z, UDotVal);
+            DrawCallParams->YAxis = glm::vec4(ViewMapY.X, ViewMapY.Y, ViewMapY.Z, VDotVal);
+            DrawCallParams->ZAxis = glm::vec4(ViewMapZ.X, ViewMapZ.Y, ViewMapZ.Z, 0.0);
+
+            // reinject textures
+            if (bTextureValid)
+            {
+                SetTextureHelper(this, DiffuseTextureIndex, SkyTexInfo, SI.PolyFlags, SkyDrawFlags, ShaderDrawFlags::DF_DiffuseTexture, 0.0, &DrawCallParams->DiffuseUV, SkyTexInfo.Texture ? &DrawCallParams->DiffuseInfo : nullptr, DrawCallParams->TexHandles);
+            }
+
+            // lightmap compensation and reinjection
+			if (CustomSky.bHasLightmap)
+            {
+                // Let the driver map the atlas page and fill out default LightMapUV fields
+                SetTextureHelper(this, LightMapIndex, CustomSky.CachedLightMapInfo, PF_None, SkyDrawFlags, ShaderDrawFlags::DF_LightMap, -0.5f, &DrawCallParams->LightMapUV, nullptr, DrawCallParams->TexHandles);
+
+                // If a surface carries auto-panning cloud flags, we apply our counter-balancing math 
+                // to explicitly unapply the diffuse tiling expansion and movement tracks!
+                if (SI.PolyFlags & PF_AutoUPan || SI.PolyFlags & PF_AutoVPan)
+                {
+                    // Because MapDot carries the live '+ ShiftU * ScaleU' cloud animation, it causes rainbows.
+                    // By manually ADDING those exact shifts into the LightMapPan (.zw) registers, 
+                    // we perfectly neutralize the scrolling inside the vertex shader parenthesis, locking it solid!
+                    DrawCallParams->LightMapUV.z += ShiftU * ScaleU;
+                    DrawCallParams->LightMapUV.w += ShiftV * ScaleV;
+
+                    // Divide the multipliers (.xy) by the diffuse lengths to collapse the tiling magnification!
+                    float LightmapCorrectionU = 1.0f;
+                    float LightmapCorrectionV = 1.0f;
+                    if (ScaleU > 0.001f) LightmapCorrectionU = 1.0f / ScaleU;
+                    if (ScaleV > 0.001f) LightmapCorrectionV = 1.0f / ScaleV;
+
+                    DrawCallParams->LightMapUV.x *= LightmapCorrectionU;
+                    DrawCallParams->LightMapUV.y *= LightmapCorrectionV;
+                }
+            }
+            else
+            {
+                DrawCallParams->LightMapUV = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+            }
+
+            DrawCallParams->SceneWidth  = SceneWidth;
+            DrawCallParams->SceneHeight = SceneHeight;
+            DrawCallParams->DrawFlags   = SkyDrawFlags;
+
+            // convert vertices and normals from world to view space
+            SkyPolyVertices.Empty(); SkyPolyVertices.AddZeroed(NumPts);
+            SkyPolyNormals.Empty();  SkyPolyNormals.AddZeroed(NumPts);
+
+            for (INT vi = 0; vi < NumPts; ++vi)
+            {
+                FVector ZeroCenteredVert = SI.Verts(vi) - SkyboxOrigin;
+				FVector VirtualWorldVert = ZeroCenteredVert + PlayerCamPos;// -SkyCameraDrift;
+                
+                FVector ViewSpaceVert  = VirtualWorldVert.TransformPointBy(Frame->Coords);
+                FVector RotatedNormal  = MapZ.TransformVectorBy(Frame->Coords).SafeNormal();
+
+                SkyPolyVertices(vi)  = glm::vec4(ViewSpaceVert.X, ViewSpaceVert.Y, ViewSpaceVert.Z, 0.0f);
+                SkyPolyNormals(vi)   = glm::vec4(RotatedNormal.X, RotatedNormal.Y, RotatedNormal.Z, 0.0f);
+            }
+
+			if (!Shader->VertBuffer.CanBuffer(TotalTriVerts))
+            {
+                Shader->DrawBuffer.EndDrawCall(FacetVertexCount);
+                Shader->ParametersBuffer.Advance(1);
+                
+                Shader->Flush(true); // Hard VBO clean
+                
+                Shader->DrawBuffer.StartDrawCall();
+                DrawID = Shader->DrawBuffer.GetDrawID();
+                
+                FacetVertexCount = 0; // The only spot this reset belongs!
+            }
+
+            // --- INDEXED primitive STREAMING ---
+            auto Out = Shader->VertBuffer.GetCurrentElementPtr();
+            INT emittedVerts = 0;
+
+            for (INT ti = 0; ti < TotalTriVerts; ti += 3)
+            {
+                const INT ia = SI.TriIdx(ti);
+                const INT ib = SI.TriIdx(ti + 1);
+                const INT ic = SI.TriIdx(ti + 2);
+
+                // Vertex 0
+                Out->Coords     = SkyPolyVertices(ia);
+                Out->DrawID     = DrawID;
+                Out->Normal     = SkyPolyNormals(ia);
+                Out->Tangent    = fallbackT;
+                Out->Bitangent  = fallbackB;
+                Out->FacetID    = 0; 
+                Out->LightmapUV = glm::vec2(0.f, 0.f);
+                Out++; emittedVerts++;
+
+                // Vertex 1
+                Out->Coords     = SkyPolyVertices(ib);
+                Out->DrawID     = DrawID;
+                Out->Normal     = SkyPolyNormals(ib);
+                Out->Tangent    = fallbackT;
+                Out->Bitangent  = fallbackB;
+                Out->FacetID    = 0;
+                Out->LightmapUV = glm::vec2(0.f, 0.f);
+                Out++; emittedVerts++;
+
+                // Vertex 2
+                Out->Coords     = SkyPolyVertices(ic);
+                Out->DrawID     = DrawID;
+                Out->Normal     = SkyPolyNormals(ic);
+                Out->Tangent    = fallbackT;
+                Out->Bitangent  = fallbackB;
+                Out->FacetID    = 0;
+                Out->LightmapUV = glm::vec2(0.f, 0.f);
+                Out++; emittedVerts++;
+            }
+
+            FacetVertexCount += emittedVerts;
+            Shader->VertBuffer.Advance(emittedVerts);
+
+            Shader->DrawBuffer.EndDrawCall(FacetVertexCount);
+            Shader->ParametersBuffer.Advance(1);
+        } // end loop through surfaces
+		//Shader->Flush(true);
+		
+		//glDepthMask(GL_TRUE);
+		//glDepthFunc(GL_LEQUAL);
+		//CurrentBlendPolyFlags = SavedBlendPolyFlags;
+    }
+}
+
 /*-----------------------------------------------------------------------------
 	RenDev Interface
 -----------------------------------------------------------------------------*/
@@ -150,28 +401,39 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	if (GIsEditor && NextPolyFlags & PF_Selected)
 		DrawFlags |= ShaderDrawFlags::DF_Selected;
 
-	bool IsSolidBSP = (Frame->Recursion == 0) && !(NextPolyFlags & (PF_Modulated | PF_FakeBackdrop | PF_NoSmooth | PF_Flat | PF_Unlit | PF_Highlighted | PF_FlatShaded | PF_Portal));
+	UBOOL IsSolidBSP = (Frame->Recursion == 0) && !(NextPolyFlags & (PF_Modulated | PF_FakeBackdrop | PF_NoSmooth | PF_Flat | PF_Unlit | PF_Highlighted | PF_FlatShaded | PF_Portal));
+	UBOOL IsSky = (NextPolyFlags & PF_FakeBackdrop);
 
 	INT facetSurfId = INDEX_NONE;
-	FSurfInfo* SI = nullptr;
 	if (IsSolidBSP)
 	{
 		facetSurfId = GetFacetSurfId(Frame, Facet);
-		if (facetSurfId != INDEX_NONE)
+	}
+	FSurfInfo* SI = nullptr;
+	if (facetSurfId != INDEX_NONE)
+	{
+		SI = SurfaceInfoMap.Find(facetSurfId);
+		// check if already rendered this surface
+		if (PhongShading && BumpMaps && SI && !SI->IsMover && SI->LastDrawnFrame == LocalFrameCounter)
 		{
-			SI = SurfaceInfoMap.Find(facetSurfId);
-			// check if already rendered this surface
-			if (PhongShading && BumpMaps && SI && !SI->IsMover && SI->LastDrawnFrame == LocalFrameCounter)
-			{
-				// already drawn this frame, skip
-				return;
-			}
-			if (SI)
-				SI->LastDrawnFrame = LocalFrameCounter;
+			// already drawn this frame, skip
+			return;
 		}
+		if (SI)
+			SI->LastDrawnFrame = LocalFrameCounter;
 	}
 
 	auto Shader = dynamic_cast<DrawComplexProgram*>(Shaders[Complex_Prog]);
+
+	if (IsSky)
+	{
+		if (!bSkyDrawnThisFrame)
+		{
+			RenderSkybox(Frame, Shader);
+			bSkyDrawnThisFrame = TRUE;
+		}
+		return;
+	}
 
 	STAT(clockFast(Stats.ComplexCycles));
 	SetProgram(Complex_Prog);
@@ -255,6 +517,11 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		}
 	} // end if bumpmapping (gather lights)
 
+	/*if (IsSky)
+	{
+		DrawFlags |= ShaderDrawFlags::DF_FakeSky;
+	}*/
+
 	const bool CanBuffer = !Shader->DrawBuffer.IsFull()
 		&& Shader->ParametersBuffer.CanBuffer(1)
 		&& Shader->FacetIndexRing.CanBuffer(facetIndices.Num())
@@ -281,14 +548,14 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		SetBlend(NextPolyFlags);
 	}
 
-	// Write static lightmap params (if present).  Only do mover if we have a Node match
+	// Write static lightmap params (if present).
 	INT facetIDForVerts = 0;
 	if (BumpMaps ||
-		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)
 	{
 		// absolute index into FacetMeta SSBO
 		facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
-		if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
+		if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)
 			DrawFlags |= ShaderDrawFlags::DF_HDLightMap;
 	}
 	
@@ -330,6 +597,35 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 # endif
 #endif
 		SetTextureHelper(this, BumpMapIndex, FTEXTURE_GET(Shader->BumpMapInfo), PF_None, DrawFlags, ShaderDrawFlags::DF_BumpMap, 0.0, nullptr, &DrawCallParams->BumpMapInfo, DrawCallParams->TexHandles);
+	}
+
+	// gather runtime data for skybox surfaces, after texture data filled in
+	if (!capturedAllSkyboxData)
+	{
+		int iSurf = GetFacetSurfId(Frame, Facet);
+		for (INT s = 0; s < LocalSkySurfaces.Num(); ++s)
+		{
+			if (LocalSkySurfaces(s).iSurf == iSurf && !LocalSkySurfaces(s).bParamsCaptured)
+			{
+				FCustomSkySurface& SkySurf = LocalSkySurfaces(s);
+
+				// copy infos by value to avoid transient stack pointer crashes!
+				if (Surface.Texture)
+				{
+					SkySurf.CachedDiffuseInfo = *Surface.Texture; // Bitwise structure clone
+				}
+				if (Surface.LightMap)
+				{
+					SkySurf.CachedLightMapInfo = *Surface.LightMap;
+					SkySurf.bHasLightmap = true;
+				}
+
+				SkySurf.bParamsCaptured = true;
+
+				// Optional diagnostic trace to track the cache filling up in real-time
+				// debugf(TEXT("XOpenGL gathered sky surface index %d into database."), s);
+			}
+		}
 	}
 
 #if ENGINE_VERSION==227
@@ -409,7 +705,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	// Any surfaces that do not contribute to SSAO in the prepass should not USE it.
 	// So any that are excluded from the prepass in UXOpenGLRenderDevice::SetSceneNode
 	// should be excluded here as well.
-	if (BumpMaps && AmbientOcclusion && IsSolidBSP && (SI && !SI->IsMover) && !(NextPolyFlags & PF_TwoSided)) // only works in per pixel
+	if (BumpMaps && AmbientOcclusion && IsSolidBSP && (SI && !SI->IsMover) && !(NextPolyFlags & PF_TwoSided)) // gating with BumpMaps as this only works in per pixel
 	{
 		if (UsingBindlessTextures)
 		{
@@ -423,34 +719,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 		DrawFlags |= ShaderDrawFlags::DF_AmbientOcclusion;
 	}
-
-	// Bind gbuffer depth texture.  Only used for screen space shadows (which are disabled)
-	// and would require MSAA enabled depth sampling (see note in shader)
-	/*if (BumpMaps && AmbientOcclusion)
-	{
-		PreparePrepassDepthTexture();
-		INT depthIndex = PrepassDepthIndex;
-
-		if (UsingBindlessTextures)
-		{
-			// Use the 64-bit bindless handle
-			DrawCallParams->TexHandles[depthIndex] = gbufferFbo->depthBindlessHandle;
-		}
-		else
-		{
-			// Classic TMU binding path
-			glActiveTexture(GL_TEXTURE0 + depthIndex);
-
-			GLenum target = (gbufferFbo->samples > 1)
-				? GL_TEXTURE_2D_MULTISAMPLE
-				: GL_TEXTURE_2D;
-
-			glBindTexture(target, gbufferFbo->depthTexID);
-
-			if (gbufferFbo->depthSampler)
-				glBindSampler(depthIndex, gbufferFbo->depthSampler);
-		}
-	}*/
 
 	if (SI && SI->HasHDLightmap && GOcclusionState == EOcclusionState::Ready)
 	{
@@ -474,7 +742,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	if (PhongShading && BumpMaps && (SI && !SI->IsMover)) // phong only works in per pixel lighting mode
 		DrawFlags |= ShaderDrawFlags::DF_PhongShading;
 	bool safeToReadDepth = !(Surface.PolyFlags & PF_Occlude);
-	if (safeToReadDepth && !IsSolidBSP && (Surface.PolyFlags & (PF_AlphaTexture | PF_Translucent)) && !(Surface.PolyFlags & PF_Semisolid) && IsDepthFadeFX(Surface.Texture->Texture))// && IsDepthFadeFX(Surface.Texture->Texture)) // don't fade out "non solid" that is really just unlit
+	if (safeToReadDepth && !IsSolidBSP && (Surface.PolyFlags & (PF_AlphaTexture | PF_Translucent)) && !(Surface.PolyFlags & PF_Semisolid) && IsDepthFadeFX(Surface.Texture->Texture)) // don't fade out "non solids" that are really just unlit
 	{
 		DrawFlags |= ShaderDrawFlags::DF_ReadDepth;
 		PrepareDepthTexture();
@@ -857,6 +1125,18 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		Surface.Texture->Texture->BumpMap->Unlock(Shader->BumpMapInfo);
 	}
 #endif
+
+	if (IsSky)
+	{
+		/*glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		// render sky
+		glDepthMask(GL_FALSE);
+		glDepthFunc(GL_GEQUAL);
+
+		// reset state
+		glDepthFunc(GL_LEQUAL);
+		glDepthMask(GL_TRUE);*/
+	}
 
     STAT(unclockFast(Stats.ComplexCycles));
 

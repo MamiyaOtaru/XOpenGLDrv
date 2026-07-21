@@ -1219,6 +1219,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 			DF_AmbientOcclusion	  = 1 << 19,
 			DF_HDLightMap	  = 1 << 20,
 			DF_ShadowMaps	  = 1 << 21,
+
+			// Redo sky
+			DF_FakeSky		  = 1 << 22,
 		};
 	};
     
@@ -1835,7 +1838,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 		INT LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
 
 		UBOOL IsMover = false;
+		UBOOL IsSky = false;
 		AActor* Owner;
+		ASkyZoneInfo* SkyZoneActor;
 		DWORD PolyFlags = 0;
 
 		UBOOL HasHDLightmap = false;
@@ -1845,6 +1850,39 @@ class UXOpenGLRenderDevice : public URenderDevice
 		// This array holds the dynamically sized local light-rejection bitmask blocks.
 		TArray<DWORD> LocalRejectionMasks;
 	};
+
+	// Add a storage container at the class layer of UXOpenGLRenderDevice
+	struct FCustomSkySurface {
+		INT iSurf;
+		ASkyZoneInfo* SkyZone;
+
+		// Sky-Specific Animation Captures
+		FLOAT TexUPanSpeed;
+		FLOAT TexVPanSpeed;
+		SWORD BasePanU;
+		SWORD BasePanV;
+
+		// For storing runtime data (captured on the fly in DrawComplex)
+		UBOOL bParamsCaptured = false;
+		// For Diffuse, storing a pointer is completely safe because they are heap-allocated assets
+		FTextureInfo CachedDiffuseInfo;
+		// For Lightmaps, we MUST store the struct by value to avoid dead stack pointer crashes!
+		UBOOL bHasLightmap = false;
+		FTextureInfo CachedLightMapInfo;
+
+		// Geometric Alignment & Pairwise Depth Sort Registers
+		FLOAT SortingDistanceSq;
+		FVector PlaneBase;
+		FVector PlaneNormal;
+		FVector PolyCenter;
+		FLOAT BoundingRadius;
+	};
+
+	TArray<FCustomSkySurface> LocalSkySurfaces;
+	// Array to cache the physical world zone actors that hold active sky box portal assignments
+	TArray<AZoneInfo*> ActiveWorldSkyZoneActors;
+	UBOOL bSkyDrawnThisFrame;
+	UBOOL capturedAllSkyboxData;
 
 	// per pixel resources
 	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
@@ -2003,6 +2041,27 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	// triangulate surface (store node level triangle indices)
 	void UXOpenGLRenderDevice::BuildSurfaceTriangulation(ULevel* Level);
+
+	// extract sky model to draw ourselves later without making the engine do a bunch of BSP traversal
+	UBOOL UXOpenGLRenderDevice::PointInPolyProjected(
+		const FVector& P,                 // 3D point to test
+		const TArray<FVector>& PolyVerts, // Polygon vertices in 3D
+		const FVector& PlaneBase,         // Reference point on the polygon plane
+		const FVector& PlaneNormal,       // Polygon plane normal vector
+		FLOAT Epsilon                     // Precision tolerance threshold
+	);
+	INT UXOpenGLRenderDevice::TestOverlapAndDepth(
+		const FCustomSkySurface& A,
+		const FCustomSkySurface& B,
+		const FVector& SkyCenter,
+		const TMap<INT, FSurfInfo>& SurfaceInfoMap);
+	INT UXOpenGLRenderDevice::TestRay(
+		const FVector& TargetPoint,
+		const FCustomSkySurface& SurfX,
+		const FCustomSkySurface& SurfY,
+		const FSurfInfo* SIY,
+		const FVector& SkyCenter);
+	void UXOpenGLRenderDevice::ExtractSkyboxGeometry(ULevel* Level);
 
 	// FBO stuff
 	// --- Scene render target (MSAA or not) ---
@@ -2371,6 +2430,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		// Cached texture Info
 		FTEXTURE_PTR BumpMapInfo{};
 	};
+	void UXOpenGLRenderDevice::RenderSkybox(FSceneNode* Frame, DrawComplexProgram* Shader);
 
 	//
 	// Shadowmap Shader

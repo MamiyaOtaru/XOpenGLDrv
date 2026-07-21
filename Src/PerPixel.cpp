@@ -30,12 +30,6 @@ INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet&
         if (iSurf < 0 || iSurf >= Level->Model->Surfs.Num())
             continue;
 
-		//const FBspSurf& Surf = Level->Model->Surfs(iSurf);
-		//AActor* Owner = Surf.Actor;
-
-		//if (Owner && Owner->IsA(AMover::StaticClass()))
-			//return INDEX_NONE;
-
         return iSurf; // Found a valid surface ID
     }
 
@@ -1267,7 +1261,7 @@ void UXOpenGLRenderDevice::NewLevelPP()
         // Lookup using filename key
         LevelLightCap = GetLevelLightCap(MapName);
 
-        // build the level's static light list for quick lookup when doing occlusion for movers
+        // build the level's static light list for quick lookup when checking for spotlights, ranking hero lights etc.
         for (INT ai = 0; ai < LastLevel->Actors.Num(); ++ai)
         {
             AActor* A = LastLevel->Actors(ai);
@@ -1288,16 +1282,9 @@ void UXOpenGLRenderDevice::NewLevelPP()
 
         for (INT SurfIndex = 0; SurfIndex < NumSurfs; SurfIndex++)
         {
-            // Movers have no static lights.  
-            // rather when rendering they use all, until we can sort out which affect it at all possible positions
-            // but we really should associate some lights with them, so they get associated with lights and are handled in shadowmapping
-            // until we can sort out which surfaces affect movers at all possible positions, 
-            // this won't affect drawComplex because that checks isMover before StaticLightsForFacet
             const FBspSurf& Surf = Model->Surfs(SurfIndex);
 			AActor* Owner = Surf.Actor;
 			bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
-            //if (isMover)
-            //    continue;
 
             // Build static light list
             TArray<AActor*> StaticList;

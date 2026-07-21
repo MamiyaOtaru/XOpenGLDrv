@@ -2633,7 +2633,15 @@ BYTE UXOpenGLRenderDevice::PopClipPlane()
 	return 1;
 	unguard;
 }
-GLuint DebugDepthProgram = -1;
+
+// Cache structure to store original panning/rotation properties
+struct FSkyboxTexModifiers {
+    FVector PanVelocity;
+    FRotator RotationRate;
+};
+// TMap or array to hold original states
+TMap<AActor*, FSkyboxTexModifiers> CachedSkyStates;
+
 static INT LockCount = 0;
 void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane ScreenClear, DWORD RenderLockFlags, BYTE* InHitData, INT* InHitSize)
 {
@@ -2665,6 +2673,10 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 			debugf(TEXT("Failed to load DebugDepth shader"));
 		}*/
 
+		guard(XOpenGL_TestSkyboxFreeze);
+		CachedSkyStates.Empty();
+
+		unguard;
 		// end any in flight occlusion threads
 		// must be called from here instead of from NewLevelOC as by that time NewLevelBSP has run and changed SurfaceInfoMap
 		CleanupOCThreads();
@@ -2680,6 +2692,39 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 
 	DepthPrepassDone = false;
 	ShadowMapDone = false;
+	bSkyDrawnThisFrame = false;
+
+	// --- ACCUMULATIVE SKYBOX CLOSURE EVALUATION ---
+    if (!capturedAllSkyboxData && LocalSkySurfaces.Num() > 0)
+    {
+        bool bAllCaptured = true;
+        for (INT s = 0; s < LocalSkySurfaces.Num(); ++s)
+        {
+            if (!LocalSkySurfaces(s).bParamsCaptured)
+            {
+                bAllCaptured = false;
+                break;
+            }
+        }
+
+        if (bAllCaptured)
+        {
+            // Sever the SkyZone links inside the pre-cached world zone actors.
+            // This prevents the engine from generating the legacy BSP traversal entirely.
+            for (INT z = 0; z < ActiveWorldSkyZoneActors.Num(); ++z)
+            {
+                if (ActiveWorldSkyZoneActors(z))
+                {
+                    ActiveWorldSkyZoneActors(z)->SkyZone = nullptr;
+                }
+            }
+
+            // Flip your master tracking switch to lock down the driver pipeline
+            capturedAllSkyboxData = true;
+            
+            //debugf(TEXT("XOpenGL securely cached 100%% of skybox parameters. Preemptive multi-draw pass engaged."));
+        }
+    }
 
 	// Bind our offscreen FBO for world rendering
 	SceneFbo->Bind();

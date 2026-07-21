@@ -214,6 +214,13 @@ void main(void)
   vDrawID = DrawID;
   vFacetID = FacetID;
 
+  if ((DrawFlags & DF_FakeSky) == DF_FakeSky)
+  {
+    // Forcing Z to match W guarantees that after perspective division (Z / W),
+    // the final hardware depth value becomes exactly 1.0 (the absolute far plane).
+    gl_Position.z = gl_Position.w; 
+  }
+
 #if OPT_ClipDistance
   uint ClipIndex = uint(ClipParams.x);
   gl_ClipDistance[ClipIndex] = PlaneDot(ClipPlane, Coords.xyz);
@@ -489,58 +496,6 @@ vec2 ViewToUV(vec3 viewPos) {
     return uv;
 }
 
-// to continue to use this will need to tweak GetDepthTexel to handle AA (or rather lack of it from prepass), like a new GetPrepassDepthTexel
-/*float ShadowForLight(vec3 fragPosVS, vec3 lightPosVS)
-{
-    const float bias = 5.0;
-    const int   maxSteps = 48;
-
-    // View-space normal
-    vec3 normalVS = normalize(vNormal);
-
-    // Push origin
-    vec3 rayOrigin = fragPosVS + normalVS * bias;
-
-    // Direction and distance
-    vec3 L = lightPosVS - rayOrigin;
-    float distToLight = length(L);
-    vec3 lightDirVS = L / distToLight;
-
-    // Depth-relative step size
-    float baseStep = max(2.0, fragPosVS.z * 0.02);
-
-    // Clamp number of steps based on distance
-    int steps = clamp(int(distToLight / baseStep), 1, maxSteps);
-
-    // Jitter to break up banding
-    float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
-
-    // Final step size
-    float stepSize = distToLight / float(steps);
-
-    // Thickness scales with step size
-    float thickness = stepSize * 4.0;
-
-    for (int i = 0; i < steps; i++)
-    {
-        float t = (float(i) + jitter) * stepSize;
-        vec3 currentPos = rayOrigin + lightDirVS * t;
-
-        vec2 uv = ViewToUV(currentPos);
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
-            return 0.0;
-
-        float depth = GetDepthTexel(GetTexHandleHelper(vDrawID, PrepassDepthIndex),
-                                    TMUPrepassDepthMap, uv).r;
-        float sceneZ = LinearizeDepth(depth, 0.5, 65336.0);
-
-        float dz = currentPos.z - sceneZ;
-        if (dz > 0.0 && dz < thickness)
-            return 1.0;
-    }
-
-    return 0.0;
-}*/
 #if OPT_ShadowMaps
 // Controls the blur width (softness) of the shadow edges on the wall surfaces
 const float SHADOW_FILTER_RADIUS = 0.0035f; 
@@ -656,8 +611,15 @@ void main(void)
     FragColor = vec4(vNormal * 0.5 + 0.5, 1.0);
     return;
   }*/
-
   uint DrawFlags = GetDrawFlags(vDrawID);
+
+  // fake sky handling
+  if ((DrawFlags & DF_FakeSky) == DF_FakeSky) {
+    // Clear out all diffuse/lightmap colors so the brick texture is invisible
+    //FragColor = vec4(1.0, 0.0, 0.0, 1.0); 
+    //return;
+  }
+
   mat3 InFrameCoords = mat3(FrameCoords[1].xyz, FrameCoords[2].xyz, FrameCoords[3].xyz); // TransformPointBy...
   mat3 InFrameUncoords = mat3(FrameUncoords[1].xyz, FrameUncoords[2].xyz, FrameUncoords[3].xyz);
 
@@ -888,6 +850,7 @@ return;
   vec3 totalSpec  = vec3(0.0);
   uint numSurfaceLights = 0;
 #if OPT_BumpMaps
+  if ((DrawFlags & DF_FakeSky) != DF_FakeSky) // old path for skybox
   {
     float MinLight = 0.05f;
 
@@ -970,11 +933,6 @@ return;
 
       vec3 originVS = vec3(vCoords.x, vCoords.y, vCoords.z);
       vec3 lightPosVS = vec3(InLightPos.x, InLightPos.y, InLightPos.z);
-      
-      // screenspace shadows (boo)
-      //if (ShadowForLight(vCoords, lightPosVS) != 0)
-      //  continue;
-
 
       float shadowFactor = 1.0f;
  #if OPT_ShadowMaps   
@@ -1253,7 +1211,7 @@ return;
 
     // alpha fade
     TotalColor.rgb *= proximityFade;
-  }    
+  }
 
 #if OPT_SimulateMultiPass
   FragColor = TotalColor;

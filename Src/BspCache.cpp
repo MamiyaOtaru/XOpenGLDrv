@@ -62,6 +62,30 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 		AActor* Owner = Surf.Actor;
 		bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
 
+		// Dynamic SkyZone evaluation: Look up what actor governs this node's zone index
+		bool isSky = false;
+		AZoneInfo* ZoneActor = nullptr;
+		for (INT side = 0; side < 2; ++side)
+		{
+			BYTE ZoneIndex = Node.iZone[side]; // Read individual array element safely
+
+			// UE1 has a maximum limit of 64 structural zones per level map
+			if (ZoneIndex > 0 && ZoneIndex < 64 && Level->Model->Zones[ZoneIndex].ZoneActor) 
+			{
+				ZoneActor = Level->Model->Zones[ZoneIndex].ZoneActor;
+				
+				if (ZoneActor->IsA(ASkyZoneInfo::StaticClass()))
+				{
+					isSky = true;
+					break; // Found it, no need to evaluate the other side
+				}
+				else
+				{
+					ZoneActor = nullptr;
+				}
+			}
+		}
+
 		// Get or create FSurfInfo
 		FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
 		if (!pSI)
@@ -72,6 +96,8 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 			pSI->iSurf = iSurf;
 			pSI->SurfaceNormal = Level->Model->Vectors(Surf.vNormal).SafeNormal();
 			pSI->IsMover = isMover;
+			pSI->IsSky = isSky;
+			pSI->SkyZoneActor = (ASkyZoneInfo*)ZoneActor;
 			pSI->Owner = Owner;
 			pSI->PolyFlags = Surf.PolyFlags;
 		}
@@ -401,7 +427,7 @@ void UXOpenGLRenderDevice::BuildSurfaceTriangulation(ULevel* Level)
 		DWORD PolyFlags = Surf.PolyFlags;
 
 		if (PolyFlags & (PF_Modulated | PF_FakeBackdrop | PF_NoSmooth |
-						 PF_Flat | PF_Unlit | PF_Highlighted |
+						 PF_Flat | PF_Highlighted | //PF_Unlit |
 						 PF_FlatShaded | PF_Portal))
 		{
 			continue; // skip this surface entirely, not solid
@@ -472,210 +498,317 @@ void UXOpenGLRenderDevice::BuildSurfaceTriangulation(ULevel* Level)
     }
 }
 
-bool FacetInsidePolygonUV(
-    const TArray<FVector>& facetVerts,
-    const TArray<FVector>& polyVerts,
-    const FVector& surfU,
-    const FVector& surfV,
-    const FVector& surfNormal,
-	float epsilon = 1.0f)
-{
-    if (polyVerts.Num() < 3 || facetVerts.Num() == 0)
-        return false;
-
-    // Normalize U/V to form a stable 2D basis
-    FVector U = surfU.SafeNormal();
-    FVector V = surfV.SafeNormal();
-
-    // Reference point for projection
-    const FVector Aref = polyVerts(0);
-
-    auto projectUV = [&](const FVector& P)
-    {
-        FVector d = P - Aref;
-        return FVector(double(d | U), double(d | V), 0.f);
-    };
-
-    auto pointInPoly2D = [&](const FVector& P)->bool
-    {
-        FVector p = projectUV(P);
-        int wn = 0;
-        int m = polyVerts.Num();
-
-        for (int i = 0; i < m; ++i)
-        {
-            FVector a = projectUV(polyVerts(i));
-            FVector b = projectUV(polyVerts((i + 1) % m));
-
-            // On-edge check
-            double cross = (b.X - a.X)*(p.Y - a.Y) - (p.X - a.X)*(b.Y - a.Y);
-            if (fabs(cross) < epsilon)
-            {
-                double dot = (p.X - a.X)*(b.X - a.X) + (p.Y - a.Y)*(b.Y - a.Y);
-                double len2 = (b - a).SizeSquared();
-                if (dot >= -epsilon && dot <= len2 + epsilon)
-                    return true;
-            }
-
-            // Winding test
-            if (((a.Y <= p.Y + epsilon) && (b.Y > p.Y + epsilon) && cross > epsilon) ||
-                ((a.Y > p.Y + epsilon) && (b.Y <= p.Y + epsilon) && cross < -epsilon))
-            {
-                wn ^= 1;
-            }
-        }
-
-        return wn != 0;
-    };
-
-    // Require all facet verts inside
-    for (int fi = 0; fi < facetVerts.Num(); ++fi)
-    {
-        if (!pointInPoly2D(facetVerts(fi)))
-            return false;
-    }
-
-    return true;
-}
-
-bool FacetInsidePolygon(
-    const TArray<FVector>& facetVerts,
-    const TArray<FVector>& polyVerts,
-    const FVector& polyNormal   // normalized
+UBOOL UXOpenGLRenderDevice::PointInPolyProjected(
+    const FVector& P,                 // 3D point to test
+    const TArray<FVector>& PolyVerts, // Polygon vertices in 3D
+    const FVector& PlaneBase,         // Reference point on the polygon plane
+    const FVector& PlaneNormal,       // Polygon plane normal vector
+    FLOAT Epsilon                     // Precision tolerance threshold
 )
 {
-    if (polyVerts.Num() < 3 || facetVerts.Num() == 0)
-        return false;
+    INT m = PolyVerts.Num();
+    if (m < 3) return 0;
 
-    // --- Stable 2D basis from polygon normal ---
-    FVector X;
-    if (Abs(polyNormal.X) > Abs(polyNormal.Z))
-        X = FVector(-polyNormal.Y, polyNormal.X, 0.f).SafeNormal();
+    // Build a stable, localized 2D basis coordinate system (U, V) orthogonal to the normal
+    FVector N = PlaneNormal.SafeNormal();
+    FVector U;
+    if (abs(N.X) > abs(N.Z))
+        U = FVector(-N.Y, N.X, 0.f).SafeNormal();
     else
-        X = FVector(0.f, -polyNormal.Z, polyNormal.Y).SafeNormal();
+        U = FVector(0.f, -N.Z, N.Y).SafeNormal();
 
-    FVector Y = (polyNormal ^ X).SafeNormal();
+    FVector V = (N ^ U).SafeNormal();
 
-    const FVector Aref = polyVerts(0);
+    // Project our primary evaluation point relative to our local coordinate origin
+    FVector Pref = P - PlaneBase;
+    FLOAT px = Pref | U;
+    FLOAT py = Pref | V;
 
-    const double eps = .25;
+    INT wn = 0; // Initialize our winding number cross counter tracks
 
-    auto pointInPoly2D = [&](const FVector& P)->bool
-	{
-		double px = double((P - Aref) | X);
-		double py = double((P - Aref) | Y);
+    for (INT i = 0; i < m; ++i)
+    {
+        const FVector& A3 = PolyVerts(i);
+        const FVector& B3 = PolyVerts((i + 1) % m);
 
-		int wn = 0;
-		int m = polyVerts.Num();
+        FVector A = A3 - PlaneBase;
+        FVector B = B3 - PlaneBase;
 
-		for (int ii = 0; ii < m; ++ii)
+        FLOAT ax = A | U;
+        FLOAT ay = A | V;
+        FLOAT bx = B | U;
+        FLOAT by = B | V;
+
+        // Calculate the cross product of the edge vector relative to our test point
+        FLOAT cross = (bx - ax) * (py - ay) - (px - ax) * (by - ay);
+
+        // Explicit edge-proximity override check
+        if (abs(cross) < Epsilon)
+        {
+            FLOAT dotProduct = (px - ax) * (bx - ax) + (py - ay) * (by - ay);
+            FLOAT len2 = (bx - ax) * (bx - ax) + (by - ay) * (by - ay);
+
+            if (dotProduct >= -Epsilon && dotProduct <= len2 + Epsilon)
+                return 1; // Explicitly treat hard edge collisions as inside bounds
+        }
+
+        // Evaluate winding counter switches based on crossing positions
+        if (ay <= py + Epsilon)
+        {
+            if (by > py + Epsilon && cross > Epsilon)
+                wn ^= 1;
+        }
+        else
+        {
+            if (by <= py + Epsilon && cross < -Epsilon)
+                wn ^= 1;
+        }
+    }
+
+    return wn != 0; // Returns TRUE if the point sits cleanly enveloped inside the polygon bounds
+}
+
+INT UXOpenGLRenderDevice::TestRay(
+    const FVector& TargetPoint,
+    const FCustomSkySurface& SurfX,
+    const FCustomSkySurface& SurfY,
+    const FSurfInfo* SIY,
+    const FVector& SkyCenter)
+{
+    // A surface can never evaluate against its own infinite plane
+    if (SurfX.iSurf == SurfY.iSurf)
+        return 0;
+
+    // Build a clean directional line-of-sight ray from the view origin straight toward the target point
+    FVector RayDir = (TargetPoint - SkyCenter).SafeNormal();
+
+    // Find exactly where that ray pierces SurfY's infinite mathematical plane
+    float Denom = SurfY.PlaneNormal | RayDir;
+    if (abs(Denom) < 0.0001f)
+        return 0; // Parallel ray -> no intersection
+
+    float t = ((SurfY.PlaneBase - SkyCenter) | SurfY.PlaneNormal) / Denom;
+    if (t <= 0.0f) 
+        return 0; // Intersection point is behind the camera
+
+    FVector HitPoint = SkyCenter + (RayDir * t);
+
+    // Verify if that intersection point actually lands inside SurfY's true 3D polygon bounds
+    if (!PointInPolyProjected(HitPoint, SIY->Verts, SurfY.PlaneBase, SurfY.PlaneNormal, 0.5f))
+        return 0; // No angular overlap along this direction vector
+
+    // Depth comparison along this shared line-of-sight ray
+    FLOAT DistX = (TargetPoint - SkyCenter).Size();
+    FLOAT DistY = (HitPoint    - SkyCenter).Size();
+
+    if (abs(DistX - DistY) < 0.1f)
+        return 0; // Vertices are intersecting/co-planar, don't swap
+
+    // THE INVARIANT DEPTH RULE:
+    // If SurfX is physically CLOSER to the camera origin than SurfY along this angle (DistX < DistY),
+    // then SurfX is in front of SurfY. It must return +1.
+    // If SurfX is FURTHER AWAY (DistX > DistY), it sits behind SurfY. It must return -1.
+    return (DistX < DistY) ? +1 : -1;
+}
+
+INT UXOpenGLRenderDevice::TestOverlapAndDepth(
+    const FCustomSkySurface& A,
+    const FCustomSkySurface& B,
+    const FVector& SkyCenter,
+    const TMap<INT, FSurfInfo>& SurfaceInfoMap)
+{
+    const FSurfInfo* SIA = SurfaceInfoMap.Find(A.iSurf);
+    const FSurfInfo* SIB = SurfaceInfoMap.Find(B.iSurf);
+    if (!SIA || !SIB)
+        return 0;
+
+    // --- 1. Center ray: Origin -> A.center projected onto B ---
+    {
+        INT r = TestRay(A.PolyCenter, A, B, SIB, SkyCenter);
+        if (r == +1) return +1; // A is closer than B along this ray -> A must draw AFTER B!
+        if (r == -1) return -1; // A is further than B along this ray -> A must draw BEFORE B!
+    }
+
+    // --- 2. Center ray: Origin -> B.center projected onto A ---
+    {
+        INT r = TestRay(B.PolyCenter, B, A, SIA, SkyCenter);
+        if (r == +1) return -1; // B is closer than A -> A is further than B -> A must draw BEFORE B!
+        if (r == -1) return +1; // B is further than A -> A is closer than B -> A must draw AFTER B!
+    }
+
+    // --- 3a. Vertex rays: Origin -> each vertex of A projected onto B ---
+    for (INT v = 0; v < SIA->Verts.Num(); ++v)
+    {
+        INT r = TestRay(SIA->Verts(v), A, B, SIB, SkyCenter);
+        if (r == +1) return +1;
+        if (r == -1) return -1;
+    }
+
+    // --- 3b. Vertex rays: Origin -> each vertex of B projected onto A ---
+    for (INT v = 0; v < SIB->Verts.Num(); ++v)
+    {
+        INT r = TestRay(SIB->Verts(v), B, A, SIA, SkyCenter);
+        if (r == +1) return -1; 
+        if (r == -1) return +1; 
+    }
+
+    return 0; // No angular overlap detected along any shared sightlines
+}
+
+
+
+void UXOpenGLRenderDevice::ExtractSkyboxGeometry(ULevel* Level)
+{
+    guard(UXOpenGLRenderDevice::ExtractSkyboxGeometry);
+    LocalSkySurfaces.Empty();
+
+    // Structural safety check
+    if (!Level || !Level->Model)
+        return;
+
+    UModel* Model = Level->Model;
+
+    // harvest data by iterating over our pre-computed SurfaceInfoMap
+    // Harvest data by iterating over our pre-computed SurfaceInfoMap
+    for (TMap<INT, FSurfInfo>::TIterator It(SurfaceInfoMap); It; ++It)
+    {
+        FSurfInfo& SI = It.Value();
+
+        if (SI.IsSky && SI.TriIdx.Num() > 0)
+        {
+            const FBspSurf& Surf = Model->Surfs(SI.iSurf);
+            FCustomSkySurface SkySurf;
+
+            SkySurf.iSurf   = SI.iSurf;
+            SkySurf.SkyZone = SI.SkyZoneActor;
+
+            // Cache the physical engine-side panning parameters right now!
+            SkySurf.BasePanU = Surf.PanU;
+            SkySurf.BasePanV = Surf.PanV;
+
+            // Populate persistent geometric anchors straight into our structural proxy
+            SkySurf.PlaneBase   = Model->Points(Surf.pBase);
+            SkySurf.PlaneNormal = Model->Vectors(Surf.vNormal).SafeNormal();
+
+            // Calculate the true geometric center point of the mesh face by averaging world vertices
+            FVector Center(0.f, 0.f, 0.f);
+            for (INT v = 0; v < SI.Verts.Num(); ++v)
+            {
+                Center += SI.Verts(v);
+            }
+            if (SI.Verts.Num() > 0)
+            {
+                Center *= (1.0f / static_cast<FLOAT>(SI.Verts.Num()));
+            }
+            else
+            {
+                Center = SkySurf.PlaneBase;
+            }
+            SkySurf.PolyCenter = Center;
+
+            // Use the physical surface bounding radius or flat vertex bounds to estimate scale bounds
+            SkySurf.BoundingRadius = SI.Verts.Num() > 0 ? (SI.Verts(0) - Center).Size() : 100.0f;
+
+            // Capture the specific scrolling speeds governed by the sky room's zone setup
+            if (SI.SkyZoneActor)
+            {
+                SkySurf.TexUPanSpeed = SI.SkyZoneActor->TexUPanSpeed;
+                SkySurf.TexVPanSpeed = SI.SkyZoneActor->TexVPanSpeed;
+
+                const FVector SkyCenter = SI.SkyZoneActor->Location;
+
+                // 1. Establish the primary line-of-sight viewing direction for this specific panel
+                const FVector ViewDir = (SkySurf.PolyCenter - SkyCenter).SafeNormal();
+
+                // 2. Find the deepest vertex boundary, projected strictly along this localized viewing axis!
+                // This shields the calculation from infinite flat-plane stretching corners,
+                // capturing the true absolute depth right where the sightlines intersect!
+                FLOAT MaxProjectedDepth = 0.0f;
+                for (INT v = 0; v < SI.Verts.Num(); ++v)
+                {
+                    FLOAT ProjectedDepth = (SI.Verts(v) - SkyCenter) | ViewDir;
+                    if (ProjectedDepth > MaxProjectedDepth)
+                    {
+                        MaxProjectedDepth = ProjectedDepth;
+                    }
+                }
+
+                // 3. Store the squared projected maximum depth as your clean sorting anchor key
+                SkySurf.SortingDistanceSq = MaxProjectedDepth * MaxProjectedDepth;
+            }
+            else
+            {
+                SkySurf.TexUPanSpeed = 0.0f;
+                SkySurf.TexVPanSpeed = 0.0f;
+                SkySurf.SortingDistanceSq = 99999999.0f; // Force unzoned artifacts to the back
+            }
+
+            LocalSkySurfaces.AddItem(SkySurf);
+        }
+    }
+
+    // Pairwise relational line-of-sight directional depth sort
+    if (LocalSkySurfaces.Num() > 1)
+    {
+        const FVector SkyCenter =
+            (ActiveWorldSkyZoneActors.Num() > 0 && ActiveWorldSkyZoneActors(0)->SkyZone)
+            ? ActiveWorldSkyZoneActors(0)->SkyZone->Location
+            : FVector(0.f, 0.f, 0.f);
+
+		for (INT i = 0; i < LocalSkySurfaces.Num() - 1; ++i)
 		{
-			const FVector& P1 = polyVerts(ii);
-			const FVector& P2 = polyVerts((ii + 1) % m);
+			INT FurthestIndex = i;
 
-			double x1 = double((P1 - Aref) | X), y1 = double((P1 - Aref) | Y);
-			double x2 = double((P2 - Aref) | X), y2 = double((P2 - Aref) | Y);
-
-			// On-edge check
-			double cross = (x2 - x1)*(py - y1) - (px - x1)*(y2 - y1);
-			if (fabs(cross) < eps)
+			for (INT j = i + 1; j < LocalSkySurfaces.Num(); ++j)
 			{
-				double dot = (px - x1)*(x2 - x1) + (py - y1)*(y2 - y1);
-				if (dot >= -eps)
+				// Always compare the current reigning "furthest" candidate against the field
+				const FCustomSkySurface& CandidateFurthest = LocalSkySurfaces(FurthestIndex);
+				const FCustomSkySurface& CurrentSurf = LocalSkySurfaces(j);
+
+				INT order = TestOverlapAndDepth(CandidateFurthest, CurrentSurf, SkyCenter, SurfaceInfoMap);
+
+				// If order > 0, CandidateFurthest is actually CLOSER to the camera than CurrentSurf.
+				// That means CurrentSurf is a better candidate to be pushed to the back (index i).
+				if (order > 0)
 				{
-					double len2 = (x2 - x1)*(x2 - x1) + (y2 - y1)*(y2 - y1);
-					if (dot <= len2 + eps)
-						return true; // treat on-edge as inside
+					FurthestIndex = j;
 				}
 			}
 
-			// Winding test with epsilon
-			if (((y1 <= py + eps) && (y2 > py + eps) && cross > eps) ||
-				((y1 > py + eps) && (y2 <= py + eps) && cross < -eps))
+			// Perform a single, clean swap per outer loop pass
+			if (FurthestIndex != i)
 			{
-				wn ^= 1;
+				FCustomSkySurface Temp = LocalSkySurfaces(i);
+				LocalSkySurfaces(i) = LocalSkySurfaces(FurthestIndex);
+				LocalSkySurfaces(FurthestIndex) = Temp;
 			}
 		}
 
-		return wn != 0;
-	};
-
-    // --- Require all facet verts inside ---
-    for (INT fvi = 0; fvi < facetVerts.Num(); ++fvi)
-    {
-        if (!pointInPoly2D(facetVerts(fvi)))
-            return false;
     }
 
-    return true;
-}
+	capturedAllSkyboxData = !(LocalSkySurfaces.Num() > 0);
 
-bool FacetInsidePolygonUV_3D(
-    const TArray<FVector>& facetVerts,
-    const TArray<FVector>& polyVerts,
-    const FVector& surfU,
-    const FVector& surfV,
-    const FVector& surfNormal,
-	float epsilon = 1.0f)
-{
-    int pv = polyVerts.Num();
-    if (pv < 3) return false;
-
-    int fv = facetVerts.Num();
-    if (fv == 0) return false;
-
-    for (int fi = 0; fi < fv; ++fi)
+	// Scan the level's zone database to find every world area pointing to a sky portal
+	ActiveWorldSkyZoneActors.Empty();
+    for (INT z = 0; z < 64; ++z)
     {
-        const FVector& P = facetVerts(fi);
-
-        for (int pi = 0; pi < pv; ++pi)
+        AZoneInfo* WorldZoneActor = Model->Zones[z].ZoneActor;
+        if (WorldZoneActor && WorldZoneActor->SkyZone)
         {
-            const FVector& A = polyVerts(pi);
-            const FVector& B = polyVerts((pi + 1) % pv);
-
-            FVector edge = B - A;
-            FVector outward = edge ^ surfNormal; // outward half-space
-
-            float d = (P - A) | outward;
-
-            if (d > epsilon) // outside this edge
-                return false;
+            // Verify it matches the authentic engine-side sky camera class properties
+            if (WorldZoneActor->SkyZone->IsA(ASkyZoneInfo::StaticClass()))
+            {
+                ActiveWorldSkyZoneActors.AddItem(WorldZoneActor);
+            }
         }
     }
 
-    return true;
+    // Log the direct outcome to the developer log console
+    debugf(TEXT("XOpenGL extracted %d skybox surfaces for custom rendering and blinded engine core loops."), LocalSkySurfaces.Num());
+
+    unguard;
 }
 
-bool FacetInsidePolygon3D(const TArray<FVector>& facetVerts,
-                          const TArray<FVector>& polyVerts,
-                          const FVector& polyNormal)
-{	
-	int pv = polyVerts.Num();
-    if (pv < 3) return false;
-
-    int fv = facetVerts.Num();
-    if (fv == 0) return false;
-
-    for (int fi = 0; fi < fv; ++fi)
-	{
-        FVector P = facetVerts(fi);
-        for (int pi = 0; pi < pv; ++pi)
-        {
-            const FVector& A = polyVerts(pi);
-            const FVector& B = polyVerts((pi+1) % pv);
-
-            FVector edge = B - A;
-            FVector outward = edge ^ polyNormal;  // outward-facing plane
-
-            float d = (P - A) | outward;
-            //if (d > 0.0001f)   // outside
-			if (d > 1.0f)   // outside
-                return false;
-        }
-    }
-
-    return true;
-}
 
 void UXOpenGLRenderDevice::NewLevelBSP()
 {
@@ -683,5 +816,6 @@ void UXOpenGLRenderDevice::NewLevelBSP()
 	// Build smooth vertex normals for phong shading (precompute once per level)
 	BuildSmoothVertexNormalsForLevel(LastLevel);
     BuildSurfaceTriangulation(LastLevel);
+	ExtractSkyboxGeometry(LastLevel);
 }
 
