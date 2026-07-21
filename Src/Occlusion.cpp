@@ -1372,18 +1372,10 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
     // Build light list
     TArray<AActor*> Lights;
 
-    if (!isMover)
+    // Retrieve stored static light list for this surf (if any)
+    if (TArray<AActor*>* StaticLightList = StaticLightsForFacet.Find(iSurf))
     {
-        // Retrieve stored static light list for this surf (if any)
-        if (TArray<AActor*>* StaticLightList = StaticLightsForFacet.Find(iSurf))
-        {
-            Lights = *StaticLightList;
-        }
-    }
-    else
-    {
-        // For movers, use all static lights in the level
-        Lights = StaticLevelLights;
+        Lights = *StaticLightList;
     }
     if (Lights.Num() == 0)
     {

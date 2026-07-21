@@ -1850,7 +1850,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TMap<INT, TArray<AActor*>> StaticLightsForFacet;
 	TMap<INT, TArray<AActor*>> StaticLightsForFacetOC; // same but without fully occluded lights (for use with the occlusion map)
 	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
-	// per level list of all static lights that movers use during occlusion generation
+	// per level list of all static lights used for quick iteration for setting up hero lights etc.
 	TArray<AActor*> StaticLevelLights;
 
 	// --- Fake Spotlight Pair Tracking ---
