@@ -1552,6 +1552,7 @@ void UXOpenGLRenderDevice::ExtractUMeshTriangles(UMesh* M, AActor* Actor, TArray
 }
 
 // game loop
+INT    Guaranteed = 0;
 INT    GSuccessFramesCounter = 0;   // Counts consecutive frames with clean headroom
 INT    GFailureFramesCounter = 0;   // Counts consecutive frames running on a tight budget
 INT    GRoundRobinCurrentIndex = 0;  // Sliding window pointer
@@ -1573,8 +1574,8 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     if (ShadowMaps == ShadowMaps_Low) UserGuaranteed = 3;
     else if (ShadowMaps == ShadowMaps_Medium) UserGuaranteed = 10;
     else if (ShadowMaps == ShadowMaps_High) UserGuaranteed = 30;
-    else if (ShadowMaps == ShadowMaps_HolyShit) UserGuaranteed = 30;
-    INT    Guaranteed            = UserGuaranteed; // Dynamically scales between a user-configured floor and a hardware ceiling
+    else if (ShadowMaps == ShadowMaps_HolyShit) UserGuaranteed = 10; // holyshit scales as framerate is available
+    Guaranteed            = Max(Guaranteed, UserGuaranteed); // Dynamically scales between a user-configured floor and a hardware ceiling
     INT    ActivePoolSize        = Guaranteed * 3;   // Mathematically locked to UserGuaranteed * 2
 
     Guaranteed = Clamp(Guaranteed, UserGuaranteed, TotalLights);
@@ -1663,14 +1664,14 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
         // Measure our dynamic frame budget headroom
         double DynamicBudgetMS = Min(5.0, Max(0.0, 16.6 - GOtherStuffDurationMS));
 
-        if (DynamicBudgetMS > 1.5)
+        if (DynamicBudgetMS > 2.5)
         {
             // SUCCESS TREND: The current frame overhead is low and we have spare time!
             GFailureFramesCounter = 0;
             GSuccessFramesCounter++;
 
             // If we maintain a clean run for 4 consecutive frames, gradually expand our base capacities
-            if (GSuccessFramesCounter >= 4)
+            if (GSuccessFramesCounter >= 30)
             {
                 Guaranteed = Min(Guaranteed + 5, TotalLights);
                 GSuccessFramesCounter = 0;
@@ -1684,7 +1685,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
             GFailureFramesCounter++;
 
             // If we run on a tight budget for 2 consecutive frames, contract sizes immediately
-            if (GFailureFramesCounter >= 1)
+            if (GFailureFramesCounter >= 30)
             {
                 INT OldCeiling = ActivePoolSize;
                 
