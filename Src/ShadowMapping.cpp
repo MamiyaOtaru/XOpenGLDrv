@@ -1574,7 +1574,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     if (ShadowMaps == ShadowMaps_Low) UserGuaranteed = 3;
     else if (ShadowMaps == ShadowMaps_Medium) UserGuaranteed = 10;
     else if (ShadowMaps == ShadowMaps_High) UserGuaranteed = 30;
-    else if (ShadowMaps == ShadowMaps_HolyShit) UserGuaranteed = 10; // holyshit scales as framerate is available
+    else if (ShadowMaps == ShadowMaps_HolyShit) UserGuaranteed = 3; // holyshit scales as framerate is available, has a lower floor than high
     Guaranteed            = Max(Guaranteed, UserGuaranteed); // Dynamically scales between a user-configured floor and a hardware ceiling
     INT    ActivePoolSize        = Guaranteed * 3;   // Mathematically locked to UserGuaranteed * 2
 
@@ -1662,7 +1662,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
         }
 
         // Measure our dynamic frame budget headroom
-        double DynamicBudgetMS = Min(5.0, Max(0.0, 16.6 - GOtherStuffDurationMS));
+        double DynamicBudgetMS = Min(5.0, Max(0.0, 16.6 - GOtherStuffDurationMS)); // 16.6
 
         if (DynamicBudgetMS > 2.5)
         {
@@ -1673,24 +1673,24 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
             // If we maintain a clean run for 4 consecutive frames, gradually expand our base capacities
             if (GSuccessFramesCounter >= 30)
             {
-                Guaranteed = Min(Guaranteed + 5, TotalLights);
+                Guaranteed = Min(Guaranteed + 2, TotalLights);
                 GSuccessFramesCounter = 0;
                 //debugf(TEXT("XOpenGL: Room detected! Gradually scaling up baseline settings to %d."), Guaranteed);
             }
         }
-        else if (DynamicBudgetMS <= 0.5)
+        else if (DynamicBudgetMS <= 0.05)
         {
             // FAILURE TREND: The scene is getting heavy and performance is dipping!
             GSuccessFramesCounter = 0;
             GFailureFramesCounter++;
 
-            // If we run on a tight budget for 2 consecutive frames, contract sizes immediately
-            if (GFailureFramesCounter >= 30)
+            // If we run on a tight budget for 5 consecutive frames, contract sizes immediately
+            if (GFailureFramesCounter >= 1)
             {
                 INT OldCeiling = ActivePoolSize;
                 
                 // Asymmetrical Step: Scale down by 10 to shed load quickly and protect the framerate
-                Guaranteed = Max(Guaranteed - 15, UserGuaranteed);
+                Guaranteed = Max(Guaranteed - GFailureFramesCounter, UserGuaranteed);
                 INT NewCeiling = Guaranteed * 3;
                 NewCeiling = Min(NewCeiling, TotalLights);
 
@@ -1705,7 +1705,6 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
                     }
                 }
 
-                GFailureFramesCounter = 0;
                 //debugf(TEXT("XOpenGL: Starvation detected! Gradually scaling down baseline settings to %d."), Guaranteed);
             }
         }

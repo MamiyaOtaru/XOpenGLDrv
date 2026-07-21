@@ -1041,6 +1041,7 @@ void UXOpenGLHeroLight::ClearShadowMapTexture()
     if (HasActiveShadowMap())
     {
         CurrentFaceMask = 0;
+        ChangedFaceMask = 0;
         LastFrameActors.Empty(); // Ensure fresh render if/when this comes back into scope
     }
 }
