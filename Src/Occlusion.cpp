@@ -1437,7 +1437,7 @@ void UXOpenGLRenderDevice::ProcessNodeSurface(INT plm, ULevel* Level)
             );
 
             // --- THE ENERGY-BASED EARLY REJECTION GATE ---
-            if (LightEnergyOnSurface > 0.001f)
+            if (LightEnergyOnSurface > 0.001f || Lights.Num() == 1) // ensure at least one light to avoid fullbright bug
             {
                 // The light contributes physical energy to this surface.
                 // Accumulate absolute raw color parameters down into the master buffers!
