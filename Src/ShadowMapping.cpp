@@ -1563,6 +1563,8 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     PerFrameActorSplatCache.Empty();
     PerFrameStaticMeshCache.Empty();
     PerFrameMoverCache.Empty();
+    UXOpenGLHeroLight::newCubemapsThisFrame = 0;
+    UXOpenGLHeroLight::newFbosThisFrame = 0;
 
     INT TotalLights = HeroLights.Num();
     if (TotalLights <= 0) return;

@@ -632,6 +632,11 @@ TMap<INT, INT> CurrentFrameLookup;
 
 static FName NAME_SmallSpark(TEXT("SmallSpark"));
 
+INT UXOpenGLHeroLight::newCubemapsThisFrame = 0;
+INT UXOpenGLHeroLight::newFbosThisFrame     = 0;
+INT MAX_TEX_PER_FRAME = 1;
+INT MAX_FBO_PER_FRAME = 4;
+
 // ------------------------------------------------------------
 // The Master Evaluation & Render Dispatcher
 // ------------------------------------------------------------
@@ -818,7 +823,7 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
     }
 
     UBOOL bGlobalReset = (Radius != LastRadius) || (LightActor->Location != LastLocation);
-    BYTE ChangedFaceMask = bGlobalReset ? 0x3F : 0x00;
+    if (bGlobalReset) ChangedFaceMask = 0x3F;
 
     // --- Intrinsic Delta Checks (O(N + M)) ---
     if (!bGlobalReset)
@@ -932,8 +937,9 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 
 	// Allocate the raw texture coordinates ONCE per light if they don't exist, 
 	// but do NOT construct any FBO containers yet!
-	if (ColorCubemapID == 0)
+	if (ColorCubemapID == 0 && newCubemapsThisFrame < MAX_TEX_PER_FRAME)
 	{
+        newCubemapsThisFrame++;
         INT size = shadowmapSize;
 
 		// Allocate the single shared Color Cubemap Texture
@@ -965,6 +971,11 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
         // Ensure bindless tracking state is completely resident in VRAM
 	    MakeTextureResident();
 	}
+    else if (ColorCubemapID == 0)
+    {
+        // made too many, return;
+        return;
+    }
 
 	// Backup previous main screen viewport coordinates
 	GLint PrevViewport[4];
@@ -982,10 +993,18 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 
 		// The individual face FBO is only constructed right here, at the exact split-second 
 		// its frustum index passes the visibility mask, saving thousands of FBO handles!
-		if (!FaceFbos[face])
+		if (!FaceFbos[face] && newFbosThisFrame < MAX_FBO_PER_FRAME)
 		{
+            newFbosThisFrame++;
 			FaceFbos[face] = new Fbo(shadowmapSize, ColorCubemapID, DepthCubemapID, face);
 		}
+        else if (!FaceFbos[face])
+        {
+            // made too many already this frame
+            glDepthMask(GL_TRUE);
+	        glViewport(PrevViewport[0], PrevViewport[1], PrevViewport[2], PrevViewport[3]);
+            return;
+        }
 
 		// --- BIND THE PERMANENT STATIC FACE FBO ---
 		// Absolutely zero attachment swaps, texture layer rebindings, or unbinds! 
@@ -1004,6 +1023,8 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 		{
 			RenderFaceGeometry(Level, Frame, face, CurrentFrameActors, bspNeedsDrawn, GL);
 		}
+        // Face successfully rendered: clear its dirty bit
+        ChangedFaceMask &= ~(1 << face);
 
 		// Restore standard depth writing capability before stepping to the next face quadrant
 		glDepthMask(GL_TRUE);

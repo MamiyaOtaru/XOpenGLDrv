@@ -1352,14 +1352,19 @@ static const char* DepthFadeKeys[] = {
     "cststeam", // green steam in DM-Conveyor
     "donfire", // DM-Barricade
     "lightning6", // blue flame in DM-ArcaneTemple
+    "liquid6", // water eg CTF-Ratchet
+    "liquid7", // ???
     "liquid9", // water eg DM-Codex
     "pbluering",
     "ppurplering",
     "smallfireh3", // DM-Peak, DOM-Sesmar
     "smoke1", // ??
+    "swater4a", // DM-FOT-Metalwraith.  accidentally doesn't work on that map because it's not marked as a portal, and that's OK is too shallow anyway would disappear
     "torches2", // DOM-Olden
     "torches3", // DM-Agony
     "water4", // ??
+    "water6", // ??
+    "waterpool", // DM-FOT-Atlantis
 };
 
 bool BinarySearchDepthFade(const char* key)

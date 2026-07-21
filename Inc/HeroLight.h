@@ -36,6 +36,7 @@ private:
 
     TArray<CachedActorState> LastFrameActors;
     BYTE LastFrameFaceMask; // Which faces had actors last frame
+    BYTE ChangedFaceMask; // dirtied faces.  generally drawn this frame but may get delayed if texture creation is throttled
 
     TArray<BYTE> AffectedZones;
     TArray<INT> AffectedBSPSurfaces;
@@ -74,6 +75,9 @@ public:
     ~UXOpenGLHeroLight();
 
     BYTE CurrentFaceMask = 0;
+
+    static INT newCubemapsThisFrame;
+    static INT newFbosThisFrame;
 
     UBOOL HasValidShadowMap() const { return (ColorCubemapID != 0); }
 
