@@ -7,7 +7,7 @@
 #include "XOpenGL.h"
 
 static GLuint noiseTex;
-static boolean createdNoise = false;
+static UBOOL createdNoise = FALSE;
 
 const int NOISE_SIZE = 8; // 4 or 8
 GLuint UXOpenGLRenderDevice::CreateSSAONoiseTexture()
@@ -47,10 +47,24 @@ GLuint UXOpenGLRenderDevice::CreateSSAONoiseTexture()
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         glBindTexture(GL_TEXTURE_2D, 0);
         noiseTex = tex;
-        createdNoise = true;
+        createdNoise = TRUE;
     }
     return noiseTex;
 }
+
+void UXOpenGLRenderDevice::DeleteSSAONoiseTexture()
+{
+    if (createdNoise)
+    {
+        if (noiseTex != 0)
+        {
+            glDeleteTextures(1, &noiseTex);
+            noiseTex = 0;
+        }
+    }
+    createdNoise = FALSE;
+}
+
 
 static float randFloat()
 {
@@ -132,6 +146,9 @@ void UXOpenGLRenderDevice::CreateFullscreenQuad()
 
 void UXOpenGLRenderDevice::DeleteFullscreenQuad()
 {
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
     if (FullscreenVBO)
     {
         glDeleteBuffers(1, &FullscreenVBO);
@@ -143,6 +160,7 @@ void UXOpenGLRenderDevice::DeleteFullscreenQuad()
         FullscreenVAO = 0;
     }
 }
+
 
 void UXOpenGLRenderDevice::DrawFullscreenQuad()
 {

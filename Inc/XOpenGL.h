@@ -2017,8 +2017,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// --- SSAO passes ---
 	Fbo* SsaoFbo = nullptr;        // half-res AO compute
 	Fbo* SsaoBlurFbo = nullptr;    // half-res blur ping-pong
-	Fbo* SsaoFullResFbo = nullptr; // optional full-res upsample
-
+ 
 	// --- Sizes ---
 	INT SceneWidth = 0;
 	INT SceneHeight = 0;
@@ -2044,6 +2043,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	GLuint FullscreenVAO = 0;
 	GLuint FullscreenVBO = 0;
 
+	void UXOpenGLRenderDevice::DeleteSSAONoiseTexture();
 	void UXOpenGLRenderDevice::CreateFullscreenQuad();
 	void UXOpenGLRenderDevice::DeleteFullscreenQuad();
 	void UXOpenGLRenderDevice::DrawFullscreenQuad();

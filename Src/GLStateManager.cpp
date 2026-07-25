@@ -79,7 +79,7 @@ namespace GLStateManager {
     void APIENTRY hook_glDeleteTextures(GLsizei n, const GLuint* textures) {
         for (GLsizei i = 0; i < n; ++i) {
             for (int t = 0; t < 32; ++t) {
-                if (boundTextures[t] == textures[i]) boundTextures[t] = 0;
+                if (boundTextures[t] == textures[i]) boundTextures[t] = 0xFFFFFFFF;
             }
         }
         (glad_glDeleteTextures)(n, textures);

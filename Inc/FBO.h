@@ -1,12 +1,13 @@
 #pragma once
 #include <vector>
+#include "GLStateManager.h"
 
-// Minimal GL type forward declarations (no GL headers here)
-typedef int           GLint;
+// Minimal GL type forward declarations (IF no GL headers here, ie not using state manager)
+/*typedef int           GLint;
 typedef unsigned int  GLuint;
 typedef unsigned long long GLuint64;
 typedef unsigned int  GLenum;
-typedef int           GLsizei;
+typedef int           GLsizei;*/
 
 class Fbo
 {

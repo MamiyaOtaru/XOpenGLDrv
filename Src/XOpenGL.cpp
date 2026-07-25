@@ -1369,13 +1369,6 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
         SsaoBlurFbo = nullptr;
     }
 
-    if (SsaoFullResFbo)
-    {
-        SsaoFullResFbo->Dispose();
-        delete SsaoFullResFbo;
-        SsaoFullResFbo = nullptr;
-    }
-
 	if (ResolveFbo && UseAA)
 	{
 		ResolveFbo->Dispose();
@@ -1390,6 +1383,7 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
         CompositeFbo = nullptr;
     }
 	DeleteFullscreenQuad();
+	DeleteSSAONoiseTexture(); // new context?
 
     SceneWidth  = NewX;
     SceneHeight = NewY;
@@ -1454,15 +1448,6 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 		SsaoBlurFbo = new Fbo(
 			SceneWidth / 2,
 			SceneHeight / 2,
-			1,
-			1,
-			FALSE,
-			FALSE
-		);
-
-		SsaoFullResFbo = new Fbo(
-			SceneWidth,
-			SceneHeight,
 			1,
 			1,
 			FALSE,
@@ -2956,7 +2941,7 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 	}
 
 	// Debug: visualize GBuffer normals
-	/*if (Multipass && LastLevel && !LastLevel->IsEntry)
+	/*if (AmbientOcclusion && LastLevel && !LastLevel->IsEntry)
 	{
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, gbufferFbo->fboID);
 
