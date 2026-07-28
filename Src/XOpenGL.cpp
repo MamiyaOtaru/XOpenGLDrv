@@ -2203,28 +2203,40 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		FVector Right = Frame->Coords.XAxis;
 		FVector Up = -Frame->Coords.YAxis;   // because YAxis is "down"
 
-		const FLOAT VFOV = Frame->Viewport->Actor->FovAngle * (PI / 180.f);
-		const FLOAT Aspect = (FLOAT)Frame->X / (FLOAT)Frame->Y;
-		const FLOAT HFOV = 2.f * atan(tan(VFOV * 0.5f) / Aspect);
+		// 1. Fetch the exact projection multipliers from the engine
+		const FLOAT TanHalfHFOV = appTan(Frame->Viewport->Actor->FovAngle * PI / 360.0f);
+		const FLOAT EngineAspect = (FLOAT)Frame->FY / (FLOAT)Frame->FX; // Height / Width (e.g. 9/16)
+		const FLOAT TanHalfVFOV = TanHalfHFOV * EngineAspect;
 
-		// Build frustum planes
+		// === BUILD PERFECTLY INWARD-FACING PLANES ===
 		FPlane FrustumPlanes[6];
 
-		FVector LeftNormal = (Forward * cos(HFOV * 0.5f) + Right * sin(HFOV * 0.5f)).UnsafeNormal();
-		FVector RightNormal = (Forward * cos(HFOV * 0.5f) - Right * sin(HFOV * 0.5f)).UnsafeNormal();
-		FVector TopNormal = (Forward * cos(VFOV * 0.5f) - Up * sin(VFOV * 0.5f)).UnsafeNormal();
-		FVector BottomNormal = (Forward * cos(VFOV * 0.5f) + Up * sin(VFOV * 0.5f)).UnsafeNormal();
+		// Left plane: perpendicular to the left edge, pointing inward (Right-ish)
+		FrustumPlanes[0] = FPlane(CameraPos, (Forward * TanHalfHFOV + Right).UnsafeNormal());
 
-		FrustumPlanes[0] = FPlane(CameraPos, LeftNormal);
-		FrustumPlanes[1] = FPlane(CameraPos, RightNormal);
-		FrustumPlanes[2] = FPlane(CameraPos, TopNormal);
-		FrustumPlanes[3] = FPlane(CameraPos, BottomNormal);
+		// Right plane: perpendicular to the right edge, pointing inward (Left-ish)
+		FrustumPlanes[1] = FPlane(CameraPos, (Forward * TanHalfHFOV - Right).UnsafeNormal());
 
-		const FLOAT NearDist = 0.f;
-		const FLOAT FarDist = 20000.f;
+		// Top plane: perpendicular to the top edge, pointing inward (Down-ish)
+		FrustumPlanes[2] = FPlane(CameraPos, (Forward * TanHalfVFOV - Up).UnsafeNormal());
+
+		// Bottom plane: perpendicular to the bottom edge, pointing inward (Up-ish)
+		FrustumPlanes[3] = FPlane(CameraPos, (Forward * TanHalfVFOV + Up).UnsafeNormal());
+
+		// Near & Far planes
+	#if UNREAL_TOURNAMENT_OLDUNREAL
+		FLOAT NearDist = 0.5f;
+	#else
+		FLOAT NearDist = 1.0f;
+	#endif
+		const FLOAT FarDist      = 20000.0f;
 
 		FrustumPlanes[4] = FPlane(CameraPos + Forward * NearDist, Forward);
 		FrustumPlanes[5] = FPlane(CameraPos + Forward * FarDist, -Forward);
+
+
+		//FLOAT angleDeg = (acos(Forward | LeftNormal)) * 180.0f / PI;
+//debugf(TEXT("Left plane angle: %f deg"), angleDeg);
 
 		// Collect corona lights in frustum
 		//for (INT i = 0; i < NumLights; i++)
@@ -2249,9 +2261,10 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			const FVector& Pos = L->Location;
 
 			bool InFrustum = true;
+			FLOAT radius = L->WorldLightRadius();
 			for (int p = 0; p < 6; p++)
 			{
-				if (FrustumPlanes[p].PlaneDot(Pos) < 0.f)
+				if (FrustumPlanes[p].PlaneDot(Pos) < -radius)
 				{
 					InFrustum = false;
 					break;
