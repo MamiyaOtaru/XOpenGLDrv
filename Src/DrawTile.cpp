@@ -188,6 +188,11 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 			// want it to be farther away for smaller ones though
 			float scale = baseScale * (standardDistance / (dist + 50.0f));
 
+			// Apply FOV zoom scaling
+			float fov = Frame->Viewport->Actor->FovAngle;
+			float fovScale = 90.0f / fov;
+			scale *= fovScale;
+
 			// Fade out when too small
 			if (scale < minScale)
 			{
