@@ -547,16 +547,14 @@ void GenerateCapsulesForMesh(ULodMesh* L, MeshCapsuleCache& Out)
 static MeshCapsuleCache& GetCapsuleCacheForMesh(ULodMesh* Mesh)
 {
     MeshCapsuleCache* Found = CapsuleCache.Find(Mesh);
-    if (Found)
-        return *Found;
-
-    // Not found -> generate
-    MeshCapsuleCache NewCache;
-    GenerateCapsulesForMesh(Mesh, NewCache);
-
-    // Store and return
-    CapsuleCache.Set(Mesh, NewCache);
-    return NewCache;
+    if (!Found)
+    {
+        MeshCapsuleCache NewCache;
+        GenerateCapsulesForMesh(Mesh, NewCache);
+        CapsuleCache.Set(Mesh, NewCache);
+        Found = CapsuleCache.Find(Mesh);
+    }
+    return *Found;
 }
 
 // helper: mesh-space -> world-space (no animation here)
