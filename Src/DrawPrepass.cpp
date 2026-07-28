@@ -43,21 +43,42 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
 	INT NumPts = SI.Verts.Num();
 
     TArray<glm::vec3> PolyVertices;
-	PolyVertices.AddZeroed(NumPts);
+    PolyVertices.AddZeroed(NumPts);
     TArray<glm::vec3> PolyVertexNormals;
     PolyVertexNormals.AddZeroed(NumPts);
 
-	TArray<glm::uint>& TriIdx = SI.TriIdx;
+    TArray<glm::uint>& TriIdx = SI.TriIdx;
 
-	// Build per-vertex data for this node polygon
-	for (INT vi = 0; vi < NumPts; ++vi)
-	{
-        FVector Vert = SI.Verts(vi).TransformPointBy(Frame->Coords);
-        FVector Normal = SI.VertexNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+    // Build per-vertex data for this node polygon
+    if (SI.IsMover)
+    {
+        CachedMoverGeometry* CachedMesh = PerFrameMoverCache.Find(SI.iSurf);
+        if (!CachedMesh)
+        {
+            CachedMoverGeometry NewCache;
+            ExtractMoverVertices(SI, NewCache.Verts);      // world-space moved verts
+            PerFrameMoverCache.Set(SI.iSurf, NewCache);
+            CachedMesh = PerFrameMoverCache.Find(SI.iSurf);
+            // will fill in normals for movers in the triangle iteration
+        }
 
-		PolyVertices(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
-        PolyVertexNormals(vi) = glm::vec3(Normal.X, Normal.Y, Normal.Z);
-	}
+        for (INT vi = 0; vi < NumPts; ++vi)
+        {
+            FVector Vert   = CachedMesh->Verts(vi).TransformPointBy(Frame->Coords);
+            PolyVertices(vi)      = glm::vec3(Vert.X, Vert.Y, Vert.Z);
+        }
+    }
+    else
+    {
+        for (INT vi = 0; vi < NumPts; ++vi)
+        {
+            FVector Vert   = SI.Verts(vi).TransformPointBy(Frame->Coords);
+            FVector Normal = SI.VertexNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+
+            PolyVertices(vi)      = glm::vec3(Vert.X, Vert.Y, Vert.Z);
+            PolyVertexNormals(vi) = glm::vec3(Normal.X, Normal.Y, Normal.Z);
+        }
+    }
 
 	const INT numNodes = SI.Nodes.Num();
 	for (INT ni = 0; ni < numNodes; ++ni)
@@ -97,6 +118,20 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
 			const INT ia = TriIdx(ti);
 			const INT ib = TriIdx(ti + 1);
 			const INT ic = TriIdx(ti + 2);
+
+            if (SI.IsMover)
+            {
+                glm::vec3 A = PolyVertices(ia);
+                glm::vec3 B = PolyVertices(ib);
+                glm::vec3 C = PolyVertices(ic);
+                glm::vec3 N = glm::normalize(glm::cross(C - A, B - A));
+                glm::vec3 viewDir = glm::normalize(-A);  // A is view-space position
+                if (glm::dot(N, viewDir) < 0.0f) N = -N; // ensure normals always face us.  Possibly overkill
+                PolyVertexNormals(ia) = N;
+                PolyVertexNormals(ib) = N;
+                PolyVertexNormals(ic) = N;
+            }
+
 			Out->Coords     = PolyVertices(ia);
             Out->Normal     = PolyVertexNormals(ia);
             Out++;

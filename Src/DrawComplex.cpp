@@ -409,7 +409,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	// Any surfaces that do not contribute to SSAO in the prepass should not USE it.
 	// So any that are excluded from the prepass in UXOpenGLRenderDevice::SetSceneNode
 	// should be excluded here as well.
-	if (BumpMaps && AmbientOcclusion && IsSolidBSP && (SI && !SI->IsMover) && !(NextPolyFlags & PF_TwoSided)) // only works in per pixel
+	if (BumpMaps && AmbientOcclusion && IsSolidBSP && !(NextPolyFlags & PF_TwoSided)) // only works in per pixel
 	{
 		if (UsingBindlessTextures)
 		{

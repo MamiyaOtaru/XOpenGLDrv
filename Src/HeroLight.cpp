@@ -549,7 +549,7 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
             {
                 INT iSurf = AffectedFaceBSPSurfaces[FaceIndex](s);
                 UXOpenGLRenderDevice::FSurfInfo* pSI = GL->GetSurfInfoByID(iSurf);
-                if (pSI && !(pSI->PolyFlags & (PF_Translucent | PF_Invisible | PF_NotSolid | PF_Masked | PF_AlphaTexture | PF_Portal)))
+                if (pSI && !(pSI->PolyFlags & (PF_Translucent | PF_Invisible | PF_Masked | PF_AlphaTexture | PF_Portal))) // if stuff is occluding that shouldn't, re-add PF_NotSolid.  But that is about player/projectile passability not light
                 {
                     GL->DrawShadowMapSurface(Frame, *pSI, ActiveFaceVertexCount);
                 }
