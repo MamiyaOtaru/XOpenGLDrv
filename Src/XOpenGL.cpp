@@ -2234,10 +2234,6 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		FrustumPlanes[4] = FPlane(CameraPos + Forward * NearDist, Forward);
 		FrustumPlanes[5] = FPlane(CameraPos + Forward * FarDist, -Forward);
 
-
-		//FLOAT angleDeg = (acos(Forward | LeftNormal)) * 180.0f / PI;
-//debugf(TEXT("Left plane angle: %f deg"), angleDeg);
-
 		// Collect corona lights in frustum
 		//for (INT i = 0; i < NumLights; i++)
 		//{

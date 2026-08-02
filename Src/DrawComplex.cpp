@@ -624,7 +624,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			Shader->VertBuffer.Advance(emittedVerts);
 		} // end loop through Nodes
 	} // end if SI (with normal data)
-	else if (SI && ((HDLightMap && GOcclusionState == EOcclusionState::Ready) || (PhongShading && BumpMaps)))
+	else if (SI && ((HDLightMap && GOcclusionState == EOcclusionState::Ready) || (BumpMaps)))
 	{
 		const SurfaceBasis& Basis = SI->LightmapBasis;
 
@@ -844,7 +844,9 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			FacetVertexCount += (NumPts - 2) * 3;
 			Shader->VertBuffer.Advance((NumPts - 2) * 3);
 		} // end loop through polys
-	} // end if just straight up old path
+	} // end if just straight up old path (no Per Pixel lighting.
+	// TODO ensure we never get legitimate surfaces here with no SurfaceInfo as they would break with bogus normal data if we are in the per pixel path
+	// would need to assemble normal data like in the mover or no phong path.  Skipping for now as it seems all surfaces do get a SurfaceInfo
 		
 	Shader->DrawBuffer.EndDrawCall(FacetVertexCount);
 	Shader->ParametersBuffer.Advance(1);
