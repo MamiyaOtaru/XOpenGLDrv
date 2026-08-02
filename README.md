@@ -41,12 +41,12 @@ Rounds out the facets that the lambert term of per pixel lighting made too stron
 <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/1612a7cc-4cf3-487b-93f0-020cff1447fb" />
 
 # HD Occlusion Maps
-Level geometry casts shadows
+Level geometry casts shadows.  Generated on first run of each map.  Impacts frames a little, but once done once for a map it is cached and loaded from disk
 ## On:
 <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/6b299649-e0c7-4904-8b60-2a63cbd94fca" />
 
 # Screen Space Ambient Occlusion
-darkens corners a bit
+darkens corners a bit.  This shader is exposed in the shaders folder and can be tweaked to lessen or increase the effect.
 ## On:
 <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/3054e0c1-9911-477f-aa91-76b87997e22d" />
 
