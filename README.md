@@ -1,3 +1,68 @@
+# XOpenGLDrv: Enhanced OpenGL Renderer for Unreal Engine 1 - Experimental graphics fork
+
+Added features from upstream: 
+
+# Soft Sprites.  
+This is not configurable, it is just on.
+## Off (upstream):
+<img width="1274" height="664" alt="image" src="https://github.com/user-attachments/assets/84242612-62b9-4a5a-9cfa-a3bdd9b9a0d5" />
+<img width="1196" height="699" alt="image" src="https://github.com/user-attachments/assets/9dc78440-0c29-4c37-9630-c9d07b05e82b" />
+
+## On:
+<img width="1053" height="578" alt="image" src="https://github.com/user-attachments/assets/8729ecac-1669-4b58-9193-745bcf1112d3" />
+<img width="1047" height="578" alt="image" src="https://github.com/user-attachments/assets/caaebee4-ea78-460e-b6c4-922de6e05902" />
+
+# Corona Scaling.
+Toggleable.  If you prefer the original way (constant size) turn this off
+## Off:
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/ba2f68cf-35e3-4164-9dbf-ac8361940e22" />
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/24c854d8-e5bf-44b3-8ca6-f4179850ef34" />
+
+## On:
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/66dbe46b-025e-4f9c-b926-06a0c0e45dae" />
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/21163401-955e-4afc-b323-ee946353b3be" />
+
+# Parallax Occlusion Mapping
+Can load external heightmap files.  Improved to not cause holes in eg. DM-Gothic.  Minimizes skew at shallow grazing angles
+## Off:
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/5a0f511e-0517-4c29-8901-f5575d411356" />
+
+## On:
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/a5d3b6a1-3043-493e-b79f-2b75a5b09cda" />
+
+# Per Pixel Lighting
+Can be heavy on old hardware and on some third party maps
+## On:
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/3967d674-9a5b-4f5b-bfc7-7cd7db9e0d53" />
+
+# Phong Shading
+Rounds out the facets that the lambert term of per pixel lighting made too strong, and surfaces in general
+## On:
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/1612a7cc-4cf3-487b-93f0-020cff1447fb" />
+
+# HD Occlusion Maps
+Level geometry casts shadows
+## On:
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/6b299649-e0c7-4904-8b60-2a63cbd94fca" />
+
+# Screen Space Ambient Occlusion
+darkens corners a bit
+## On:
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/3054e0c1-9911-477f-aa91-76b87997e22d" />
+
+# Real time Shadow Mapping
+Players and pickups cast dynamic shadows.  Can be heavy.  Low medium and high increase the number shown, Holy Sh*t tries to keep above 60fps and can have many more shadow casters than High, but also less, depending on level complexity.  Set to off if it impacts frames too much
+## On:
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/85ab65c2-ad12-4c0a-9fc4-578c4cb7e4cd" />
+
+Open in tabs and flip back and forth to catch the subtler changes.  
+All features listed below Per Pixel Lighting require it to be on to function.
+
+
+
+
+Original upstream readme follows:
+
 # XOpenGLDrv: Enhanced OpenGL Renderer for Unreal Engine 1
 
 This repository hosts the source code for XOpenGLDrv. Smirftsch originally wrote
