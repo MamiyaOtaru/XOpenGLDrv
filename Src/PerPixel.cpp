@@ -951,6 +951,10 @@ float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& 
     if (Has(TEXT("dirt")) || Has(TEXT("mud")) || Has(TEXT("soil")) || Has(TEXT("sand")))
         return 0.8f;
 
+    // textiles
+    if (Has(TEXT("cloth")) || Has(TEXT("rug")) || Has(TEXT("carpet")) || Has(TEXT("sail")))
+        return 0.95f;
+
     // Default for everything else
     return 0.7f;
 }

@@ -1178,6 +1178,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		SSAO_Prog,
 		SsaoBlur_Prog,
 		SSR_Prog,
+		SsrBlur_Prog,
 		SSRComposite_Prog,
 		Max_Prog,
 	};
@@ -2034,6 +2035,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame);
 	void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations);
 	void UXOpenGLRenderDevice::RunSSRPass();
+	void UXOpenGLRenderDevice::RunSSRBlurPass(int iterations);
 	void UXOpenGLRenderDevice::RunSSRCompositePass();
 
 	std::vector<glm::vec3> SSAOKernel;
@@ -2455,21 +2457,19 @@ class UXOpenGLRenderDevice : public URenderDevice
 	};
 
 	//
-	// SSAO Blur Shader
+	// Generic blur program
 	//
-	class SsaoBlurProgram : public ShaderProgramImpl<NoVertex, NoParameters>
+	class BlurProgramBase : public ShaderProgramImpl<NoVertex, NoParameters>
 	{
 	public:
-		SsaoBlurProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
+		BlurProgramBase(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
 
-
-		// Required overrides (even if empty)
-		void CreateInputLayout() override {}   // fullscreen quad uses shared VAO
-		void MapBuffers() override {}          // no vertex buffer
-		void UnmapBuffers() override {}        // no parameters buffer
-		void Flush(bool Rotate) override {}    // no batching
-		void ActivateShader() override;        // call UseShader()
-		void DeactivateShader() override {}    // nothing to do
+		// Required overrides
+		void CreateInputLayout() override {}   // fullscreen quad
+		void MapBuffers() override {}
+		void UnmapBuffers() override {}
+		void Flush(bool Rotate) override {}
+		void ActivateShader() override;
 
 		// Uniform setters
 		void SetOffset(float x, float y);
@@ -2479,11 +2479,19 @@ class UXOpenGLRenderDevice : public URenderDevice
 		// Bind uniforms
 		void BindShaderState(CompiledShader* Spec) override;
 
-		GLint ssaoInputLoc;
+		GLint inputLoc;
 		GLint offsetLoc;
 		GLint resolutionLoc;
+	};
+	void UXOpenGLRenderDevice::RunBlurPass(BlurProgramBase* Shader, int iterations, int texUnit);
 
-	private:
+	//
+	// SSAO Blur Shader
+	//
+	class SsaoBlurProgram : public BlurProgramBase
+	{
+	public:
+		SsaoBlurProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
 	};
 
 	//
@@ -2515,6 +2523,20 @@ class UXOpenGLRenderDevice : public URenderDevice
 		void DeactivateShader();
 
 		void BindShaderState(CompiledShader* Spec);
+	};
+
+	//
+	// SSR Shader (Screen Space Reflections)
+	//
+	class SsrBlurProgram : public BlurProgramBase
+	{
+	public:
+		SsrBlurProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
+
+		void BindShaderState(CompiledShader* Spec) override;
+		void SetDepth(int unit);
+
+		GLint depthLoc;
 	};
 
 	//

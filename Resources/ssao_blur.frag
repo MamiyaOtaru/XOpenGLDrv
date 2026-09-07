@@ -7,6 +7,13 @@ uniform sampler2D image;
 uniform vec2 offset;
 uniform vec2 resolution;
 
+// -----------------------------------------
+// Bilateral threshold — tweak this freely.
+// Lower = sharper edges, less blur.
+// Higher = softer edges, more blur.
+// -----------------------------------------
+const float BILATERAL_THRESHOLD = 4;
+
 void main()
 {
     vec2 texel = 1.0 / resolution;
@@ -23,25 +30,25 @@ void main()
 
     // Tap 1
     vec4 s1 = texture(image, TexCoords + off1);
-    float w1 = max(0.0, 1.0 - abs(s1.r - centerAO) * 4.0) * 0.3162162162;
+    float w1 = max(0.0, 1.0 - abs(s1.r - centerAO) * BILATERAL_THRESHOLD) * 0.3162162162;
     color += s1 * w1;
     normalization += w1;
 
     s1 = texture(image, TexCoords - off1);
-    w1 = max(0.0, 1.0 - abs(s1.r - centerAO) * 4.0) * 0.3162162162;
+    w1 = max(0.0, 1.0 - abs(s1.r - centerAO) * BILATERAL_THRESHOLD) * 0.3162162162;
     color += s1 * w1;
     normalization += w1;
 
     // Tap 2
     vec4 s2 = texture(image, TexCoords + off2);
-    float w2 = max(0.0, 1.0 - abs(s2.r - centerAO) * 4.0) * 0.0702702703;
+    float w2 = max(0.0, 1.0 - abs(s2.r - centerAO) * BILATERAL_THRESHOLD) * 0.0702702703;
     color += s2 * w2;
     normalization += w2;
 
     s2 = texture(image, TexCoords - off2);
-    w2 = max(0.0, 1.0 - abs(s2.r - centerAO) * 4.0) * 0.0702702703;
+    w2 = max(0.0, 1.0 - abs(s2.r - centerAO) * BILATERAL_THRESHOLD) * 0.0702702703;
     color += s2 * w2;
     normalization += w2;
 
-    FragColor = vec4(color.rgba / normalization);//, 1.0);
+    FragColor = vec4(color.rgba / normalization);
 }

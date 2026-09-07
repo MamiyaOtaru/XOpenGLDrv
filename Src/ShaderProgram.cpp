@@ -712,6 +712,7 @@ void UXOpenGLRenderDevice::InitShaders()
 	Shaders[SSAO_Prog]				= new SSAOProgram(TEXT("DrawSSAO"), this);
 	Shaders[SsaoBlur_Prog]			= new SsaoBlurProgram(TEXT("DrawSSAOBlur"), this);
 	Shaders[SSR_Prog]				= new SSRProgram(TEXT("DrawSSR"), this);
+	Shaders[SsrBlur_Prog]			= new SsrBlurProgram(TEXT("DrawSSRBlur"), this);
 	Shaders[SSRComposite_Prog]		= new SSRCompositeProgram(TEXT("DrawSSRComposite"), this);
 
 

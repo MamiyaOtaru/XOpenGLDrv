@@ -261,13 +261,16 @@ void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame)
 
     unguard;
 }
-
-void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations)
+void UXOpenGLRenderDevice::RunBlurPass(
+    BlurProgramBase* Shader,
+    int iterations,
+    int texUnit
+)
 {
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ZERO);
-    SetProgram(SsaoBlur_Prog);
-    auto Shader = static_cast<SsaoBlurProgram*>(Shaders[SsaoBlur_Prog]);
+
+    Shader->ActivateShader();
 
     glViewport(0, 0, SceneWidth / 2, SceneHeight / 2);
     Shader->SetResolution(SceneWidth / 2, SceneHeight / 2);
@@ -275,35 +278,38 @@ void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations)
     for (int i = 0; i < iterations; i++)
     {
         //
-        // PASS 1 - Horizontal blur: SsaoFbo -> SsaoBlurFbo
+        // PASS 1 — Horizontal
         //
         SsaoBlurFbo->Bind();
 
-        glActiveTexture(GL_TEXTURE20);
-        glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
-
-        Shader->SetInput(20);
+        glActiveTexture(GL_TEXTURE0 + texUnit);
+        glBindTexture(GL_TEXTURE_2D, SsaoBlurFbo->colorTexIDs[0]);
+        Shader->SetInput(texUnit);
 
         Shader->SetOffset(1.0f, 0.0f);
-
         DrawFullscreenQuad();
         Shader->Flush(false);
 
         //
-        // PASS 2 - Vertical blur: SsaoBlurFbo -> SsaoFbo
+        // PASS 2 — Vertical
         //
         SsaoFbo->Bind();
 
-        glActiveTexture(GL_TEXTURE20);
-        glBindTexture(GL_TEXTURE_2D, SsaoBlurFbo->colorTexIDs[0]);
-
-        Shader->SetInput(20);
+        glActiveTexture(GL_TEXTURE0 + texUnit);
+        glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
+        Shader->SetInput(texUnit);
 
         Shader->SetOffset(0.0f, 1.0f);
-
         DrawFullscreenQuad();
         Shader->Flush(false);
     }
+}
+
+void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations)
+{
+    SetProgram(SsaoBlur_Prog);
+    auto Shader = static_cast<SsaoBlurProgram*>(Shaders[SsaoBlur_Prog]);
+    RunBlurPass(Shader, iterations, 20);
 }
 
 void UXOpenGLRenderDevice::PreparePrepassDepthTexture()
@@ -377,9 +383,22 @@ void UXOpenGLRenderDevice::RunSSRPass()
     Shader->Flush(false);
 
     // Optional blur for roughness
-    RunSSAOBlurPass(3);
+    RunSSRBlurPass(1);
 
     unguard;
+}
+
+void UXOpenGLRenderDevice::RunSSRBlurPass(int iterations)
+{
+    SetProgram(SsrBlur_Prog);
+    auto Shader = static_cast<SsrBlurProgram*>(Shaders[SsrBlur_Prog]);
+
+    // SSR blur needs depth (already bound from before
+    //glActiveTexture(GL_TEXTURE21);
+    //glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[1]);
+    Shader->SetDepth(21);
+
+    RunBlurPass(Shader, iterations, 20);
 }
 
 void UXOpenGLRenderDevice::RunSSRCompositePass()

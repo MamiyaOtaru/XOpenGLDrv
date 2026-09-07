@@ -98,7 +98,7 @@ void main()
     vec4 buf = texture(uSSRBuffer, TexCoords);
 
     float depth  = buf.r;
-    float roughness = buf.g;
+    float roughness = fract(buf.g * 2);
     vec2 oct = buf.ba;
     
     vec3 normal = decodeOctNormal(oct);
@@ -136,29 +136,29 @@ void main()
         float delta = rayPos.z - sceneDepth;
         if (delta > 0.0)
         {
-        if (delta <= uStepSize*1.25)
-        {
-            // this tends to break object reflection.  Since often the wall can't see the side closer to me
-            // and I can't see the side closer to the wall (what should be reflected, but is not in the buffer)
-            // if I ever cache whether it was BSP or mesh, I could apply a strict normal facing test to BSP
-            // but still reflect meshes even if physically I strictly shouldn't reflect their front faces
-            //vec2 hitOct = hitBuf.ba;
-            //vec3 hitNormal = decodeOctNormal(hitOct);
-            //float facing = dot(hitNormal, -R);
-            //if (facing > 0.0 || true) {
-
-            vec4 hitColor = texture(uSceneColor, suv);
-
-            float distAtten = 1.0 - float(i) / float(uMaxSteps);
-            float roughAtten = 1.0 - roughness;
-            float edgeFade = clamp(min(
-                min(suv.x, 1.0 - suv.x),
-                min(suv.y, 1.0 - suv.y)
-            ) * 5.0, 0.0, 1.0);
-
-            result = vec4(hitColor.rgb, distAtten * roughAtten * edgeFade);
+            if (delta <= uStepSize*1.25)
+            {
+                // rays can go behind objects and emerge from them
+                // so light can bounce around a pillar.  When only stop when the distance is small (we are at a surface)
+                // then, if BSP check normals to see if it is in fact visible from the reflector.  For meshes, cheat
+                // since the back of eg a health pack looks like the front.  Allows the part we see to be reflected by the wall
+                // even if the wall can't see that part.  Prevents it from disappearing when we are precisely in line with the object and the wall's perpendicular
+                bool isMesh = (floor(hitBuf.g * 2) >= 1);
+                vec2 hitOct = hitBuf.ba;
+                vec3 hitNormal = decodeOctNormal(hitOct);
+                float facing = dot(hitNormal, R);
+                if (isMesh || facing > 0.0) {
+                    vec4 hitColor = texture(uSceneColor, suv);
+                    float distAtten = 1.0 - float(i) / float(uMaxSteps);
+                    float roughAtten = 1.0 - roughness;
+                    float edgeFade = clamp(min(
+                        min(suv.x, 1.0 - suv.x),
+                        min(suv.y, 1.0 - suv.y)
+                    ) * 5.0, 0.0, 1.0);
+                    result = vec4(hitColor.rgb, distAtten * roughAtten * edgeFade);
+                }
+                break;
             }
-            break;
         }
     }
     

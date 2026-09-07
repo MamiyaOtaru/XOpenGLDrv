@@ -395,7 +395,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="BlurPass.cpp" />
+    <ClCompile Include="BlurProgram.cpp" />
     <ClCompile Include="BspCache.cpp" />
     <ClCompile Include="CheckExtensions.cpp" />
     <ClCompile Include="DebugLog.cpp" />
@@ -426,8 +426,7 @@
     <ClCompile Include="ShaderLoader.cpp" />
     <ClCompile Include="ShaderProgram.cpp" />
     <ClCompile Include="ShadowMapping.cpp" />
-    <ClCompile Include="SSAOPass.cpp" />
-    <ClCompile Include="SSGIPass.cpp" />
+    <ClCompile Include="SSAOProgram.cpp" />
     <ClCompile Include="SSRProgram.cpp" />
     <ClCompile Include="StbImpl.cpp" />
     <ClCompile Include="XOpenGL.cpp" />
