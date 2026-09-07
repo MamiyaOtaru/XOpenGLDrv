@@ -923,7 +923,7 @@ float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& 
 	if (Surface.PolyFlags & PF_Environment)
         return 0.05f; // chrome like surfaces are very smooth
 
-    FString Name = Surface.Texture->Texture->GetFullName();
+    FString Name = Surface.Texture->Texture->GetName();
     Name = Name.Locs();
 
     auto Has = [&](const TCHAR* Sub) -> bool
@@ -936,7 +936,7 @@ float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& 
         return 0.2f;
 
     // Glass
-    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")))
+    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")))
         return 0.05f;
 
     // Stone / rock / brick

@@ -551,7 +551,7 @@ UXOpenGLRenderDevice::DrawGouraudProgram::DrawGouraudProgram(const TCHAR* Name, 
 		ShaderCompilationOptions::OPT_DistanceFog |
 		ShaderCompilationOptions::OPT_ClipDistance |
 		ShaderCompilationOptions::OPT_Editor |
-		ShaderCompilationOptions::OPT_SimulateMultiPass |
+		ShaderCompilationOptions::OPT_ScreenSpaceReflections |
 		ShaderCompilationOptions::OPT_GeometryShaders |
 		ShaderCompilationOptions::OPT_MSAA;
 }

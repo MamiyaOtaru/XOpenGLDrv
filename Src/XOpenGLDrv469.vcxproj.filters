@@ -118,6 +118,9 @@
     <ClCompile Include="GLStateManager.cpp">
       <Filter>Src</Filter>
     </ClCompile>
+    <ClCompile Include="SSRProgram.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Inc\XOpenGL.h">

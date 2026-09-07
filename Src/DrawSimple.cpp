@@ -274,8 +274,7 @@ UXOpenGLRenderDevice::DrawSimpleLineProgram::DrawSimpleLineProgram(const TCHAR* 
 	FragmentShaderFunc				= &BuildFragmentShader;
 	RelevantSpecializationOptions =
 		ShaderCompilationOptions::OPT_ClipDistance |
-		ShaderCompilationOptions::OPT_Editor |
-		ShaderCompilationOptions::OPT_SimulateMultiPass;
+		ShaderCompilationOptions::OPT_Editor;
 }
 
 void UXOpenGLRenderDevice::DrawSimpleLineProgram::CreateInputLayout()
@@ -322,8 +321,7 @@ UXOpenGLRenderDevice::DrawSimpleTriangleProgram::DrawSimpleTriangleProgram(const
 	FragmentShaderFunc				= &BuildFragmentShader;
 	RelevantSpecializationOptions =
 		ShaderCompilationOptions::OPT_ClipDistance |
-		ShaderCompilationOptions::OPT_Editor |
-		ShaderCompilationOptions::OPT_SimulateMultiPass;
+		ShaderCompilationOptions::OPT_Editor;
 }
 
 void UXOpenGLRenderDevice::DrawSimpleTriangleProgram::CreateInputLayout()

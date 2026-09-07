@@ -7,15 +7,11 @@ extern "C"
 #include "XOpenGLDrv.h"
 
 Fbo::Fbo(int w, int h,
-         int samples,
-         int numColorAttachments,
-         bool depthTexture,
-         bool depthRbo,
-         GLenum colorFormat)
-    : width(w), height(h), samples(samples)
+        int samples,
+        const std::vector<GLenum>& colorFormats,
+        bool depthTexture,
+        bool depthRbo): width(w), height(h), samples(samples)
 {
-    if (colorFormat == 0)
-        colorFormat = GL_RGBA8; 
     // Save previous FBO
     prevFbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&prevFbo);
@@ -25,33 +21,40 @@ Fbo::Fbo(int w, int h,
     glBindFramebuffer(GL_FRAMEBUFFER, fboID);
 
     // --- COLOR ATTACHMENTS ---
-    colorTexIDs.resize(numColorAttachments);
+    colorTexIDs.resize(colorFormats.size());
 
-    GLenum externalFormat;
-    GLenum type;
-
-    switch (colorFormat)
+    for (int i = 0; i < colorFormats.size(); i++)
     {
-        case GL_RGB16F:
-        case GL_RGB32F:
-            externalFormat = GL_RGB;
-            type = GL_FLOAT;
-            break;
+        GLenum internalFormat = colorFormats[i];
+        if (internalFormat == 0)
+            internalFormat = GL_RGBA8; 
+        GLenum externalFormat;
+        GLenum type;
+        GLenum filtering;
 
-        case GL_RGBA16F:
-        case GL_RGBA32F:
-            externalFormat = GL_RGBA;
-            type = GL_FLOAT;
-            break;
+        switch (internalFormat)
+        {
+            case GL_RGB16F:
+            case GL_RGB32F:
+                externalFormat = GL_RGB;
+                type = GL_FLOAT;
+                filtering = GL_NEAREST;
+                break;
 
-        default: // GL_RGBA8 or similar
-            externalFormat = GL_RGBA;
-            type = GL_UNSIGNED_BYTE;
-            break;
-    }
+            case GL_RGBA16F:
+            case GL_RGBA32F:
+                externalFormat = GL_RGBA;
+                type = GL_FLOAT;
+                filtering = GL_NEAREST;
+                break;
 
-    for (int i = 0; i < numColorAttachments; i++)
-    {
+            default: // GL_RGBA8, GL_RGB8, etc.
+                externalFormat = (internalFormat == GL_RGB8 ? GL_RGB : GL_RGBA);
+                type = GL_UNSIGNED_BYTE;
+                filtering = GL_LINEAR;
+                break;
+        }
+
         glGenTextures(1, &colorTexIDs[i]);
 
         if (samples > 1)
@@ -62,7 +65,7 @@ Fbo::Fbo(int w, int h,
             glTexImage2DMultisample(
                 GL_TEXTURE_2D_MULTISAMPLE,
                 samples,
-                colorFormat,        // <-- use the chosen internal format
+                internalFormat,        // <-- use the chosen internal format
                 width, height,
                 GL_TRUE
             );
@@ -83,7 +86,7 @@ Fbo::Fbo(int w, int h,
             glTexImage2D(
                 GL_TEXTURE_2D,
                 0,
-                colorFormat,        // <-- use the chosen internal format
+                internalFormat,        // <-- use the chosen internal format
                 width, height,
                 0,
                 externalFormat,     // <-- derived from internal format
@@ -91,8 +94,8 @@ Fbo::Fbo(int w, int h,
                 nullptr
             );
 
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtering);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtering);
 
             glFramebufferTexture2D(
                 GL_FRAMEBUFFER,

@@ -410,9 +410,9 @@ UXOpenGLRenderDevice::DrawTileCoreProgram::DrawTileCoreProgram(const TCHAR* Name
 	RelevantSpecializationOptions =
 		ShaderCompilationOptions::OPT_ClipDistance |
 		ShaderCompilationOptions::OPT_Editor |
-		ShaderCompilationOptions::OPT_SimulateMultiPass |
 		ShaderCompilationOptions::OPT_GeometryShaders |
-		ShaderCompilationOptions::OPT_MSAA;
+		ShaderCompilationOptions::OPT_MSAA |
+		ShaderCompilationOptions::OPT_ScreenSpaceReflections;
 }
 
 void UXOpenGLRenderDevice::DrawTileCoreProgram::CreateInputLayout()

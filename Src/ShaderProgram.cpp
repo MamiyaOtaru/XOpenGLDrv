@@ -711,8 +711,8 @@ void UXOpenGLRenderDevice::InitShaders()
 	Shaders[Prepass_Prog]			= new DrawPrepassProgram(TEXT("DrawPrepass"), this);
 	Shaders[SSAO_Prog]				= new SSAOProgram(TEXT("DrawSSAO"), this);
 	Shaders[SsaoBlur_Prog]			= new SsaoBlurProgram(TEXT("DrawSSAOBlur"), this);
-    Shaders[SSGI_Prog]				= new SSGIProgram(TEXT("DrawSSGI"), this);
-    Shaders[SSGIComposite_Prog]		= new SSGICompositeProgram(TEXT("DrawSSGIComposite"), this);
+	Shaders[SSR_Prog]				= new SSRProgram(TEXT("DrawSSR"), this);
+	Shaders[SSRComposite_Prog]		= new SSRCompositeProgram(TEXT("DrawSSRComposite"), this);
 
 
 	// (Re)initialize UBOs
@@ -1011,16 +1011,14 @@ void UXOpenGLRenderDevice::ShaderCompilationOptions::SetOptionsForRendererConfig
 		SetOption(OPT_PhongShading);
 	if (RenDev->AmbientOcclusion)
 		SetOption(OPT_AmbientOcclusion);
-	if (RenDev->IndirectIllumination)
-		SetOption(OPT_IndirectIllumination);
+	if (RenDev->ScreenSpaceReflections)
+		SetOption(OPT_ScreenSpaceReflections);
 	if (RenDev->HDLightMap)
 		SetOption(OPT_HDLightMap);
 	if (RenDev->ShadowMaps != ShadowMaps_Disabled)
 		SetOption(OPT_ShadowMaps);
 	if (RenDev->UseAA)
 		SetOption(OPT_MSAA);
-	if (RenDev->SimulateMultiPass)
-		SetOption(OPT_SimulateMultiPass);
 	if (RenDev->UseHWLighting)
 		SetOption(OPT_HWLighting);
 	if (RenDev->OpenGLVersion == GL_Core)
@@ -1055,13 +1053,12 @@ AddOptionFunc(Result, L ## #x, (OptionsMask & x) ? true : false);
 	ADD_OPTION(OPT_HeightMaps)
 	ADD_OPTION(OPT_PhongShading)
 	ADD_OPTION(OPT_AmbientOcclusion)
-	ADD_OPTION(OPT_IndirectIllumination)
+    ADD_OPTION(OPT_ScreenSpaceReflections)
 	ADD_OPTION(OPT_HDLightMap)
 	ADD_OPTION(OPT_ShadowMaps)
 	ADD_OPTION(OPT_MSAA)
 	ADD_OPTION(OPT_EnvironmentMaps)
     ADD_OPTION(OPT_DistanceFog)
-    ADD_OPTION(OPT_SimulateMultiPass)
     ADD_OPTION(OPT_HWLighting)
     ADD_OPTION(OPT_GeometryShaders)
     ADD_OPTION(OPT_BindlessTextures)

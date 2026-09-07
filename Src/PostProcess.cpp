@@ -65,7 +65,6 @@ void UXOpenGLRenderDevice::DeleteSSAONoiseTexture()
     createdNoise = FALSE;
 }
 
-
 static float randFloat()
 {
     return float(rand()) / float(RAND_MAX);
@@ -160,7 +159,6 @@ void UXOpenGLRenderDevice::DeleteFullscreenQuad()
         FullscreenVAO = 0;
     }
 }
-
 
 void UXOpenGLRenderDevice::DrawFullscreenQuad()
 {
@@ -266,6 +264,8 @@ void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame)
 
 void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations)
 {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ZERO);
     SetProgram(SsaoBlur_Prog);
     auto Shader = static_cast<SsaoBlurProgram*>(Shaders[SsaoBlur_Prog]);
 
@@ -309,7 +309,7 @@ void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations)
 void UXOpenGLRenderDevice::PreparePrepassDepthTexture()
 {
     // GBuffer depth
-    if ((AmbientOcclusion || IndirectIllumination) && gbufferFbo && gbufferFbo->depthTexID)
+    if ((AmbientOcclusion) && gbufferFbo && gbufferFbo->depthTexID)
     {
         if (UsingBindlessTextures)
         {
@@ -322,146 +322,96 @@ void UXOpenGLRenderDevice::PreparePrepassDepthTexture()
     }
 }
 
-void UXOpenGLRenderDevice::RunIndirectIlluminationPass()
+void UXOpenGLRenderDevice::RunSSRPass()
 {
-    guard(UXOpenGLRenderDevice::RunIndirectIlluminationPass);
+    guard(UXOpenGLRenderDevice::RunSSRPass);
 
-    float IndirectRadius    = 113.0f;
-    float IndirectBias      = 3.0f;
-    float IndirectIntensity = 5.0f;
-
-    // Reuse SSAO noise texture
-    GLuint SsaoNoiseTex = CreateSSAONoiseTexture();
-
-    // Reuse SSAO half-res FBO for raw SSGI
+    // Write raw SSR result into SsaoFbo (reuse half-res FBO)
     SsaoFbo->Bind();
     glViewport(0, 0, SceneWidth / 2, SceneHeight / 2);
 
-    glDisable(GL_BLEND);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ZERO);
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
 
-    glClearColor(0, 0, 0, 1);
+    glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // Activate SSGI shader
-    SetProgram(SSGI_Prog);
-    auto Shader = static_cast<SSGIProgram*>(Shaders[SSGI_Prog]);
+    // Activate SSR shader
+    SetProgram(SSR_Prog);
+    auto Shader = static_cast<SSRProgram*>(Shaders[SSR_Prog]);
 
     // ------------------------------------------------------------
-    // Bind textures (same pattern as SSAO)
+    // Bind textures
     // ------------------------------------------------------------
 
+    // solid surfaces that can show up in reflections
     glActiveTexture(GL_TEXTURE20);
-    glBindTexture(GL_TEXTURE_2D, gbufferFbo->depthTexID);
-    glGenerateMipmap(GL_TEXTURE_2D); // mipmap for distance independent SSAO speed. Originators make their own in a shader to avoid something or other. Consider
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[2]);
 
+    // SSRBuffer (depth + roughness + oct normal)
     glActiveTexture(GL_TEXTURE21);
-    glBindTexture(GL_TEXTURE_2D, gbufferFbo->colorTexIDs[0]); // normals
-    glGenerateMipmap(GL_TEXTURE_2D);
-
-    glActiveTexture(GL_TEXTURE22);
-    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[0]); // color
-    glGenerateMipmap(GL_TEXTURE_2D);
-
-    glActiveTexture(GL_TEXTURE23);
-    glBindTexture(GL_TEXTURE_2D, SsaoNoiseTex);
-
-    if (Shader->uDepth != -1)
-        glUniform1i(Shader->uDepth, 20);
-
-    if (Shader->uNormal != -1)
-        glUniform1i(Shader->uNormal, 21);
-
-    if (Shader->uAlbedo != -1)
-        glUniform1i(Shader->uAlbedo, 22);
-
-    if (Shader->uNoise != -1)
-        glUniform1i(Shader->uNoise, 23);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[1]);
 
     // ------------------------------------------------------------
-    // SSGI parameters
+    // SSR parameters (per-frame)
     // ------------------------------------------------------------
 
     if (Shader->uScreenSize != -1)
         glUniform2f(Shader->uScreenSize, float(SceneWidth), float(SceneHeight));
 
-    if (Shader->uRadius != -1)
-        glUniform1f(Shader->uRadius, IndirectRadius);
+    if (Shader->uMaxSteps != -1)
+        glUniform1i(Shader->uMaxSteps, 64);
 
-    if (Shader->uBias != -1)
-        glUniform1f(Shader->uBias, IndirectBias);
+    if (Shader->uStepSize != -1)
+        glUniform1f(Shader->uStepSize, 25.0f);
 
-    if (Shader->uIntensity != -1)
-        glUniform1f(Shader->uIntensity, IndirectIntensity);
-
-    // ------------------------------------------------------------
-    // Kernel (reuse SSAO kernel)
-    // ------------------------------------------------------------
-    const int kernelSize = 64;
-
-    if (SSAOKernel.empty())
-        SSAOKernel = GenerateSSAOKernel(kernelSize);
-
-    for (int i = 0; i < kernelSize; i++)
-    {
-        if (Shader->uSamples[i] != -1)
-            glUniform3fv(Shader->uSamples[i], 1, &SSAOKernel[i].x);
-    }
-
-    if (Shader->uKernelSize != -1)
-        glUniform1i(Shader->uKernelSize, kernelSize);
+    if (Shader->uFadeDistance != -1)
+        glUniform1f(Shader->uFadeDistance, 4096.0f);
 
     // ------------------------------------------------------------
     // Draw fullscreen quad
     // ------------------------------------------------------------
     DrawFullscreenQuad();
-
     Shader->Flush(false);
 
-    // ------------------------------------------------------------
-    // Blur indirect (reuse SSAO blur path)
-    // ------------------------------------------------------------
-    RunSSAOBlurPass(5);
+    // Optional blur for roughness
+    RunSSAOBlurPass(3);
 
     unguard;
 }
 
-void UXOpenGLRenderDevice::RunIndirectCompositePass()
+void UXOpenGLRenderDevice::RunSSRCompositePass()
 {
-    guard(UXOpenGLRenderDevice::RunIndirectCompositePass);
+    guard(UXOpenGLRenderDevice::RunSSRCompositePass);
 
-    // Write into CompositeFbo (full-res final color)
     CompositeFbo->Bind();
     glViewport(0, 0, SceneWidth, SceneHeight);
 
     glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
-    
-    SetProgram(SSGIComposite_Prog);
-    auto Shader = static_cast<SSGICompositeProgram*>(Shaders[SSGIComposite_Prog]);
-    
-    // Direct (forward) color
+
+    SetProgram(SSRComposite_Prog);
+    auto Shader = static_cast<SSRCompositeProgram*>(Shaders[SSRComposite_Prog]);
+
+    // Direct color
     glActiveTexture(GL_TEXTURE20);
     glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[0]);
 
-    // Albedo
+    // SSR result (blurred half-res)
     glActiveTexture(GL_TEXTURE21);
-    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[2]);
-
-    // Indirect (blurred half-res)
-    glActiveTexture(GL_TEXTURE22);
     glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
 
-    if (Shader->uDirect != -1)
-        glUniform1i(Shader->uDirect, 20);
+    // SSRBuffer (roughness mask)
+    glActiveTexture(GL_TEXTURE22);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[1]);
 
-    if (Shader->uAlbedo != -1)
-        glUniform1i(Shader->uAlbedo, 21);
-
-    if (Shader->uIndirect != -1)
-        glUniform1i(Shader->uIndirect, 22);
+    // UI
+    glActiveTexture(GL_TEXTURE23);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[3]);
 
     DrawFullscreenQuad();
 
@@ -469,4 +419,5 @@ void UXOpenGLRenderDevice::RunIndirectCompositePass()
 
     unguard;
 }
+
 

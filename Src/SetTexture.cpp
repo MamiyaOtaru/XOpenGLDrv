@@ -1073,23 +1073,17 @@ void UXOpenGLRenderDevice::SetBlend(DWORD PolyFlags)
 			}
 			else if (PolyFlags & PF_Translucent)
 			{
-                if (SimulateMultiPass)//( !(PolyFlags & PF_Mirrored)
-                {
-                    //debugf(TEXT("PolyFlags %ls ActiveProgram %i"), *GetPolyFlagString(PolyFlags), ActiveProgram);
-					glBlendFunc(GL_SRC_ALPHA, GL_SRC1_COLOR);
-                }
-                else glBlendFunc( GL_ONE, GL_ONE_MINUS_SRC_COLOR );
-                /*
-                else
-                {
-                    glBlendFunc( GL_ZERO, GL_SRC_COLOR ); //Mirrors!
-                    //debugf(TEXT("Mirror"));
-                }
-                */
+				glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR);
 			}
 			else if (PolyFlags & PF_Modulated)
 			{
-				glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
+				if (ScreenSpaceReflections)
+				{
+					glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+				}
+				else {
+					glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
+				}
 			}
 			else if (PolyFlags & PF_AlphaBlend)
 			{

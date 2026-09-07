@@ -247,17 +247,11 @@ void main(void)
 void UXOpenGLRenderDevice::DrawGouraudProgram::BuildFragmentShader(GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out)
 {
     Out << R"(
-#if OPT_GLES
 layout(location = 0) out vec4 FragColor;
-# if OPT_SimulateMultiPass
-layout(location = 1) out vec4 FragColor1;
+# if OPT_ScreenSpaceReflections
+layout(location = 1) out vec4 SSRBuffer;
+layout(location = 2) out vec4 SolidSurfaces;
 # endif
-#else
-# if OPT_SimulateMultiPass
-layout(location = 0, index = 1) out vec4 FragColor1;
-# endif
-layout(location = 0, index = 0) out vec4 FragColor;
-#endif
 
 #if OPT_GeometryShaders
 in GeometryData
@@ -545,12 +539,38 @@ void main(void)
     TotalColor.a = 1.0;
   }
 
-#if OPT_SimulateMultiPass
-  FragColor = TotalColor;
-  FragColor1 = ((vec4(1.0) - TotalColor * LightColor)); //no, this is not entirely right, TotalColor has already LightColor applied. But will blow any fog/transparency otherwise. However should not make any (visual) difference here for this equation. Any better idea?
-#else
-  FragColor = TotalColor;
+#if OPT_ScreenSpaceReflections
+  if ((DrawFlags & DF_Modulated) == DF_Modulated)
+  {
+    // modulated smoke
+    float intensity = dot(TotalColor.rgb, vec3(0.3333));
+    float vis = abs(intensity - 0.5) * 2.0;
+    //vis *= TotalColor.a;
+    if (intensity < .5) {
+        TotalColor.rgb = vec3(0,0,0);
+    }
+    else {
+        TotalColor.rgb = vec3(1,1,1);
+    }
+    TotalColor.a = vis;
+  }
+
+  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_Modulated) != DF_Modulated) {
+    float depth = gl_FragCoord.z;   // already 0..1
+    vec3 N = vec3(1.0, 0.0, 0.0);//ViewNormal;
+    vec2 oct = N.xy / (abs(N.x) + abs(N.y) + abs(N.z));
+    if (N.z < 0.0) {
+        oct = (1.0 - abs(oct.yx)) * vec2(
+            N.x >= 0.0 ? 1.0 : -1.0,
+            N.y >= 0.0 ? 1.0 : -1.0
+        );
+    }
+    vec2 octPacked = (oct + 1.0) / 2.0;
+    SSRBuffer = vec4(depth, 1, oct.x, oct.y);
+    SolidSurfaces = vec4(TotalColor.rgb, 1.0);
+  }
 #endif
+  FragColor = TotalColor;
 
 #if !OPT_Editor
   if ((DrawFlags & DF_Modulated) != DF_Modulated)

@@ -898,14 +898,13 @@ UXOpenGLRenderDevice::DrawComplexProgram::DrawComplexProgram(const TCHAR* Name, 
 		ShaderCompilationOptions::OPT_HeightMaps |
 		ShaderCompilationOptions::OPT_PhongShading |
 		ShaderCompilationOptions::OPT_AmbientOcclusion |
-		ShaderCompilationOptions::OPT_IndirectIllumination |
+		ShaderCompilationOptions::OPT_ScreenSpaceReflections |
 		ShaderCompilationOptions::OPT_HDLightMap |
 		ShaderCompilationOptions::OPT_MSAA |
 		ShaderCompilationOptions::OPT_HWLighting |
 		ShaderCompilationOptions::OPT_DistanceFog |
 		ShaderCompilationOptions::OPT_ClipDistance |
-		ShaderCompilationOptions::OPT_Editor |
-		ShaderCompilationOptions::OPT_SimulateMultiPass;
+		ShaderCompilationOptions::OPT_Editor;
 }
 
 void UXOpenGLRenderDevice::DrawComplexProgram::CreateInputLayout()

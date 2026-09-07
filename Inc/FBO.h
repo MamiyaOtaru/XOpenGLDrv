@@ -28,14 +28,11 @@ public:
     GLuint depthSampler = 0;
     GLuint64 depthBindlessHandle = 0;
  
-    // NOTE: no GL_RGBA8 here – just a plain GLenum with a default 0
-    Fbo(int W,
-        int H,
-        int InSamples,
-        int NumColorAttachments,
-        bool bDepthTexture,
-        bool bDepthRbo,
-        GLenum colorFormat = 0);
+    Fbo(int w, int h,
+        int samples,
+        const std::vector<GLenum>& colorFormats,
+        bool depthTexture,
+        bool depthRbo);
 
     // special constructor for cubemap FBOs (single FBO for single face)
     Fbo(int size, GLuint sharedColorCubemapID, GLuint sharedDepthCubemapID, int faceIndex);

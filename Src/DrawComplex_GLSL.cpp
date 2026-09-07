@@ -77,7 +77,8 @@ out vec2 vBumpTexCoords;
 #endif
 
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
-out mat3 vTBNMat_geo;
+out mat3 vViewToTangentMat_geo;
+out mat3 vTangentToViewMat_geo;
 out vec3 vN;
 out vec3 vT;
 out vec3 vB;
@@ -192,7 +193,8 @@ void main(void)
   vec3 B_geo = normalize(vec3(MapCoordsYAxis.x, MapCoordsYAxis.y, MapCoordsYAxis.z));
   vec3 N_geo = normalize(vec3(MapCoordsZAxis.x, MapCoordsZAxis.y, MapCoordsZAxis.z));
 
-  vTBNMat_geo = transpose(mat3(T_geo, B_geo, N_geo));
+  vTangentToViewMat_geo = mat3(T_geo, B_geo, N_geo);
+  vViewToTangentMat_geo = transpose(vTangentToViewMat_geo);
 
   vec3 T_smooth = T_geo;
   vec3 B_smooth = B_geo;
@@ -428,7 +430,8 @@ in vec2 vBumpTexCoords;
 #endif
 
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
-in mat3 vTBNMat_geo;
+in mat3 vViewToTangentMat_geo;
+in mat3 vTangentToViewMat_geo;
 in vec3 vN;
 in vec3 vT;
 in vec3 vB;
@@ -438,29 +441,13 @@ in vec3 vB;
 in vec4 vEyeSpacePos;
 #endif
 
-#if OPT_GLES
 // Primary color output
-  layout(location = 0) out vec4 FragColor;
+layout(location = 0) out vec4 FragColor;
 
-  #if OPT_SimulateMultiPass
-    layout(location = 1) out vec4 FragColor1;
-  #endif
-
-  #if OPT_IndirectIllumination
-    // Albedo output for SSDO/SSGI
-    layout(location = 2) out vec4 Albedo;
-  #endif
-#else // Desktop GL
-  #if OPT_SimulateMultiPass
-    layout(location = 0, index = 1) out vec4 FragColor1;
-  #endif
-
-  layout(location = 0, index = 0) out vec4 FragColor;
-
-  #if OPT_IndirectIllumination
-    // Albedo output for SSDO/SSGI
-    layout(location = 2) out vec4 Albedo;
-  #endif
+#if OPT_ScreenSpaceReflections
+  // transparency depth and roughness for SSR
+  layout(location = 1) out vec4 SSRBuffer;
+  layout(location = 2) out vec4 SolidSurfaces;
 #endif
     )";
 
@@ -647,6 +634,23 @@ vec3 applyReinhard(vec3 color, float threshold) {
     // Scale back up to target ceiling
     return curved * vec3(threshold);
 }
+// A mathematically true branchless sign function (returns only -1.0 or 1.0)
+vec2 trueSign(vec2 v) {
+    // step(0.0, v) returns 1.0 if v >= 0.0, else 0.0
+    // Multiplying by 2 and subtracting 1 maps 1.0->1.0 and 0.0->-1.0
+    return step(0.0, v) * 2.0 - 1.0;
+}
+
+// 1. TRUE BRANCHLESS ENCODE
+vec2 encodeOctNormal(vec3 N) {
+    vec2 oct = N.xy / (abs(N.x) + abs(N.y) + abs(N.z));
+    
+    // Mix replaces the 'if (N.z < 0.0)' branch
+    // step(N.z, 0.0) returns 1.0 if N.z is negative, 0.0 if positive
+    vec2 folded = (1.0 - abs(oct.yx)) * trueSign(oct.xy);
+    oct = mix(oct, folded, step(N.z, 0.0));
+    return oct;
+}
     )";
     Out << R"(
 void main(void)
@@ -666,7 +670,8 @@ void main(void)
 
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
 #if OPT_PhongShading
-  mat3 TBNMat;
+  mat3 ViewToTangentMat;
+  mat3 TangentToViewMat;
   if ((DrawFlags & DF_PhongShading) == DF_PhongShading) {
     vec3 N = normalize(vN);
     vec3 T = normalize(vT);
@@ -675,14 +680,17 @@ void main(void)
     // Optional safety: re-orthogonalize T and B
     T = normalize(T - N * dot(N, T));
     B = normalize(B - N * dot(N, B) - T * dot(T, B));
+    TangentToViewMat = mat3(T, B, N);
     // Build TBN (view space -> tangent space)
-    TBNMat = transpose(mat3(T, B, N));
+    ViewToTangentMat = transpose(TangentToViewMat);
   }
   else {
-    TBNMat = vTBNMat_geo;
+    TangentToViewMat = vTangentToViewMat_geo;
+    ViewToTangentMat = vViewToTangentMat_geo;
   }
 #else
-  mat3 TBNMat = vTBNMat_geo;
+  mat3 TangentToViewMat = vTangentToViewMat_geo;
+  mat3 ViewToTangentMat = vViewToTangentMat_geo;
 #endif
 
 #endif
@@ -696,7 +704,7 @@ void main(void)
   if ((DrawFlags & DF_HeightMap) == DF_HeightMap) {
     float parallaxHeight = 1.0;
     // get new texture coordinates from Parallax Mapping
-    vec3 TangentViewDir = normalize(vTBNMat_geo * -vCoords.xyz);
+    vec3 TangentViewDir = normalize(ViewToTangentMat * -vCoords.xyz);
     texCoords = ParallaxMapping(vTexCoords, TangentViewDir, GetTexHandleHelper(vDrawID, HeightMapIndex), parallaxHeight);
   
     vec2 f = fract(vTexCoords);
@@ -733,9 +741,6 @@ void main(void)
   Color.a *= GetDiffuseInfo(vDrawID).z;
 
   TotalColor = ApplyPolyFlags(Color, DrawFlags);
-#if OPT_IndirectIllumination
-  Albedo = vec4(TotalColor.rgb, 1.0);
-#endif
   vec4 LightColor = vec4(1.0);
   vec4 Occlusion = vec4(1.0);
 
@@ -891,13 +896,27 @@ return;
   {
     float MinLight = 0.05f;
 
-    vec3 TextureNormal;
-    if ((DrawFlags & DF_BumpMap) == DF_BumpMap)
-      TextureNormal = normalize(GetTexel(GetTexHandles(vDrawID, 2).zw, Texture5, texCoords).rgb * 2.0 - 1.0); // has to be texCoords instead of vBumpTexCoords, otherwise alignment won't work on bumps.
-    else
-      TextureNormal = TBNMat * vNormal;
+    vec3 TangentNormal;
+    vec3 ViewNormal;
+    if ((DrawFlags & DF_BumpMap) == DF_BumpMap) {
+      TangentNormal = normalize(GetTexel(GetTexHandles(vDrawID, 2).zw, Texture5, texCoords).rgb * 2.0 - 1.0); // has to be texCoords instead of vBumpTexCoords, otherwise alignment won't work on bumps.
+      ViewNormal = normalize(TangentToViewMat * TangentNormal);
+    }
+    else {
+      TangentNormal = ViewToTangentMat * vNormal;
+      ViewNormal = vNormal;
+    }
 
     float rough = DrawDrawComplexParams[vDrawID].Roughness;
+    // TODO allow roughness map (would need to bind another texture)
+#if OPT_ScreenSpaceReflections
+  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth) {
+    float depth = gl_FragCoord.z;   // already 0..1
+    vec3 N = ViewNormal;
+    vec2 oct = encodeOctNormal(N);
+    SSRBuffer = vec4(depth, rough, oct.x, oct.y);
+  }
+#endif
 
     vec3 totalStaticLight = vec3(0.0);
     vec3 totalSubtractedLight = vec3(0.0);
@@ -1019,11 +1038,10 @@ return;
       vec3 V;
 
       // Tangent-space lighting using normal map
-      vec3 TexN = TextureNormal; // already normalized
-      N = TexN;
-      vec3 TangentLightDir = normalize(TBNMat * (InLightPos - vCoords));
+      N = TangentNormal; // already normalized
+      vec3 TangentLightDir = normalize(ViewToTangentMat * (InLightPos - vCoords));
       L = normalize(TangentLightDir);
-      vec3 TangentViewDir = normalize(TBNMat * -vCoords.xyz);
+      vec3 TangentViewDir = normalize(ViewToTangentMat * -vCoords.xyz);
       V = TangentViewDir;
 
       float diff;
@@ -1246,12 +1264,13 @@ return;
     TotalColor.rgb *= proximityFade;
   }    
 
-#if OPT_SimulateMultiPass
-  FragColor = TotalColor;
-  FragColor1 = ((vec4(1.0) - TotalColor) * LightColor);
-#else
-  FragColor = TotalColor;
+#if OPT_ScreenSpaceReflections
+  // draw solid surfaces to apear in reflections
+  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth) {
+    SolidSurfaces = vec4(TotalColor.rgb, 1.0);
+  }
 #endif
+  FragColor = TotalColor;
 
 #if !OPT_Editor
   if ((DrawFlags & DF_Modulated) != DF_Modulated)

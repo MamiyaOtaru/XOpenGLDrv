@@ -478,7 +478,6 @@ class UXOpenGLRenderDevice : public URenderDevice
 	BITFIELD BumpMaps;
 	BITFIELD NoAATiles;
 	BITFIELD GenerateMipMaps;
-	BITFIELD SimulateMultiPass;
 	BITFIELD UseOpenGLDebug;
 	BITFIELD NoDrawComplexSurface;
 	BITFIELD NoDrawGouraud;
@@ -505,10 +504,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 	// Dumb bling
 	BITFIELD PhongShading;
 	BITFIELD AmbientOcclusion;
-	BITFIELD IndirectIllumination;
 	BITFIELD HDLightMap;
 	BITFIELD CoronaScaling;
 	BYTE ShadowMaps;
+	BITFIELD ScreenSpaceReflections;
 
 	FLOAT GammaMultiplier;
 	FLOAT GammaMultiplierUED;
@@ -1178,8 +1177,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 		Prepass_Prog,
 		SSAO_Prog,
 		SsaoBlur_Prog,
-		SSGI_Prog,
-		SSGIComposite_Prog,
+		SSR_Prog,
+		SSRComposite_Prog,
 		Max_Prog,
 	};
 
@@ -1238,28 +1237,27 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 			// Renderer features
 			OPT_DistanceFog        = 1 << 5,
-			OPT_SimulateMultiPass  = 1 << 6,
-			OPT_HWLighting         = 1 << 7,
+			OPT_HWLighting         = 1 << 6,
 
 			// Hardware / driver capabilities
-			OPT_GLCore             = 1 << 8,
-			OPT_GLES               = 1 << 9,
-			OPT_GeometryShaders    = 1 << 10,
-			OPT_BindlessTextures   = 1 << 11,
-			OPT_PersistentBuffers  = 1 << 12,
-			OPT_ShaderDrawParameters = 1 << 13,
-			OPT_ClipDistance       = 1 << 14,
+			OPT_GLCore             = 1 << 7,
+			OPT_GLES               = 1 << 8,
+			OPT_GeometryShaders    = 1 << 9,
+			OPT_BindlessTextures   = 1 << 10,
+			OPT_PersistentBuffers  = 1 << 11,
+			OPT_ShaderDrawParameters = 1 << 12,
+			OPT_ClipDistance       = 1 << 13,
 
 			// Editor
-			OPT_Editor             = 1 << 15,
+			OPT_Editor             = 1 << 14,
 
 			// Additional renderer features
-			OPT_PhongShading       = 1 << 16,
-			OPT_AmbientOcclusion   = 1 << 17,
-			OPT_IndirectIllumination = 1 << 18,
-			OPT_MSAA               = 1 << 19,
-			OPT_HDLightMap		   = 1 << 20,
-			OPT_ShadowMaps		   = 1 << 21
+			OPT_PhongShading       = 1 << 15,
+			OPT_AmbientOcclusion   = 1 << 16,
+			OPT_ScreenSpaceReflections = 1 << 17,
+			OPT_MSAA               = 1 << 18,
+			OPT_HDLightMap		   = 1 << 19,
+			OPT_ShadowMaps		   = 1 << 20
 		};
 
 
@@ -2035,8 +2033,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	std::vector<glm::vec3> UXOpenGLRenderDevice::GenerateSSAOKernel(int total);
 	void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame);
 	void UXOpenGLRenderDevice::RunSSAOBlurPass(int iterations);
-	void UXOpenGLRenderDevice::RunIndirectIlluminationPass();
-	void UXOpenGLRenderDevice::RunIndirectCompositePass();
+	void UXOpenGLRenderDevice::RunSSRPass();
+	void UXOpenGLRenderDevice::RunSSRCompositePass();
 
 	std::vector<glm::vec3> SSAOKernel;
 
@@ -2489,34 +2487,22 @@ class UXOpenGLRenderDevice : public URenderDevice
 	};
 
 	//
-	// SSGI Shader (Indirect Illumination)
+	// SSR Shader (Screen Space Reflections)
 	//
-	class SSGIProgram : public ShaderProgramImpl<NoVertex, NoParameters>
+	class SSRProgram : public ShaderProgramImpl<NoVertex, NoParameters>
 	{
 	public:
-		SSGIProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
+		SSRProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
 
 		// Samplers
-		GLint uDepth      = -1;   // gDepth
-		GLint uNormal     = -1;   // gNormal
-		GLint uAlbedo     = -1;   // gAlbedo
-		GLint uNoise      = -1;   // texNoise
+		GLint uSceneColor   = -1;   // ResolveFbo color0
+		GLint uSSRBuffer    = -1;   // ResolveFbo color1 (depth+rough+oct normal)
 
-		// Kernel + params
-		GLint uKernelSize = -1;
-		GLint uRadius     = -1;
-		GLint uBias       = -1;
-		GLint uIntensity  = -1;
-
-		// Matrices
-		GLint uProj       = -1;
-		GLint uInvProj    = -1;
-
-		// Screen size
-		GLint uScreenSize = -1;
-
-		// Kernel sample array
-		GLint uSamples[64];
+		// Params
+		GLint uScreenSize   = -1;
+		GLint uMaxSteps     = -1;
+		GLint uStepSize     = -1;
+		GLint uFadeDistance = -1;
 
 		// Fullscreen quad uses its own VAO/VBO
 		void CreateInputLayout() {}
@@ -2532,18 +2518,18 @@ class UXOpenGLRenderDevice : public URenderDevice
 	};
 
 	//
-	// SSGI Composite Shader (adds indirect light to forward color)
+	// SSR Composite Shader (blends reflections into forward color)
 	//
-	class SSGICompositeProgram : public ShaderProgramImpl<NoVertex, NoParameters>
+	class SSRCompositeProgram : public ShaderProgramImpl<NoVertex, NoParameters>
 	{
 	public:
-		SSGICompositeProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev)
+		SSRCompositeProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev)
 			: ShaderProgramImpl(Name, RenDev)
 		{
 			VertexBufferSize             = 0;
 			ParametersBufferSize         = 0;
 			ParametersBufferBindingIndex = 0;
-			NumTextureSamplers           = 3;   // direct, albedo, indirect
+			NumTextureSamplers           = 4;   // direct, ssr, ssrBuffer, ui
 			DrawMode                     = GL_TRIANGLES;
 			UseSSBOParametersBuffer      = false;
 			ParametersInfo               = nullptr;
@@ -2553,29 +2539,31 @@ class UXOpenGLRenderDevice : public URenderDevice
 			FragmentShaderFunc = nullptr;
 
 			bUseExternalShaders = true;
-			ExternalVertexPath   = TEXT("xopengl/shaders/ssgi_composite.vert");
-			ExternalFragmentPath = TEXT("xopengl/shaders/ssgi_composite.frag");
+			ExternalVertexPath   = TEXT("xopengl/shaders/ssr_composite.vert");
+			ExternalFragmentPath = TEXT("xopengl/shaders/ssr_composite.frag");
 		}
 
 		// Samplers
-		GLint uDirect   = -1;   // uDirect        (ResolveFbo color)
-		GLint uAlbedo   = -1;   // uAlbedo        (gbuffer albedo)
-		GLint uIndirect = -1;   // uIndirect      (blurred half-res SSGI)
+		GLint uDirect     = -1;   // ResolveFbo color0
+		GLint uSSR        = -1;   // SsaoFbo color0 (SSR result)
+		GLint uSSRBuffer  = -1;   // ResolveFbo color1 (depth+rough+oct normal)
+		GLint uUI		  = -1;   // ResolveFbo color3 (UI)
 
-		// Fullscreen quad uses its own VAO/VBO
 		void CreateInputLayout() {}
 
 		void BindShaderState(CompiledShader* Spec)
 		{
 			ShaderProgramImpl::BindShaderState(Spec);
 
-			GetUniformLocation(Spec, uDirect,   "uDirect");
-			GetUniformLocation(Spec, uAlbedo,   "uAlbedo");
-			GetUniformLocation(Spec, uIndirect, "uIndirect");
+			GetUniformLocation(Spec, uDirect,    "uDirect");
+			GetUniformLocation(Spec, uSSR,       "uSSR");
+			GetUniformLocation(Spec, uSSRBuffer, "uSSRBuffer");
+			GetUniformLocation(Spec, uUI,		 "uUI");
 
-			if (uDirect   != -1) glUniform1i(uDirect,   0);
-			if (uAlbedo   != -1) glUniform1i(uAlbedo,   1);
-			if (uIndirect != -1) glUniform1i(uIndirect, 2);
+			if (uDirect    != -1) glUniform1i(uDirect,    20);
+			if (uSSR       != -1) glUniform1i(uSSR,       21);
+			if (uSSRBuffer != -1) glUniform1i(uSSRBuffer, 22);
+			if (uUI		   != -1) glUniform1i(uUI,		  23);
 		}
 
 		void MapBuffers() {}

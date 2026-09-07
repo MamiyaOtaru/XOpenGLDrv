@@ -171,7 +171,7 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	new(GetClass(), TEXT("ParallaxVersion"), RF_Public)UByteProperty(CPP_PROPERTY(ParallaxVersion), TEXT("Options"), CPF_Config, ParallaxVersions);
 	new(GetClass(), TEXT("PhongShading"), RF_Public)UBoolProperty(CPP_PROPERTY(PhongShading), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("AmbientOcclusion"), RF_Public)UBoolProperty(CPP_PROPERTY(AmbientOcclusion), TEXT("Options"), CPF_Config);
-	new(GetClass(), TEXT("IndirectIllumination"), RF_Public)UBoolProperty(CPP_PROPERTY(IndirectIllumination), TEXT("Options"), CPF_Config);
+	new(GetClass(), TEXT("ScreenSpaceReflections"), RF_Public)UBoolProperty(CPP_PROPERTY(ScreenSpaceReflections), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("HDLightMap"), RF_Public)UBoolProperty(CPP_PROPERTY(HDLightMap), TEXT("Options"), CPF_Config);
 	new(GetClass(), TEXT("ShadowMaps"), RF_Public)UByteProperty(CPP_PROPERTY(ShadowMaps), TEXT("Options"), CPF_Config, ShadowMapLevels);
 	new(GetClass(), TEXT("CoronaScaling"), RF_Public)UBoolProperty(CPP_PROPERTY(CoronaScaling), TEXT("Options"), CPF_Config);
@@ -183,7 +183,6 @@ void UXOpenGLRenderDevice::StaticConstructor()
 
 	// Experimental stuff (still being worked on).
 	new(GetClass(), TEXT("UseSRGBTextures"), RF_Public)UBoolProperty(CPP_PROPERTY(UseSRGBTextures), TEXT("Options"), CPF_Config);
-	new(GetClass(), TEXT("SimulateMultiPass"), RF_Public)UBoolProperty(CPP_PROPERTY(SimulateMultiPass), TEXT("Options"), CPF_Config);
 
 #if UNREAL_OLDUNREAL
 	new(GetClass(), TEXT("UseHWLighting"), RF_Public)UBoolProperty(CPP_PROPERTY(UseHWLighting), TEXT("Options"), CPF_Config);
@@ -245,7 +244,6 @@ void UXOpenGLRenderDevice::StaticConstructor()
 	BumpMaps = 1;
 	PhongShading = 1;
 	AmbientOcclusion = 1;
-	IndirectIllumination = 0; // this one is too heavy, and doesn't look all that great
 	HDLightMap = 1;
 	ShadowMaps = ShadowMaps_HolyShit; // TODO possibly lower the default ;)
 	CoronaScaling = 1;
@@ -463,7 +461,6 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	debugf(NAME_DevLoad, TEXT("AlwaysMipmap %i"), AlwaysMipmap);
 	debugf(NAME_DevLoad, TEXT("NoFiltering %i"), NoFiltering);
 	debugf(NAME_DevLoad, TEXT("UseSRGBTextures %i"),UseSRGBTextures);
-	debugf(NAME_DevLoad, TEXT("SimulateMultiPass %i"),SimulateMultiPass);
 	debugf(NAME_DevLoad, TEXT("GammaMultiplier %f"),GammaMultiplier);
     debugf(NAME_DevLoad, TEXT("GammaMultiplierUED %f"),GammaMultiplierUED);
 
@@ -473,7 +470,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
 	debugf(NAME_DevLoad, TEXT("ParallaxVersion %i (%ls)"),ParallaxVersion, ParallaxVersion == Parallax_Basic ? TEXT("Basic") : ParallaxVersion == Parallax_Occlusion ? TEXT("Occlusion") : ParallaxVersion == Parallax_Relief ? TEXT("Relief") : TEXT("Disabled"));
 	debugf(NAME_DevLoad, TEXT("PhongShading %i"), PhongShading);
 	debugf(NAME_DevLoad, TEXT("AmbientOcclusion %i"), AmbientOcclusion);
-	debugf(NAME_DevLoad, TEXT("IndirectIllumiunation %i"), IndirectIllumination);
+	debugf(NAME_DevLoad, TEXT("ScreenSpaceReflections %i"),ScreenSpaceReflections);
 	debugf(NAME_DevLoad, TEXT("HDLightMap %i"), HDLightMap);
 	debugf(NAME_DevLoad, TEXT("ShadowMaps %i (%ls)"), ShadowMaps, ShadowMaps == ShadowMaps_Low ? TEXT("Low") : ShadowMaps == ShadowMaps_Medium ? TEXT("Medium") : ShadowMaps == ShadowMaps_High ? TEXT("High") : ShadowMaps == ShadowMaps_HolyShit ? TEXT("HolyShit"): TEXT("Disabled"));
 	debugf(NAME_DevLoad, TEXT("CoronaScaling %i"), CoronaScaling);
@@ -607,9 +604,7 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
             debugf(TEXT("XOpenGL: Disabling PhongShading (requires PersistentBuffers)"));
         if (AmbientOcclusion)
             debugf(TEXT("XOpenGL: Disabling AmbientOcclusion (requires PersistentBuffers)"));
-		if (IndirectIllumination)
-            debugf(TEXT("XOpenGL: Disabling IndirectIllumination (requires PersistentBuffers)"));
-        if (HDLightMap)
+		if (HDLightMap)
             debugf(TEXT("XOpenGL: Disabling HDLightMap (requires PersistentBuffers)"));
 		if (ShadowMaps)
             debugf(TEXT("XOpenGL: Disabling ShadowMaps (requires PersistentBuffers)"));
@@ -617,7 +612,6 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
         BumpMaps     = 0;
         PhongShading = 0;
         AmbientOcclusion    = 0;
-		IndirectIllumination = 0;
         HDLightMap   = 0;
 		ShadowMaps = 0;
 
@@ -625,16 +619,12 @@ UBOOL UXOpenGLRenderDevice::Init(UViewport* InViewport, INT NewX, INT NewY, INT 
         FindField<UBoolProperty>(GetClass(), TEXT("PerPixelLighting"))    ->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("PhongShading"))->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("AmbientOcclusion"))   ->PropertyFlags |= CPF_EditConst;
-        FindField<UBoolProperty>(GetClass(), TEXT("IndirectIllumination"))   ->PropertyFlags |= CPF_EditConst;
         FindField<UBoolProperty>(GetClass(), TEXT("HDLightMap"))  ->PropertyFlags |= CPF_EditConst;
         FindField<UByteProperty>(GetClass(), TEXT("ShadowMaps"))  ->PropertyFlags |= CPF_EditConst;
     }
 
 	if (OpenGLVersion == GL_ES)
     {
-		if (SimulateMultiPass)
-            GWarn->Logf(TEXT("OpenGL ES does not support SimulateMultiPass at this time, disabling SimulateMultiPass"));
-        SimulateMultiPass = false;
 		SupportsGLSLInt64 = SupportsSSBO = false;
     }
 
@@ -1394,7 +1384,12 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 		SceneWidth,
 		SceneHeight,
 		Samples,
-		3,
+		{
+			GL_RGBA8,     // finalColor
+			GL_RGBA32F,   // SSRBuffer (depth + rough + oct)
+			GL_RGBA8,      // things that show in reflections
+			GL_RGBA8      // UI, when splitting that out (SSR)
+		},
 		TRUE,   // depth texture (active depth buffer)
 		FALSE   // no depth RBO
 	);
@@ -1405,7 +1400,12 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 			SceneWidth,
 			SceneHeight,
 			1,          // single-sample
-			3,          // color0 = finalColor, color1 = simulateMultipassSomething *if* GLES, color2 = albedo
+			{
+				GL_RGBA8,     // finalColor
+				GL_RGBA32F,   // SSRBuffer (depth + rough + oct)
+				GL_RGBA8,      // things that show in reflections
+				GL_RGBA8      // UI, when splitting that out (SSR)
+			},
 			FALSE,      // no depth needed
 			FALSE
 		);
@@ -1418,21 +1418,26 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 		SceneWidth,
 		SceneHeight,
 		1,          // single-sample
-		2,          // color0 = finalColor, color1 = albedo
+		{
+			GL_RGBA8,
+			GL_RGBA8
+		},          // color0 = finalColor, color1 = albedo
 		FALSE,      // no depth needed
 		FALSE
 	);
 
-    //if (AmbientOcclusion || IndirectIllumination) // just make these so turning on from off doesn't die
+    //if (AmbientOcclusion) // just make these so turning on from off doesn't die
     {
         gbufferFbo = new Fbo(
             SceneWidth,
             SceneHeight,
             1,      // single-sample
-            2,      // color0 = normals, color1 = albedo
+            {
+				GL_RGBA16F,
+				GL_RGBA8
+			},      // color0 = normals, color1 = albedo
             TRUE,   // depth texture (SSAO needs depth)
-            FALSE,  // no depth RBO
-			GL_RGB16F  // for normals
+            FALSE  // no depth RBO
         );
 
 		// Half-res SSAO
@@ -1440,7 +1445,9 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 			SceneWidth / 2,
 			SceneHeight / 2,
 			1,
-			1,      // AO only
+			{
+				GL_RGBA8
+			},
 			FALSE,
 			FALSE
 		);
@@ -1449,7 +1456,9 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 			SceneWidth / 2,
 			SceneHeight / 2,
 			1,
-			1,
+			{
+				GL_RGBA8
+			},
 			FALSE,
 			FALSE
 		);
@@ -2275,9 +2284,9 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			FVector P = L->Location;
 
 			// 1) World -> view: same as DrawComplex
-			FVector V = P.TransformPointBy(Frame->Coords); // this is what you already do for geometry
+			FVector V = P.TransformPointBy(Frame->Coords); // this is what we already do for geometry
 
-			// 2) View -> clip: use the same modelviewprojMat you send to the shader
+			// 2) View -> clip: use the same modelviewprojMat we send to the shader
 			const auto FrameState = FrameStateBuffer.GetElementPtr(0);
 			glm::vec4 viewPos(V.X, V.Y, V.Z, 1.0f);
 			glm::vec4 clipPos = FrameState->modelviewprojMat * viewPos;
@@ -2304,7 +2313,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 	} // end if CoronaScaling
 
 	// Depth prepass into gbufferFbo (for SSAO / indirect illumination)
-	if ((AmbientOcclusion || IndirectIllumination) && !DepthPrepassDone && LastLevel && !LastLevel->IsEntry)
+	if ((AmbientOcclusion) && !DepthPrepassDone && LastLevel && !LastLevel->IsEntry)
 	{
 		gbufferFbo->Bind();
 		glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -2680,6 +2689,19 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 	SceneFbo->Bind();
 	glViewport(0, 0, SceneWidth, SceneHeight);
 
+	if (ScreenSpaceReflections)
+	{
+		GLenum bufs[] = {
+			GL_COLOR_ATTACHMENT0,
+			GL_COLOR_ATTACHMENT1,
+			GL_COLOR_ATTACHMENT2,
+			GL_COLOR_ATTACHMENT3
+		};
+		glDrawBuffers(4, bufs);
+		glClearColor(0, 0, 0, 0);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	}
+
 	// Clear the Z buffer if needed.
 	glClearColor(ScreenClear.X, ScreenClear.Y, ScreenClear.Z, ScreenClear.W);
 		
@@ -2866,7 +2888,7 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 	// Unlock and render.
 	check(LockCount == 1);
 
-	const bool DoPost = (IndirectIllumination != 0); // or some other post processing, like bloom
+	const bool DoPost = (ScreenSpaceReflections != 0); // or some other post processing, like bloom
 	if (DoPost) 
 	{
 		if (ActiveProgram != No_Prog)
@@ -2888,7 +2910,7 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 			glBindFramebuffer(GL_READ_FRAMEBUFFER, SceneFbo->fboID);
 			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ResolveFbo->fboID);
 
-			// Resolve color0
+			// Resolve color0 (final color, minus UI if doing reflections)
 			glReadBuffer(GL_COLOR_ATTACHMENT0);
 			glDrawBuffer(GL_COLOR_ATTACHMENT0);
 			glBlitFramebuffer(
@@ -2898,15 +2920,38 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 				GL_NEAREST
 			);
 
-			// Resolve color2 (albedo)
-			glReadBuffer(GL_COLOR_ATTACHMENT2);
-			glDrawBuffer(GL_COLOR_ATTACHMENT2);
-			glBlitFramebuffer(
-				0, 0, SceneWidth, SceneHeight,
-				0, 0, SceneWidth, SceneHeight,
-				GL_COLOR_BUFFER_BIT,
-				GL_NEAREST
-			);
+			if (ScreenSpaceReflections)
+			{
+				// Resolve color1 (ssr depth, roughness and normals packed)
+				glReadBuffer(GL_COLOR_ATTACHMENT1);
+				glDrawBuffer(GL_COLOR_ATTACHMENT1);
+				glBlitFramebuffer(
+					0, 0, SceneWidth, SceneHeight,
+					0, 0, SceneWidth, SceneHeight,
+					GL_COLOR_BUFFER_BIT,
+					GL_NEAREST
+				);
+
+				// Resolve color2 (things that show up in reflections)
+				glReadBuffer(GL_COLOR_ATTACHMENT2);
+				glDrawBuffer(GL_COLOR_ATTACHMENT2);
+				glBlitFramebuffer(
+					0, 0, SceneWidth, SceneHeight,
+					0, 0, SceneWidth, SceneHeight,
+					GL_COLOR_BUFFER_BIT,
+					GL_NEAREST
+				);
+
+				// Resolve color3 (UI, if doing SSR and UI needs to be split out)
+				glReadBuffer(GL_COLOR_ATTACHMENT3);
+				glDrawBuffer(GL_COLOR_ATTACHMENT3);
+				glBlitFramebuffer(
+					0, 0, SceneWidth, SceneHeight,
+					0, 0, SceneWidth, SceneHeight,
+					GL_COLOR_BUFFER_BIT,
+					GL_NEAREST
+				);
+			}
         }
         else
         {
@@ -2914,8 +2959,11 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
             // (this was already set up in SetRes)
         }
 
-        RunIndirectIlluminationPass();
-		RunIndirectCompositePass();
+		if (ScreenSpaceReflections)
+		{
+			RunSSRPass();
+            RunSSRCompositePass();
+		}
 
 		// Blit from composite FBO to default framebuffer
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, CompositeFbo->fboID);
@@ -2971,20 +3019,6 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, SsaoFbo->fboID);
 		glReadBuffer(GL_COLOR_ATTACHMENT0);
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-
-		glBlitFramebuffer(
-			0, 0, SceneWidth/2, SceneHeight/2,
-			0, 0, SceneWidth, SceneHeight,
-			GL_COLOR_BUFFER_BIT,
-			GL_NEAREST
-		);
-	}*/
-	/*if (IndirectIllumination && LastLevel && !LastLevel->IsEntry)
-	{
-		glBindFramebuffer(GL_READ_FRAMEBUFFER, SsaoFbo->fboID);
-		glReadBuffer(GL_COLOR_ATTACHMENT0);
-		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-		//glDrawBuffer(GL_BACK);
 
 		glBlitFramebuffer(
 			0, 0, SceneWidth/2, SceneHeight/2,
@@ -3380,7 +3414,7 @@ void UXOpenGLRenderDevice::Exit()
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("ParallaxVersion"), *FString::Printf(TEXT("%ls"), ParallaxVersion == Parallax_Basic ? TEXT("Basic") : ParallaxVersion == Parallax_Occlusion ? TEXT("Occlusion") : ParallaxVersion == Parallax_Relief ? TEXT("Relief") : TEXT("None")));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("PhongShading"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(PhongShading)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("AmbientOcclusion"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(AmbientOcclusion)));
-	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("IndirectIllumination"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(IndirectIllumination)));
+	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("ScreenSpaceReflections"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(ScreenSpaceReflections)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("HDLightMap"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(HDLightMap)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("ShadowMaps"), *FString::Printf(TEXT("%ls"), ShadowMaps == ShadowMaps_Low ? TEXT("Low") : ShadowMaps == ShadowMaps_Medium ? TEXT("Medium") : ShadowMaps == ShadowMaps_High ? TEXT("High") : ShadowMaps == ShadowMaps_HolyShit ? TEXT("HolyShit") : TEXT("None")));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("CoronaScaling"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(CoronaScaling)));
@@ -3395,7 +3429,6 @@ void UXOpenGLRenderDevice::Exit()
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("Coronas"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(Coronas)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("ShinySurfaces"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(ShinySurfaces)));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("VolumetricLighting"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(VolumetricLighting)));
-	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("SimulateMultiPass"), *FString::Printf(TEXT("%ls"), *GetTrueFalse(SimulateMultiPass)));
 
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("MaxAnisotropy"), *FString::Printf(TEXT("%f"), MaxAnisotropy));
 	GConfig->SetString(TEXT("XOpenGLDrv.XOpenGLRenderDevice"), TEXT("LODBias"), *FString::Printf(TEXT("%f"), LODBias));

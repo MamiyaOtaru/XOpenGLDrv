@@ -47,17 +47,12 @@ void main(void)
 )";
 
 static const char* SimpleFragmentShader = R"(
-#if OPT_GLES
+# if OPT_ScreenSpaceReflections
+// draw to our own color attachment to composite in after reflections etc are resolved
+layout(location = 3) out vec4 FragColor;
+# else
 layout(location = 0) out vec4 FragColor;
-# if OPT_SimulateMultiPass
-layout ( location = 1 ) out vec4 FragColor1;
 # endif
-#else
-# if OPT_SimulateMultiPass
-layout(location = 0, index = 1) out vec4 FragColor1;
-# endif
-layout(location = 0, index = 0) out vec4 FragColor;
-#endif
 
 void main(void)
 {
@@ -69,9 +64,6 @@ void main(void)
     discard;
 #endif
 
-#if OPT_SimulateMultiPass
-  FragColor1 = vec4(1.0, 1.0, 1.0, 1.0) - TotalColor;
-#endif
 FragColor = TotalColor;
 
 #if OPT_Editor

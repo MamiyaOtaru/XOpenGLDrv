@@ -68,9 +68,6 @@ void UXOpenGLRenderDevice::DrawTileESProgram::BuildFragmentShader(GLuint ShaderT
 {
 	Out << R"(
 layout(location = 0) out vec4 FragColor;
-#if OPT_SimulateMultiPass
-layout ( location = 1 ) out vec4 FragColor1;
-#endif
 
 in VertexData
 {
@@ -89,12 +86,7 @@ void main(void)
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
     TotalColor = GammaCorrect(Gamma, TotalColor);
 
-#if OPT_SimulateMultiPass
   FragColor = TotalColor;
-  FragColor1 = vec4(1.0, 1.0, 1.0, 1.0) - TotalColor;
-#else
-  FragColor = TotalColor;
-#endif
 }
 )";
 }
@@ -266,10 +258,12 @@ void main()
 void UXOpenGLRenderDevice::DrawTileCoreProgram::BuildFragmentShader(GLuint ShaderType, UXOpenGLRenderDevice* GL, FShaderWriterX& Out)
 {
 	Out << R"(
-#if OPT_SimulateMultiPass
-layout(location = 0, index = 1) out vec4 FragColor1;
-#endif
-layout(location = 0, index = 0) out vec4 FragColor;
+# if OPT_ScreenSpaceReflections
+// draw to our own color attachment to composite in after reflections etc are resolved
+layout(location = 3) out vec4 FragColor;
+# else
+layout(location = 0) out vec4 FragColor;
+# endif
 
 in GeometryData
 {
@@ -350,12 +344,46 @@ void main(void)
     }
     else
     {    
-        // pretty much rocket secondary smoke trail
+        // pretty much only rocket secondary smoke trail
         TotalColor.a *= proximityFade;
     }
   }
 
-
+#if OPT_ScreenSpaceReflections
+// Compute unified visibility
+float vis = 1;
+if ((DrawFlags & DF_AlphaBlended) == DF_AlphaBlended)
+{
+    // true alpha-blend mode (UI, at least text)
+    vis = TotalColor.a;
+}
+else if ((DrawFlags & DF_Modulated) == DF_Modulated)
+{
+    // modulated smoke (decals are in DrawGouraud)
+    // TODO eventually need to separate out alpha/modulated from additive (explosions etc) and blend both separately.  
+    // No way to have modulated and additive coexist in the same buffer without making the modulated stuff all additive itself 
+    // made secondary rocket smoke white for now pending that refactor
+    /* // into buffer to be alpha blended later (add if to draw to different output)
+    float intensity = dot(TotalColor.rgb, vec3(0.3333));
+    vis = abs(intensity - 0.5) * 2.0;
+    vis = 1 - vis;
+    vis *= vis*vis;
+    vis = 1 - vis;
+    vis *= TotalColor.a;
+    if (intensity < .5) {
+        TotalColor.rgb = vec3(0,0,0);
+    }
+    else {
+        TotalColor.rgb = vec3(1,1,1);
+    }
+    */
+    // into buffer that will be blended additively
+    float intensity = dot(TotalColor.rgb, vec3(0.3333));
+    vis = abs(intensity - 0.5) * 2.0;
+    TotalColor.rgb = vec3(vis, vis, vis);
+}
+TotalColor.a = vis;
+#endif
 
 #if OPT_Editor
   if ((DrawFlags & DF_Selected) == DF_Selected)
@@ -368,12 +396,7 @@ void main(void)
     TotalColor = GetDrawColor(DrawID);
 #endif
 
-#if OPT_SimulateMultiPass
   FragColor = TotalColor;
-  FragColor1 = vec4(1.0, 1.0, 1.0, 1.0) - TotalColor;
-#else
-  FragColor = TotalColor;
-#endif
 }
 )";
 }
