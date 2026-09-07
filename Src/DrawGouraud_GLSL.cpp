@@ -566,7 +566,7 @@ void main(void)
         );
     }
     vec2 octPacked = (oct + 1.0) / 2.0;
-    SSRBuffer = vec4(depth, 1, oct.x, oct.y);
+    SSRBuffer = vec4(depth, .9999, oct.x, oct.y);
     SolidSurfaces = vec4(TotalColor.rgb, 1.0);
   }
 #endif

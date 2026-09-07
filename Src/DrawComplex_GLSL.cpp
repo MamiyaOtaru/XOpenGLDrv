@@ -914,7 +914,8 @@ return;
     float depth = gl_FragCoord.z;   // already 0..1
     vec3 N = ViewNormal;
     vec2 oct = encodeOctNormal(N);
-    SSRBuffer = vec4(depth, rough, oct.x, oct.y);
+    float packedRough = rough * .4999;
+    SSRBuffer = vec4(depth, packedRough, oct.x, oct.y);
   }
 #endif
 
