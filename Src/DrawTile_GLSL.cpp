@@ -261,6 +261,7 @@ void UXOpenGLRenderDevice::DrawTileCoreProgram::BuildFragmentShader(GLuint Shade
 # if OPT_ScreenSpaceReflections
 // draw to our own color attachment to composite in after reflections etc are resolved
 layout(location = 3) out vec4 FragColor;
+layout(location = 4) out vec4 FragColorAlpha;
 # else
 layout(location = 0) out vec4 FragColor;
 # endif
@@ -352,18 +353,19 @@ void main(void)
 #if OPT_ScreenSpaceReflections
 // Compute unified visibility
 float vis = 1;
+float outTo3 = 1;
+float outTo4 = 0;
 if ((DrawFlags & DF_AlphaBlended) == DF_AlphaBlended)
 {
     // true alpha-blend mode (UI, at least text)
     vis = TotalColor.a;
+    outTo3 = 0;
+    outTo4 = 1;
 }
 else if ((DrawFlags & DF_Modulated) == DF_Modulated)
 {
     // modulated smoke (decals are in DrawGouraud)
-    // TODO eventually need to separate out alpha/modulated from additive (explosions etc) and blend both separately.  
-    // No way to have modulated and additive coexist in the same buffer without making the modulated stuff all additive itself 
-    // made secondary rocket smoke white for now pending that refactor
-    /* // into buffer to be alpha blended later (add if to draw to different output)
+    // into buffer to be alpha blended later (add if to draw to different output)
     float intensity = dot(TotalColor.rgb, vec3(0.3333));
     vis = abs(intensity - 0.5) * 2.0;
     vis = 1 - vis;
@@ -376,11 +378,8 @@ else if ((DrawFlags & DF_Modulated) == DF_Modulated)
     else {
         TotalColor.rgb = vec3(1,1,1);
     }
-    */
-    // into buffer that will be blended additively
-    float intensity = dot(TotalColor.rgb, vec3(0.3333));
-    vis = abs(intensity - 0.5) * 2.0;
-    TotalColor.rgb = vec3(vis, vis, vis);
+    outTo3 = 0;
+    outTo4 = 1;
 }
 TotalColor.a = vis;
 #endif
@@ -395,8 +394,12 @@ TotalColor.a = vis;
   if (bool(HitTesting))
     TotalColor = GetDrawColor(DrawID);
 #endif
-
+# if OPT_ScreenSpaceReflections
+  FragColor = TotalColor * outTo3;
+  FragColorAlpha = TotalColor * outTo4;
+# else
   FragColor = TotalColor;
+#endif
 }
 )";
 }

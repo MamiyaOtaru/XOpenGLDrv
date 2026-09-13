@@ -253,6 +253,11 @@ void UXOpenGLRenderDevice::RunSSAOPass(FSceneNode* Frame)
     Shader->Flush(false);
 
 	RunSSAOBlurPass(5);
+    // depth aware instead uses fewer passes but could potentially bleed some shadow out of small depressions
+    // damage would be limited by the single pass..
+    //glActiveTexture(GL_TEXTURE21);
+    //glBindTexture(GL_TEXTURE_2D, gbufferFbo->depthTexID);
+    //RunSSRBlurPass(1);
 
     // Restore state
     glEnable(GL_DEPTH_TEST);
@@ -428,9 +433,13 @@ void UXOpenGLRenderDevice::RunSSRCompositePass()
     glActiveTexture(GL_TEXTURE22);
     glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[1]);
 
-    // UI
+    // additive sprites
     glActiveTexture(GL_TEXTURE23);
     glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[3]);
+    
+    // UI
+    glActiveTexture(GL_TEXTURE24);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[4]);
 
     DrawFullscreenQuad();
 

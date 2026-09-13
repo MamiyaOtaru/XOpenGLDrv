@@ -44,7 +44,8 @@ namespace ExternalTexture
 		Extra_Detail = 1, // mapping to loader suffixes; API uses explicit enum
 		Extra_Bump  = 2,
 		Extra_Height= 3,
-		DUMMY_NUM_EXTRAS = 4
+		Extra_ORM = 4,
+		DUMMY_NUM_EXTRAS = 5
 	};
 
 	// Initialize (optional).

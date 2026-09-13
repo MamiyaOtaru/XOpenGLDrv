@@ -110,9 +110,9 @@ namespace ExternalTexture
 		GWarn->Log(Msg);
 	}*/
 
-	// suffixes exactly as Kentie defined them
-	static const wchar_t* kSuffixes[] = { L"", L".detail", L".bump", L".height" };
-	static const int kNumSuffixes = 4; // main + 3 extras
+	// suffixes exactly as Kentie defined them (plus ORM map)
+	static const wchar_t* kSuffixes[] = { L"", L".detail", L".bump", L".height", L".orm" };
+	static const int kNumSuffixes = 5; // main + 4 extras
 
 	// Internal storage to keep allocated FMipmap/MipData alive until Shutdown.
 	// Keyed by cacheID (Info.CacheID) to mimic Kentie's behaviour of replacing the game's cache entry.

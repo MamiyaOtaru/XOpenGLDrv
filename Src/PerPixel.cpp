@@ -1325,6 +1325,7 @@ void UXOpenGLRenderDevice::NewLevelPP()
                 // Force load bump/height map if present
                 ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Bump);
                 ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height);
+                ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_ORM);
             }
         }
     }

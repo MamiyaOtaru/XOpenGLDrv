@@ -344,6 +344,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	//bool hasDetail = (DetailTextures && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Detail) != nullptr);
 	bool hasBump = (BumpMaps && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Bump) != nullptr);
 	bool hasHeight = (ParallaxVersion != Parallax_Disabled && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height) != nullptr);
+	bool hasORM = (BumpMaps && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_ORM) != nullptr);
 
 	// ------------------------------------------------------------
 	// BumpMapInfo (external version)
@@ -405,6 +406,33 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		}
 	}
 
+	// ------------------------------------------------------------
+	//  ORM Info (external-only, no engine-native ORM maps)
+	// ------------------------------------------------------------
+	if (hasORM)
+	{
+		FTextureInfo* ExternalORMInfo = ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_ORM);
+
+		if (ExternalORMInfo)
+		{
+			// Give the external FTextureInfo a valid UTexture* for metadata
+			ExternalORMInfo->Texture = Surface.Texture->Texture;
+
+			SetTextureHelper(
+				this,
+				ORMMapIndex,                  // TMU index for ORM tmap
+				*ExternalORMInfo,                // pass by reference
+				PF_None,
+				DrawFlags,
+				ShaderDrawFlags::DF_ORMMap,
+				0.0,
+				nullptr,
+				&DrawCallParams->ORMMapInfo,  // what the shader reads
+				DrawCallParams->TexHandles
+			);
+		}
+	}
+
     // Bind SSAO texture if using per pixel lighting on solid BSP surfaces
 	// Any surfaces that do not contribute to SSAO in the prepass should not USE it.
 	// So any that are excluded from the prepass in UXOpenGLRenderDevice::SetSceneNode
@@ -424,34 +452,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawFlags |= ShaderDrawFlags::DF_AmbientOcclusion;
 	}
 
-	// Bind gbuffer depth texture.  Only used for screen space shadows (which are disabled)
-	// and would require MSAA enabled depth sampling (see note in shader)
-	/*if (BumpMaps && AmbientOcclusion)
-	{
-		PreparePrepassDepthTexture();
-		INT depthIndex = PrepassDepthIndex;
-
-		if (UsingBindlessTextures)
-		{
-			// Use the 64-bit bindless handle
-			DrawCallParams->TexHandles[depthIndex] = gbufferFbo->depthBindlessHandle;
-		}
-		else
-		{
-			// Classic TMU binding path
-			glActiveTexture(GL_TEXTURE0 + depthIndex);
-
-			GLenum target = (gbufferFbo->samples > 1)
-				? GL_TEXTURE_2D_MULTISAMPLE
-				: GL_TEXTURE_2D;
-
-			glBindTexture(target, gbufferFbo->depthTexID);
-
-			if (gbufferFbo->depthSampler)
-				glBindSampler(depthIndex, gbufferFbo->depthSampler);
-		}
-	}*/
-
 	if (SI && SI->HasHDLightmap && GOcclusionState == EOcclusionState::Ready)
 	{
 		if (UsingBindlessTextures)
@@ -469,7 +469,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	DrawCallParams->XAxis = glm::vec4(Facet.MapCoords.XAxis.X, Facet.MapCoords.XAxis.Y, Facet.MapCoords.XAxis.Z, Facet.MapCoords.XAxis | Facet.MapCoords.Origin);
 	DrawCallParams->YAxis = glm::vec4(Facet.MapCoords.YAxis.X, Facet.MapCoords.YAxis.Y, Facet.MapCoords.YAxis.Z, Facet.MapCoords.YAxis | Facet.MapCoords.Origin);
 	DrawCallParams->ZAxis = glm::vec4(Facet.MapCoords.ZAxis.X, Facet.MapCoords.ZAxis.Y, Facet.MapCoords.ZAxis.Z, 0.0);
-	if (BumpMaps)
+	if (BumpMaps && !hasORM)
 		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
 	if (PhongShading && BumpMaps && (SI && !SI->IsMover)) // phong only works in per pixel lighting mode
 		DrawFlags |= ShaderDrawFlags::DF_PhongShading;

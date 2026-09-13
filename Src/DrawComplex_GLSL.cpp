@@ -28,6 +28,7 @@ const UXOpenGLRenderDevice::ShaderProgram::DrawCallParameterInfo UXOpenGLRenderD
 	{"vec4", "MacroInfo", 0},
 	{"vec4", "BumpMapInfo", 0},
 	{"vec4", "HeightMapInfo", 0},
+    {"vec4", "ORMMapInfo", 0},
 	{"vec4", "XAxis", 0},
 	{"vec4", "YAxis", 0},
 	{"vec4", "ZAxis", 0},
@@ -914,7 +915,7 @@ return;
     float depth = gl_FragCoord.z;   // already 0..1
     vec3 N = ViewNormal;
     vec2 oct = encodeOctNormal(N);
-    float packedRough = rough * .4999;
+    float packedRough = rough * .4999; // stealing the upper bit for BSP/Mesh differentiation
     SSRBuffer = vec4(depth, packedRough, oct.x, oct.y);
   }
 #endif

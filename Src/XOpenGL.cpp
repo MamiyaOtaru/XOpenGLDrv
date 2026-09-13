@@ -1387,7 +1387,8 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 		{
 			GL_RGBA8,     // finalColor
 			GL_RGBA32F,   // SSRBuffer (depth + rough + oct)
-			GL_RGBA8,      // things that show in reflections
+			GL_RGBA8,     // things that show in reflections
+			GL_RGBA8,	  // aditive blended sprites
 			GL_RGBA8      // UI, when splitting that out (SSR)
 		},
 		TRUE,   // depth texture (active depth buffer)
@@ -1404,6 +1405,7 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 				GL_RGBA8,     // finalColor
 				GL_RGBA32F,   // SSRBuffer (depth + rough + oct)
 				GL_RGBA8,      // things that show in reflections
+				GL_RGBA8,	  // aditive blended sprites
 				GL_RGBA8      // UI, when splitting that out (SSR)
 			},
 			FALSE,      // no depth needed
@@ -2695,9 +2697,10 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 			GL_COLOR_ATTACHMENT0,
 			GL_COLOR_ATTACHMENT1,
 			GL_COLOR_ATTACHMENT2,
-			GL_COLOR_ATTACHMENT3
+			GL_COLOR_ATTACHMENT3,
+			GL_COLOR_ATTACHMENT4
 		};
-		glDrawBuffers(4, bufs);
+		glDrawBuffers(5, bufs);
 		glClearColor(0, 0, 0, 0);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	}
@@ -2942,9 +2945,19 @@ void UXOpenGLRenderDevice::Unlock(UBOOL Blit)
 					GL_NEAREST
 				);
 
-				// Resolve color3 (UI, if doing SSR and UI needs to be split out)
+				// resolve additive blended sprites
 				glReadBuffer(GL_COLOR_ATTACHMENT3);
 				glDrawBuffer(GL_COLOR_ATTACHMENT3);
+				glBlitFramebuffer(
+					0, 0, SceneWidth, SceneHeight,
+					0, 0, SceneWidth, SceneHeight,
+					GL_COLOR_BUFFER_BIT,
+					GL_NEAREST
+				);
+
+				// Resolve color3 (UI, if doing SSR and UI needs to be split out)
+				glReadBuffer(GL_COLOR_ATTACHMENT4);
+				glDrawBuffer(GL_COLOR_ATTACHMENT4);
 				glBlitFramebuffer(
 					0, 0, SceneWidth, SceneHeight,
 					0, 0, SceneWidth, SceneHeight,

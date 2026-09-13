@@ -251,6 +251,7 @@ layout(location = 0) out vec4 FragColor;
 # if OPT_ScreenSpaceReflections
 layout(location = 1) out vec4 SSRBuffer;
 layout(location = 2) out vec4 SolidSurfaces;
+layout(location = 4) out vec4 Weapon;
 # endif
 
 #if OPT_GeometryShaders
@@ -568,6 +569,9 @@ void main(void)
     vec2 octPacked = (oct + 1.0) / 2.0;
     SSRBuffer = vec4(depth, .9999, oct.x, oct.y);
     SolidSurfaces = vec4(TotalColor.rgb, 1.0);
+  }
+  if ((DrawFlags & DF_Weapon) == DF_Weapon) {
+    Weapon = TotalColor;
   }
 #endif
   FragColor = TotalColor;

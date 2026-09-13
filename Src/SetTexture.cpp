@@ -944,7 +944,7 @@ void UXOpenGLRenderDevice::SetTexture(INT Multi, FTextureInfo& Info, DWORD PolyF
 		// Detail -> DetailTextureIndex, Bump -> BumpMapIndex, Height -> HeightMapIndex
 		const int ExtraToMulti[ExternalTexture::DUMMY_NUM_EXTRAS] =
 		{
-			-1,               // Extra_Main (handled separately, not bound as an extra TMU)
+			-1,                 // Extra_Main (handled separately, not bound as an extra TMU)
 			DetailTextureIndex, // Extra_Detail
 			BumpMapIndex,       // Extra_Bump
 			HeightMapIndex      // Extra_Height

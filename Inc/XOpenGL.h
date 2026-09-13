@@ -1199,26 +1199,28 @@ class UXOpenGLRenderDevice : public URenderDevice
 			DF_BumpMap        = 1 << 5,
 			DF_EnvironmentMap = 1 << 6,
 			DF_HeightMap      = 1 << 7,
+			DF_ORMMap		  = 1 << 8,
 
 			// PolyFlags the shader needs to know about
-			DF_Masked         = 1 << 8,
-			DF_Unlit          = 1 << 9,
-			DF_Modulated      = 1 << 10,
-			DF_Translucent    = 1 << 11,
-			DF_Environment    = 1 << 12,
-			DF_RenderFog      = 1 << 13,
-			DF_AlphaBlended   = 1 << 14,
-			DF_TwoSided		  = 1 << 15,
+			DF_Masked         = 1 << 9,
+			DF_Unlit          = 1 << 10,
+			DF_Modulated      = 1 << 11,
+			DF_Translucent    = 1 << 12,
+			DF_Environment    = 1 << 13,
+			DF_RenderFog      = 1 << 14,
+			DF_AlphaBlended   = 1 << 15,
+			DF_TwoSided		  = 1 << 16,
 
 			// Per-draw call editor state the shader needs to know about
-			DF_Selected       = 1 << 16,
+			DF_Selected       = 1 << 17,
 
 			// Dumb visual stuff
-			DF_PhongShading	  = 1 << 17,
-			DF_ReadDepth	  = 1 << 18,
-			DF_AmbientOcclusion	  = 1 << 19,
-			DF_HDLightMap	  = 1 << 20,
-			DF_ShadowMaps	  = 1 << 21,
+			DF_PhongShading	  = 1 << 18,
+			DF_ReadDepth	  = 1 << 19,
+			DF_AmbientOcclusion	  = 1 << 20,
+			DF_HDLightMap	  = 1 << 21,
+			DF_ShadowMaps	  = 1 << 22,
+			DF_Weapon		  = 1 << 23,
 		};
 	};
     
@@ -1665,7 +1667,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		BumpMapIndex			= 5,
 		EnvironmentMapIndex		= 6,
 		HeightMapIndex			= 7,
-		RoughnessMapIndex		= 8,
+		ORMMapIndex				= 8,
 		SceneDepthIndex			= 9,
 		PrepassDepthIndex		= 10,
 		PostProcessIndex		= 11,
@@ -2138,6 +2140,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::vec4 MacroInfo;
 		glm::vec4 BumpMapInfo;
 		glm::vec4 HeightMapInfo;
+		glm::vec4 ORMMapInfo;
 		glm::vec4 XAxis;
 		glm::vec4 YAxis;
 		glm::vec4 ZAxis;
@@ -2149,7 +2152,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::uint32 SceneHeight;
 	};
 	static const ShaderProgram::DrawCallParameterInfo DrawComplexParametersInfo[];
-	static_assert(sizeof(DrawComplexParameters) == 352, "Invalid complex drawcall parameters size");
+	static_assert(sizeof(DrawComplexParameters) == 368, "Invalid complex drawcall parameters size");
 
 	struct DrawComplexVertex
 	{
@@ -2551,7 +2554,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 			VertexBufferSize             = 0;
 			ParametersBufferSize         = 0;
 			ParametersBufferBindingIndex = 0;
-			NumTextureSamplers           = 4;   // direct, ssr, ssrBuffer, ui
+			NumTextureSamplers           = 5;   // direct, ssr, ssrBuffer, additive, ui
 			DrawMode                     = GL_TRIANGLES;
 			UseSSBOParametersBuffer      = false;
 			ParametersInfo               = nullptr;
@@ -2569,7 +2572,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 		GLint uDirect     = -1;   // ResolveFbo color0
 		GLint uSSR        = -1;   // SsaoFbo color0 (SSR result)
 		GLint uSSRBuffer  = -1;   // ResolveFbo color1 (depth+rough+oct normal)
-		GLint uUI		  = -1;   // ResolveFbo color3 (UI)
+		GLint uAdditive	  = -1;   // additive sprites
+		GLint uUI		  = -1;   // ResolveFbo color4 (UI)
 
 		void CreateInputLayout() {}
 
@@ -2580,12 +2584,14 @@ class UXOpenGLRenderDevice : public URenderDevice
 			GetUniformLocation(Spec, uDirect,    "uDirect");
 			GetUniformLocation(Spec, uSSR,       "uSSR");
 			GetUniformLocation(Spec, uSSRBuffer, "uSSRBuffer");
+			GetUniformLocation(Spec, uAdditive,  "uAdditive");
 			GetUniformLocation(Spec, uUI,		 "uUI");
 
 			if (uDirect    != -1) glUniform1i(uDirect,    20);
 			if (uSSR       != -1) glUniform1i(uSSR,       21);
 			if (uSSRBuffer != -1) glUniform1i(uSSRBuffer, 22);
-			if (uUI		   != -1) glUniform1i(uUI,		  23);
+			if (uAdditive  != -1) glUniform1i(uAdditive,  23);
+			if (uUI		   != -1) glUniform1i(uUI,		  24);
 		}
 
 		void MapBuffers() {}
