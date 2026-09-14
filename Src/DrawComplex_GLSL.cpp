@@ -36,6 +36,7 @@ const UXOpenGLRenderDevice::ShaderProgram::DrawCallParameterInfo UXOpenGLRenderD
     {"uvec4", "TexHandles", 7},
 	{"uint", "DrawFlags", 0},
     {"float", "Roughness", 0},
+    {"float", "Metalness", 0},
     {"uint", "SceneWidth", 0},
     {"uint", "SceneHeight", 0},
 	{ nullptr, nullptr, 0}
@@ -448,7 +449,8 @@ layout(location = 0) out vec4 FragColor;
 #if OPT_ScreenSpaceReflections
   // transparency depth and roughness for SSR
   layout(location = 1) out vec4 SSRBuffer;
-  layout(location = 2) out vec4 SolidSurfaces;
+  layout(location = 2) out vec4 SSRBufferSurface;
+  layout(location = 3) out vec4 SolidSurfaces;
 #endif
     )";
 
@@ -640,17 +642,6 @@ vec2 trueSign(vec2 v) {
     // step(0.0, v) returns 1.0 if v >= 0.0, else 0.0
     // Multiplying by 2 and subtracting 1 maps 1.0->1.0 and 0.0->-1.0
     return step(0.0, v) * 2.0 - 1.0;
-}
-
-// 1. TRUE BRANCHLESS ENCODE
-vec2 encodeOctNormal(vec3 N) {
-    vec2 oct = N.xy / (abs(N.x) + abs(N.y) + abs(N.z));
-    
-    // Mix replaces the 'if (N.z < 0.0)' branch
-    // step(N.z, 0.0) returns 1.0 if N.z is negative, 0.0 if positive
-    vec2 folded = (1.0 - abs(oct.yx)) * trueSign(oct.xy);
-    oct = mix(oct, folded, step(N.z, 0.0));
-    return oct;
 }
     )";
     Out << R"(
@@ -893,6 +884,8 @@ return;
   // BumpMap (Normal Map)
   vec3 totalSpec  = vec3(0.0);
   uint numSurfaceLights = 0;
+  float rough = 1;
+  float metal = 0;
 #if OPT_BumpMaps
   {
     float MinLight = 0.05f;
@@ -908,16 +901,29 @@ return;
       ViewNormal = vNormal;
     }
 
-    float rough = DrawDrawComplexParams[vDrawID].Roughness;
-    // TODO allow roughness map (would need to bind another texture)
+    rough = DrawDrawComplexParams[vDrawID].Roughness;
+    metal = DrawDrawComplexParams[vDrawID].Metalness;
 #if OPT_ScreenSpaceReflections
-  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth) {
+    if ((DrawFlags & DF_ORMMap) == DF_ORMMap) {
+        vec4 ORM = GetTexel(GetTexHandles(vDrawID, 2).zw, Texture8, texCoords);
+        rough = ORM.g;
+        metal = ORM.b;
+    }
+    // write into reflectEE depth only if we are solid
+    // always write into reflectOR depth (to make glass reflect, but breaks reflections on metal that is behind glass)
     float depth = gl_FragCoord.z;   // already 0..1
     vec3 N = ViewNormal;
-    vec2 oct = encodeOctNormal(N);
-    float packedRough = rough * .4999; // stealing the upper bit for BSP/Mesh differentiation
-    SSRBuffer = vec4(depth, packedRough, oct.x, oct.y);
-  }
+    vec3 N01 = N * 0.5 + 0.5;
+    float Nx = floor(N01.x * 255.0 + 0.5);
+    float Ny = floor(N01.y * 255.0 + 0.5);
+    float Nz = floor(N01.z * 255.0 + 0.5);
+    float packedNormal = Nx * 65536.0 + Ny * 256.0 + Nz;
+
+    float packedRM = floor(rough * 255.0) * 256.0 + floor(metal * 255.0);
+    SSRBuffer = vec4(depth, packedRM, packedNormal, 1); // reflector depth, roughness/metal, normal
+    if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_AddToAlpha) != DF_AddToAlpha) {
+      SSRBufferSurface = vec4(depth, 0, packedNormal, 1); // reflectee depth, isMesh, normal
+    }
 #endif
 
     vec3 totalStaticLight = vec3(0.0);
@@ -1169,7 +1175,10 @@ return;
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
   {
     //TotalColor.rgb = applyReinhard(TotalColor.rgb * LightColor.rgb + totalSpec.rgb, 1.34);
-    TotalColor = clamp(TotalColor * LightColor + vec4(totalSpec.rgb, 1.0), 0.0, 1.0);
+    //TotalColor = clamp(TotalColor * LightColor + vec4(totalSpec.rgb, 1.0), 0.0, 1.0);
+    vec4 diffuseColor = TotalColor;// mix(TotalColor, vec4(0.0), metal); // commented out REQUIRES SSR plus cubemap fallback when nothing hits or metal is black
+    vec3 specColor = mix(vec3(1.0), TotalColor.rgb, metal);
+    TotalColor = clamp(diffuseColor * LightColor + vec4(specColor * totalSpec.rgb, 1.0), 0.0, 1.0);
   }
 
   TotalColor += FogColor;
@@ -1268,8 +1277,13 @@ return;
 
 #if OPT_ScreenSpaceReflections
   // draw solid surfaces to apear in reflections
-  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth) {
+  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_AddToAlpha) != DF_AddToAlpha) {
     SolidSurfaces = vec4(TotalColor.rgb, 1.0);
+  }
+  if ((DrawFlags & DF_AddToAlpha) == DF_AddToAlpha) {
+    float vis = max(TotalColor.r, max(TotalColor.g, TotalColor.b));
+    TotalColor.rgb /= max(0.0001, vis);
+    TotalColor.a = vis;
   }
 #endif
   FragColor = TotalColor;

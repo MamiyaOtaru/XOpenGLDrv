@@ -250,8 +250,9 @@ void UXOpenGLRenderDevice::DrawGouraudProgram::BuildFragmentShader(GLuint Shader
 layout(location = 0) out vec4 FragColor;
 # if OPT_ScreenSpaceReflections
 layout(location = 1) out vec4 SSRBuffer;
-layout(location = 2) out vec4 SolidSurfaces;
-layout(location = 4) out vec4 Weapon;
+layout(location = 2) out vec4 SSRBufferSurface;
+layout(location = 3) out vec4 SolidSurfaces;
+layout(location = 5) out vec4 Weapon;
 # endif
 
 #if OPT_GeometryShaders
@@ -556,18 +557,17 @@ void main(void)
     TotalColor.a = vis;
   }
 
-  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_Modulated) != DF_Modulated) {
+  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_Modulated) != DF_Modulated && (DrawFlags & DF_Translucent) != DF_Translucent) {
     float depth = gl_FragCoord.z;   // already 0..1
     vec3 N = vec3(1.0, 0.0, 0.0);//ViewNormal;
-    vec2 oct = N.xy / (abs(N.x) + abs(N.y) + abs(N.z));
-    if (N.z < 0.0) {
-        oct = (1.0 - abs(oct.yx)) * vec2(
-            N.x >= 0.0 ? 1.0 : -1.0,
-            N.y >= 0.0 ? 1.0 : -1.0
-        );
-    }
-    vec2 octPacked = (oct + 1.0) / 2.0;
-    SSRBuffer = vec4(depth, .9999, oct.x, oct.y);
+    vec3 N01 = N * 0.5 + 0.5;
+    float Nx = floor(N01.x * 255.0 + 0.5);
+    float Ny = floor(N01.y * 255.0 + 0.5);
+    float Nz = floor(N01.z * 255.0 + 0.5);
+    float packedNormal = Nx * 65536.0 + Ny * 256.0 + Nz;
+    
+    SSRBuffer = vec4(depth, 65280.0f, packedNormal, 1); // packed roughness 1, metalness 0
+    SSRBufferSurface = vec4(depth, 1, packedNormal, 1); // depth (reflectee), isMesh, normal
     SolidSurfaces = vec4(TotalColor.rgb, 1.0);
   }
   if ((DrawFlags & DF_Weapon) == DF_Weapon) {

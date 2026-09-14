@@ -39,9 +39,11 @@ void UXOpenGLRenderDevice::SSRProgram::BindShaderState(CompiledShader* Spec)
     //
     GetUniformLocation(Spec, uSceneColor, "uSceneColor");
     GetUniformLocation(Spec, uSSRBuffer,  "uSSRBuffer");
+    GetUniformLocation(Spec, uSSRBufferSurface, "uSSRBufferSurface");
 
     if (uSceneColor != -1) glUniform1i(uSceneColor, 20);
-    if (uSSRBuffer  != -1) glUniform1i(uSSRBuffer, 21);
+    if (uSSRBuffer != -1) glUniform1i(uSSRBuffer, 21);
+    if (uSSRBufferSurface != -1) glUniform1i(uSSRBufferSurface, 22);
 
     //
     // Uniform locations — DO NOT set values here

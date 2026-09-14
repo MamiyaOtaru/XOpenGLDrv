@@ -359,11 +359,15 @@ void UXOpenGLRenderDevice::RunSSRPass()
 
     // solid surfaces that can show up in reflections
     glActiveTexture(GL_TEXTURE20);
-    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[2]);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[3]);
 
-    // SSRBuffer (depth + roughness + oct normal)
+    // SSRBuffer (depth + depth + oct normal)
     glActiveTexture(GL_TEXTURE21);
     glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[1]);
+
+    // SSRBufferSurface (roughness, metalness, isBSP)
+    glActiveTexture(GL_TEXTURE22);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[2]);
 
     // ------------------------------------------------------------
     // SSR parameters (per-frame)
@@ -429,17 +433,17 @@ void UXOpenGLRenderDevice::RunSSRCompositePass()
     glActiveTexture(GL_TEXTURE21);
     glBindTexture(GL_TEXTURE_2D, SsaoFbo->colorTexIDs[0]);
 
-    // SSRBuffer (roughness mask)
-    glActiveTexture(GL_TEXTURE22);
-    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[1]);
-
     // additive sprites
-    glActiveTexture(GL_TEXTURE23);
-    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[3]);
+    glActiveTexture(GL_TEXTURE22);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[4]);
     
+    // alpha sprites
+    glActiveTexture(GL_TEXTURE23);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[5]);
+
     // UI
     glActiveTexture(GL_TEXTURE24);
-    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[4]);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[6]);
 
     DrawFullscreenQuad();
 

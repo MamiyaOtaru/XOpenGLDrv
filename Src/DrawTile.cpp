@@ -131,24 +131,28 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
         !(PolyFlags & PF_AlphaBlend);
 	// unfortunately also includes muzzle flashes and crosshairs and other HUD.  Filtering them out below
 
+	bool bIsUI = false;
 	if (Info.Texture)
 	{
 		UObject* Outer = Info.Texture->GetOuter();
-		//while (Outer) // in case we don't want to list subpackages, can hit all of Botpack with a while loop instead
-		//{
-		if (Outer)
-		{
-			const TCHAR* pkg = Outer->GetName();
+		UObject* Parent = Outer ? Outer->GetOuter() : nullptr;
+		UObject* Grandparent = Parent ? Parent->GetOuter() : nullptr;
 
-			// UI packages — skip corona logic
-			if (!appStricmp(pkg, TEXT("Botpack")) ||
-				!appStricmp(pkg, TEXT("Skins")) || // muzzleflashes
-				!appStricmp(pkg, TEXT("Icons"))) // all the HUD (with crosshair)
-			{
-				bIsCorona = false;
-				//break;
-			}
-			//Outer = Outer->GetOuter();
+		const TCHAR* pkg = Outer ? Outer->GetName() : nullptr;
+		const TCHAR* parent = Parent ? Parent->GetName() : nullptr;
+		const TCHAR* grandpkg = Grandparent ? Grandparent->GetName() : nullptr;
+
+		// UI packages — skip corona logic
+		if ((pkg && !appStricmp(pkg, TEXT("Botpack"))) ||
+			(pkg && !appStricmp(pkg, TEXT("Skins")))) // muzzleflashes
+		{
+			bIsCorona = false;
+		}
+		else if ((parent && !appStricmp(parent, TEXT("UWindowFonts"))) ||
+			(pkg && !appStricmp(pkg, TEXT("Icons")))) // parts of the HUD (with crosshair)
+		{
+			bIsCorona = false;
+			bIsUI = true;
 		}
 	}
 
@@ -230,6 +234,11 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 		INT depthIndex = SceneDepthIndex;
 		DrawCallParams->TexHandles[depthIndex] = SceneFbo->depthBindlessHandle;
 		Z -= 50 * min(Z / 300.f, 1);
+	}
+
+	if (bIsUI)
+	{
+		DrawFlags |= ShaderDrawFlags::DF_UI;
 	}
 
 	// Buffer new drawcall parameters

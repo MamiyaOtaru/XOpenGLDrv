@@ -259,9 +259,10 @@ void UXOpenGLRenderDevice::DrawTileCoreProgram::BuildFragmentShader(GLuint Shade
 {
 	Out << R"(
 # if OPT_ScreenSpaceReflections
-// draw to our own color attachment to composite in after reflections etc are resolved
-layout(location = 3) out vec4 FragColor;
-layout(location = 4) out vec4 FragColorAlpha;
+// draw to our own color attachments to composite in after reflections etc are resolved
+layout(location = 4) out vec4 FragColor;
+layout(location = 5) out vec4 FragColorAlpha;
+layout(location = 6) out vec4 FragColorUI;
 # else
 layout(location = 0) out vec4 FragColor;
 # endif
@@ -353,14 +354,27 @@ void main(void)
 #if OPT_ScreenSpaceReflections
 // Compute unified visibility
 float vis = 1;
-float outTo3 = 1;
-float outTo4 = 0;
+float outTo4 = 1;
+float outTo5 = 0;
+float outTo6 = 0;
 if ((DrawFlags & DF_AlphaBlended) == DF_AlphaBlended)
 {
-    // true alpha-blend mode (UI, at least text)
-    vis = TotalColor.a;
-    outTo3 = 0;
-    outTo4 = 1;
+    if ((DrawFlags & DF_UI) == DF_UI)
+    {
+        // draw into a buffer that will be blended additively.  multiply alpha into color
+        TotalColor.rgb = TotalColor.rgb * TotalColor.a;
+        outTo4 = 0;
+        outTo5 = 0;
+        outTo6 = 1;
+    }
+    else
+    {
+        // true alpha-blend mode (UI, at least text)
+        vis = TotalColor.a;
+        outTo4 = 0;
+        outTo5 = 1;
+        outTo6 = 0;
+    }
 }
 else if ((DrawFlags & DF_Modulated) == DF_Modulated)
 {
@@ -378,8 +392,23 @@ else if ((DrawFlags & DF_Modulated) == DF_Modulated)
     else {
         TotalColor.rgb = vec3(1,1,1);
     }
-    outTo3 = 0;
-    outTo4 = 1;
+    outTo4 = 0;
+    outTo5 = 1;
+    outTo6 = 0;
+}
+else {
+    if ((DrawFlags & DF_UI) == DF_UI)
+    {
+        outTo4 = 0;
+        outTo5 = 0;
+        outTo6 = 1;
+    }
+    else
+    {
+        outTo4 = 1;
+        outTo5 = 0;
+        outTo6 = 0;
+    }
 }
 TotalColor.a = vis;
 #endif
@@ -395,8 +424,9 @@ TotalColor.a = vis;
     TotalColor = GetDrawColor(DrawID);
 #endif
 # if OPT_ScreenSpaceReflections
-  FragColor = TotalColor * outTo3;
-  FragColorAlpha = TotalColor * outTo4;
+  FragColor = TotalColor * outTo4;
+  FragColorAlpha = TotalColor * outTo5;
+  FragColorUI = TotalColor * outTo6;
 # else
   FragColor = TotalColor;
 #endif

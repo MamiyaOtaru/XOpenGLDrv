@@ -49,7 +49,7 @@ void main(void)
 static const char* SimpleFragmentShader = R"(
 # if OPT_ScreenSpaceReflections
 // draw to our own color attachment to composite in after reflections etc are resolved
-layout(location = 3) out vec4 FragColor;
+layout(location = 4) out vec4 FragColor;
 # else
 layout(location = 0) out vec4 FragColor;
 # endif

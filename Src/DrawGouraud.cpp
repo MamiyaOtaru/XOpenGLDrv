@@ -153,7 +153,7 @@ DWORD UXOpenGLRenderDevice::PrepareGouraudCall(FSceneNode* Frame, FTextureInfo& 
 		//Z -= 50 * min(Z / 300, 1);
 	}
 
-	if (PolyFlags & PF_SpecialPoly)
+	if (PolyFlags & PF_Selected)
 	{
 		DrawFlags |= ShaderDrawFlags::DF_Weapon;
 	}
@@ -469,10 +469,18 @@ void UXOpenGLRenderDevice::DrawGouraudTriangles(const FSceneNode* Frame, const F
 			}
 		}
 
-		bool isWeapon = (Pts[0].Point.Z < 10);
+		bool isWeapon = true;
+		for (INT i = 0; i < NumPts; i++)
+		{
+			if (Pts[i].Point.Z >= 10)
+			{
+				isWeapon = false;
+				break;
+			}
+		}
 		if (ScreenSpaceReflections && isWeapon)
 		{
-			PolyFlags |= PF_SpecialPoly;
+			PolyFlags |= PF_Selected;
 		}
 
 		// If outcoded, skip it.

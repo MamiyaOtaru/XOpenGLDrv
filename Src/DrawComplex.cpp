@@ -146,7 +146,15 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	// Gather options
 	DWORD DrawFlags = ShaderDrawFlags::DF_None;
+	bool addToAlphaHack = false;
+	if (ScreenSpaceReflections && Surface.PolyFlags & PF_Translucent)
+	{
+		addToAlphaHack = true;
+		Surface.PolyFlags &= ~PF_Translucent;
+		Surface.PolyFlags |= PF_AlphaTexture;
+	}
 	const DWORD NextPolyFlags = GetPolyFlagsAndDrawFlags(Surface.PolyFlags, DrawFlags, FALSE);
+	if (addToAlphaHack) DrawFlags |= ShaderDrawFlags::DF_AddToAlpha;
 	if (GIsEditor && NextPolyFlags & PF_Selected)
 		DrawFlags |= ShaderDrawFlags::DF_Selected;
 
@@ -469,8 +477,10 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	DrawCallParams->XAxis = glm::vec4(Facet.MapCoords.XAxis.X, Facet.MapCoords.XAxis.Y, Facet.MapCoords.XAxis.Z, Facet.MapCoords.XAxis | Facet.MapCoords.Origin);
 	DrawCallParams->YAxis = glm::vec4(Facet.MapCoords.YAxis.X, Facet.MapCoords.YAxis.Y, Facet.MapCoords.YAxis.Z, Facet.MapCoords.YAxis | Facet.MapCoords.Origin);
 	DrawCallParams->ZAxis = glm::vec4(Facet.MapCoords.ZAxis.X, Facet.MapCoords.ZAxis.Y, Facet.MapCoords.ZAxis.Z, 0.0);
-	if (BumpMaps && !hasORM)
+	if (BumpMaps && !hasORM) {
 		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
+		DrawCallParams->Metalness = GetMetalnessFromTextureName(Surface);
+	}
 	if (PhongShading && BumpMaps && (SI && !SI->IsMover)) // phong only works in per pixel lighting mode
 		DrawFlags |= ShaderDrawFlags::DF_PhongShading;
 	bool safeToReadDepth = !(Surface.PolyFlags & PF_Occlude);
@@ -785,6 +795,27 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		glm::vec4 fallbackN = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 		glm::vec4 fallbackT = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 		glm::vec4 fallbackB = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+		if (ScreenSpaceReflections)
+		{
+			// if SSR, actually need normals for reflections
+			glm::vec3 N = glm::normalize(DrawCallParams->ZAxis);
+			glm::vec3 T = glm::vec3(DrawCallParams->XAxis);
+			glm::vec3 B = glm::vec3(DrawCallParams->YAxis);
+
+			if (glm::length(T) < 1e-6f) {
+				glm::vec3 up = (std::abs(N.z) < 0.999f) ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+				T = glm::normalize(glm::cross(up, N));
+			}
+			else {
+				T = glm::normalize(T);
+			}
+			T = glm::normalize(T - N * glm::dot(N, T));
+			B = glm::normalize(glm::cross(N, T));
+
+			fallbackN = glm::vec4(N, 0.0f);
+			fallbackT = glm::vec4(T, 0.0f);
+			fallbackB = glm::vec4(B, 0.0f);
+		}
 		for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
 		{
 			const INT NumPts = Poly->NumPts;

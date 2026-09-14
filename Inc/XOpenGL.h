@@ -1221,6 +1221,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 			DF_HDLightMap	  = 1 << 21,
 			DF_ShadowMaps	  = 1 << 22,
 			DF_Weapon		  = 1 << 23,
+			DF_AddToAlpha	  = 1 << 24,
+			DF_UI		      = 1 << 25,
 		};
 	};
     
@@ -1876,6 +1878,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 
     // per level mapping from texture to roughness value, used to avoid expensive String allocations on every frame for every surface
 	TMap<UTexture*, float> RoughnessCache;
+	// and the same for metalness
+	TMap<UTexture*, float> MetalnessCache;
 
 	static void UXOpenGLRenderDevice::GetAxes(FRotator R, FVector& X, FVector& Y, FVector& Z);
 	INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet& Facet);
@@ -1886,6 +1890,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(FSceneNode* Frame, FSurfaceFacet& Facet, TArray<AActor*>& OutStaticLights, TArray<AActor*>& OutDynamicLights, INT MaxLights);
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface);
+	float UXOpenGLRenderDevice::GetMetalnessFromTextureName(const FSurfaceInfo& Surface);
+	float UXOpenGLRenderDevice::ComputeMetalnessFromTextureName(const FSurfaceInfo& Surface);
 	void UXOpenGLRenderDevice::InitLightLevelOverrides();
 	static UBOOL UXOpenGLRenderDevice::IsFakeSpotlightCeilingToExclude(AActor* L);
 	UBOOL UXOpenGLRenderDevice::IsSpotlight(AActor* L);
@@ -2148,11 +2154,13 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::uint64 TexHandles[14]; // mirrored as 7 uvec2s
 		glm::uint32 DrawFlags;
 		glm::float32 Roughness;
+		glm::float32 Metalness;
 		glm::uint32 SceneWidth;
 		glm::uint32 SceneHeight;
+		glm::uint64 Padding;
 	};
 	static const ShaderProgram::DrawCallParameterInfo DrawComplexParametersInfo[];
-	static_assert(sizeof(DrawComplexParameters) == 368, "Invalid complex drawcall parameters size");
+	static_assert(sizeof(DrawComplexParameters) == 384, "Invalid complex drawcall parameters size");
 
 	struct DrawComplexVertex
 	{
@@ -2506,8 +2514,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 		SSRProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev);
 
 		// Samplers
-		GLint uSceneColor   = -1;   // ResolveFbo color0
-		GLint uSSRBuffer    = -1;   // ResolveFbo color1 (depth+rough+oct normal)
+		GLint uSceneColor		= -1;   // ResolveFbo color0
+		GLint uSSRBuffer		= -1;   // ResolveFbo color1 (depth+rough+oct normal)
+		GLint uSSRBufferSurface = -1;   // ResolveFbo color2 (ORM)
 
 		// Params
 		GLint uScreenSize   = -1;
@@ -2554,7 +2563,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 			VertexBufferSize             = 0;
 			ParametersBufferSize         = 0;
 			ParametersBufferBindingIndex = 0;
-			NumTextureSamplers           = 5;   // direct, ssr, ssrBuffer, additive, ui
+			NumTextureSamplers           = 5;   // direct, ssr, additive, alpha, ui
 			DrawMode                     = GL_TRIANGLES;
 			UseSSBOParametersBuffer      = false;
 			ParametersInfo               = nullptr;
@@ -2569,11 +2578,11 @@ class UXOpenGLRenderDevice : public URenderDevice
 		}
 
 		// Samplers
-		GLint uDirect     = -1;   // ResolveFbo color0
-		GLint uSSR        = -1;   // SsaoFbo color0 (SSR result)
-		GLint uSSRBuffer  = -1;   // ResolveFbo color1 (depth+rough+oct normal)
-		GLint uAdditive	  = -1;   // additive sprites
-		GLint uUI		  = -1;   // ResolveFbo color4 (UI)
+		GLint uDirect	= -1;   // ResolveFbo color0
+		GLint uSSR		= -1;   // SsaoFbo color0 (SSR result)
+		GLint uAdditive	= -1;   // additive sprites
+		GLint uAlpha	= -1;   // alpha sprites
+		GLint uUI		= -1;   // ResolveFbo color6 (UI)
 
 		void CreateInputLayout() {}
 
@@ -2581,17 +2590,17 @@ class UXOpenGLRenderDevice : public URenderDevice
 		{
 			ShaderProgramImpl::BindShaderState(Spec);
 
-			GetUniformLocation(Spec, uDirect,    "uDirect");
-			GetUniformLocation(Spec, uSSR,       "uSSR");
-			GetUniformLocation(Spec, uSSRBuffer, "uSSRBuffer");
-			GetUniformLocation(Spec, uAdditive,  "uAdditive");
-			GetUniformLocation(Spec, uUI,		 "uUI");
+			GetUniformLocation(Spec, uDirect,	"uDirect");
+			GetUniformLocation(Spec, uSSR,		"uSSR");
+			GetUniformLocation(Spec, uAdditive,	"uAdditive");
+			GetUniformLocation(Spec, uAlpha,	"uAlpha");
+			GetUniformLocation(Spec, uUI,		"uUI");
 
-			if (uDirect    != -1) glUniform1i(uDirect,    20);
-			if (uSSR       != -1) glUniform1i(uSSR,       21);
-			if (uSSRBuffer != -1) glUniform1i(uSSRBuffer, 22);
-			if (uAdditive  != -1) glUniform1i(uAdditive,  23);
-			if (uUI		   != -1) glUniform1i(uUI,		  24);
+			if (uDirect		!= -1) glUniform1i(uDirect,		20);
+			if (uSSR		!= -1) glUniform1i(uSSR,		21);
+			if (uAdditive	!= -1) glUniform1i(uAdditive,	22);
+			if (uAlpha		!= -1) glUniform1i(uAlpha,		23);
+			if (uUI			!= -1) glUniform1i(uUI,			24);
 		}
 
 		void MapBuffers() {}

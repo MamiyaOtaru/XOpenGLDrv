@@ -6,8 +6,9 @@ out vec4 FragColor;
 // -----------------------------------------------------------------------------
 // Inputs
 // -----------------------------------------------------------------------------
-uniform sampler2D uSceneColor;   // ResolveFbo->colorTexIDs[0]
-uniform sampler2D uSSRBuffer;    // ResolveFbo->colorTexIDs[1] (depth, roughness, oct-normal)
+uniform sampler2D uSceneColor;          // ResolveFbo->colorTexIDs[0]
+uniform sampler2D uSSRBuffer;           // ResolveFbo->colorTexIDs[1] (depth, packed ORM, packed normal)
+uniform sampler2D uSSRBufferSurface;    // ResolveFbo->colorTexIDs[2] (depth, isMesh, packed normal)
 
 uniform vec2 uScreenSize;
 
@@ -39,21 +40,18 @@ vec2 trueSign(vec2 v) {
     return step(0.0, v) * 2.0 - 1.0;
 }
 
-vec3 decodeOctNormal(vec2 e)
+vec3 unpackNormal(float f)
 {
-    vec3 v = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
-    
-    // Fully branchless hemisphere unfolding
-    vec2 folded = (1.0 - abs(v.yx)) * trueSign(v.xy);
-    v.xy = mix(v.xy, folded, step(v.z, 0.0));
+    float Nx = floor(f / 65536.0);
+    float Ny = floor((f - Nx * 65536.0) / 256.0);
+    float Nz = f - Nx * 65536.0 - Ny * 256.0;
 
-    v = normalize(v);
-
+    vec3 N01 = vec3(Nx, Ny, Nz) / 255.0;
+    vec3 N =  N01 * 2.0 - 1.0;
     // UT does weird things
-    v.y *= -1;
-    v.z *= -1;
-    
-    return v;
+    N.y *= -1;
+    N.z *= -1;
+    return N;
 }
 
 float LinearizeDepth(float depth)
@@ -98,10 +96,13 @@ void main()
     vec4 buf = texture(uSSRBuffer, TexCoords);
 
     float depth  = buf.r;
-    float roughness = fract(buf.g * 2);
-    vec2 oct = buf.ba;
-    
-    vec3 normal = decodeOctNormal(oct);
+    float packedNormal = buf.b;
+    vec3 normal = unpackNormal(packedNormal);
+    float packedRM = buf.g;
+    float roughness = floor(packedRM / 256.0);
+    float metalness = packedRM - roughness * 256.0;
+    roughness = roughness / 255.0;
+    metalness = metalness / 255.0;
 
     // Extract projection scale from projMat (same one used for depth)
     float fx = projMat[0][0];
@@ -112,6 +113,10 @@ void main()
     
     // View direction is simply normalized view-space position
     vec3 V = normalize(viewPos);
+    // Two-sided translucent surfaces: flip normal if facing away
+    // This is essential for glass, water sheets, masked sheets, etc.
+    if (dot(normal, -V) < 0.0)
+        normal = -normal;
     vec3 R = reflect(V, normal);
 
     vec3 rayPos = viewPos;
@@ -128,7 +133,7 @@ void main()
             suv.y < 0.0 || suv.y > 1.0)
             break;
 
-        vec4 hitBuf = texture(uSSRBuffer, suv);
+        vec4 hitBuf = texture(uSSRBufferSurface, suv);
         float sceneDepth = hitBuf.r;
         sceneDepth = LinearizeDepth(sceneDepth); 
 
@@ -143,9 +148,10 @@ void main()
                 // then, if BSP check normals to see if it is in fact visible from the reflector.  For meshes, cheat
                 // since the back of eg a health pack looks like the front.  Allows the part we see to be reflected by the wall
                 // even if the wall can't see that part.  Prevents it from disappearing when we are precisely in line with the object and the wall's perpendicular
-                bool isMesh = (floor(hitBuf.g * 2) >= 1);
-                vec2 hitOct = hitBuf.ba;
-                vec3 hitNormal = decodeOctNormal(hitOct);
+                bool isMesh = hitBuf.g == 1;
+                float packedHitNormal = hitBuf.b;
+                vec3 hitNormal = unpackNormal(packedHitNormal);
+
                 float facing = dot(hitNormal, R);
                 if (isMesh || facing > 0.0) {
                     vec4 hitColor = texture(uSceneColor, suv);
@@ -155,7 +161,14 @@ void main()
                         min(suv.x, 1.0 - suv.x),
                         min(suv.y, 1.0 - suv.y)
                     ) * 5.0, 0.0, 1.0);
-                    result = vec4(hitColor.rgb, distAtten * roughAtten * edgeFade);
+                    float baseReflect = mix(0.04, 1.0, metalness);
+                    float NdotV = max(dot(normal, -V), 0.0);
+                    float fresnel = pow(1.0 - NdotV, 5.0);
+                    // schlick approximation
+                    float reflectStrength = baseReflect + (1.0 - baseReflect) * fresnel;
+                    float ssrStrength = reflectStrength;
+
+                    result = vec4(hitColor.rgb, ssrStrength * distAtten * roughAtten * edgeFade);
                 }
                 break;
             }

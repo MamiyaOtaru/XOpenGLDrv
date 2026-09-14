@@ -915,6 +915,16 @@ float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surf
     return Cached;
 }
 
+float UXOpenGLRenderDevice::GetMetalnessFromTextureName(const FSurfaceInfo& Surface)
+{
+    if (float* Cached = MetalnessCache.Find(Surface.Texture->Texture))
+        return *Cached;
+
+    float Cached = ComputeMetalnessFromTextureName(Surface);
+    MetalnessCache.Set(Surface.Texture->Texture, Cached);
+    return Cached;
+}
+
 float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface)
 {
     if (!Surface.Texture || !Surface.Texture->Texture)
@@ -936,8 +946,8 @@ float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& 
         return 0.2f;
 
     // Glass
-    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")))
-        return 0.05f;
+    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("liquid")))
+        return 0.1f;
 
     // Stone / rock / brick
     if (Has(TEXT("stone")) || Has(TEXT("rock")) || Has(TEXT("brick")) || Has(TEXT("concrete")))
@@ -957,6 +967,33 @@ float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& 
 
     // Default for everything else
     return 0.7f;
+}
+
+float UXOpenGLRenderDevice::ComputeMetalnessFromTextureName(const FSurfaceInfo& Surface)
+{
+    if (!Surface.Texture || !Surface.Texture->Texture)
+        return 0.0f; // default to not
+
+    //if (Surface.PolyFlags & PF_Environment)
+    //    return 1.0f; // chrome like surfaces are metal.  TODO what are these really
+
+    FString Name = Surface.Texture->Texture->GetName();
+    Name = Name.Locs();
+
+    auto Has = [&](const TCHAR* Sub) -> bool
+        {
+            return Name.InStr(Sub) != -1;
+        };
+
+    // Metals
+    if (Has(TEXT("metal")) || Has(TEXT("steel")) || Has(TEXT("iron")) || Has(TEXT("pipe")) || Has(TEXT("bolt")))// || Has(TEXT("trim")))
+        return 1.0f;
+
+    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("liquid")))
+        return 0.2f; // a lie but boost reflections a little
+
+    // Default for everything else
+    return 0.0f;
 }
 
 struct FLevelLightOverride
@@ -1261,8 +1298,9 @@ void UXOpenGLRenderDevice::NewLevelPP()
     CurrentLightToIndex.Empty();
     StaticLevelLights.Empty();
 		
-	// empty this on new level.  Otherwise can get stale pointers
+	// empty these on new level.  Otherwise can get stale pointers
 	RoughnessCache.Empty();
+    MetalnessCache.Empty();
 
     if (LastLevel && LastLevel->Model && LastLevel->GetLevelInfo())
 	{
