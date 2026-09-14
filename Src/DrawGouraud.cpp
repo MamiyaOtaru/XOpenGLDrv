@@ -153,7 +153,7 @@ DWORD UXOpenGLRenderDevice::PrepareGouraudCall(FSceneNode* Frame, FTextureInfo& 
 		//Z -= 50 * min(Z / 300, 1);
 	}
 
-	if (PolyFlags & PF_Selected)
+	if (PolyFlags & PF_Selected && !(PolyFlags & PF_Translucent))
 	{
 		DrawFlags |= ShaderDrawFlags::DF_Weapon;
 	}
