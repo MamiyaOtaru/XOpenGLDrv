@@ -88,7 +88,7 @@ DWORD UXOpenGLRenderDevice::PrepareGouraudCall(FSceneNode* Frame, FTextureInfo& 
 		// Dispatch buffered data
 		Shader->Flush(!CanBuffer);
 
-		SetBlend(NextPolyFlags);
+		SetBlend(NextPolyFlags | PF_Gouraud);
 
 		if (NoNearZ &&
 			(StoredFovAngle != Frame->Viewport->Actor->FovAngle ||
@@ -153,6 +153,10 @@ DWORD UXOpenGLRenderDevice::PrepareGouraudCall(FSceneNode* Frame, FTextureInfo& 
 		//Z -= 50 * min(Z / 300, 1);
 	}
 
+	// PF_Selected hijacked to say "mesh that is all close to the screen"
+	// aka weapon aka draw into alpha buffer after coronas etc.
+	// UNLESS if is translucent, aka invisibility, then DON'T write it into alpha buffer
+	// either leave in world (current behavior), or draw into final UI buffer
 	if (PolyFlags & PF_Selected && !(PolyFlags & PF_Translucent))
 	{
 		DrawFlags |= ShaderDrawFlags::DF_Weapon;

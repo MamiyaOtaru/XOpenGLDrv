@@ -542,21 +542,6 @@ void main(void)
   }
 
 #if OPT_ScreenSpaceReflections
-  if ((DrawFlags & DF_Modulated) == DF_Modulated)
-  {
-    // modulated smoke
-    float intensity = dot(TotalColor.rgb, vec3(0.3333));
-    float vis = abs(intensity - 0.5) * 2.0;
-    //vis *= TotalColor.a;
-    if (intensity < .5) {
-        TotalColor.rgb = vec3(0,0,0);
-    }
-    else {
-        TotalColor.rgb = vec3(1,1,1);
-    }
-    TotalColor.a = vis;
-  }
-
   if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_Modulated) != DF_Modulated && (DrawFlags & DF_Translucent) != DF_Translucent) {
     float depth = gl_FragCoord.z;   // already 0..1
     vec3 N = vec3(1.0, 0.0, 0.0);//ViewNormal;

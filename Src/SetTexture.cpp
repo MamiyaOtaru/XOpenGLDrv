@@ -1077,7 +1077,7 @@ void UXOpenGLRenderDevice::SetBlend(DWORD PolyFlags)
 			}
 			else if (PolyFlags & PF_Modulated)
 			{
-				if (ScreenSpaceReflections)
+				if (ScreenSpaceReflections && !(PolyFlags & PF_Gouraud))
 				{
 					glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 				}
