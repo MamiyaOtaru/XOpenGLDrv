@@ -118,10 +118,20 @@ void main()
     if (dot(normal, -V) < 0.0)
         normal = -normal;
     vec3 R = reflect(V, normal);
+    float noise = fract(sin(dot(gl_FragCoord.xy , vec2(12.9898,78.233))) * 43758.5453);
+    noise = noise * 2.0 - 1.0;
+    vec2 jitter2D = vec2(noise, noise);
+    vec3 jitter = vec3(jitter2D * 0.01, 0.0);
+    R = normalize(R + jitter);
 
     vec3 rayPos = viewPos;
 
     vec4 result = vec4(0.0);
+
+    // Track previous step
+    vec3 rayPos_prev = viewPos;
+    float sceneDepth_prev = 0.0;
+    float delta_prev = 0.0;
 
     for (int i = 0; i < uMaxSteps; i++)
     {
@@ -141,8 +151,21 @@ void main()
         float delta = rayPos.z - sceneDepth;
         if (delta > 0.0)
         {
-            if (delta <= uStepSize*1.25)
+            if (delta <= uStepSize*2)
             {
+                // lerp refinement - only if previous step was in front
+                if (delta_prev < 0.0)
+                {
+                    float t = delta_prev / (delta_prev - delta);
+                    vec3 hitPos = mix(rayPos_prev, rayPos, t);
+
+                    // Replace rayPos with refined hit position
+                    rayPos = hitPos;
+                    suv = projectToUV(rayPos);
+                    hitBuf = texture(uSSRBufferSurface, suv);
+                    sceneDepth = LinearizeDepth(hitBuf.r);
+                }
+
                 // rays can go behind objects and emerge from them
                 // so light can bounce around a pillar.  When only stop when the distance is small (we are at a surface)
                 // then, if BSP check normals to see if it is in fact visible from the reflector.  For meshes, cheat
@@ -173,6 +196,11 @@ void main()
                 break;
             }
         }
+
+        // Update previous pos/depth/delta for next iteration
+        rayPos_prev = rayPos;
+        sceneDepth_prev = sceneDepth;
+        delta_prev = delta;
     }
     
     FragColor = result;
