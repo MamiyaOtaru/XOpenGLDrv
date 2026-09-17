@@ -32,6 +32,8 @@ namespace GLStateManager {
     void APIENTRY hook_glDeleteSamplers(GLsizei n, const GLuint* samplers);
     void APIENTRY hook_glFrontFace(GLenum mode);
     void APIENTRY hook_glCullFace(GLenum mode);
+    void APIENTRY hook_glColorMaski(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a);
+    void APIENTRY hook_glBlendFunci(GLuint index, GLenum src, GLenum dst);
 }
 
 // =========================================================================
@@ -65,6 +67,8 @@ namespace GLStateManager {
 #undef glDeleteSamplers
 #undef glFrontFace
 #undef glCullFace
+#undef glColorMaski
+#undef glBendFunci
 
 // 2. Map the base functions directly to your state manager hooks!
 #define glIsEnabled             GLStateManager::hook_glIsEnabled
@@ -92,5 +96,7 @@ namespace GLStateManager {
 #define glDeleteSamplers        GLStateManager::hook_glDeleteSamplers
 #define glFrontFace             GLStateManager::hook_glFrontFace
 #define glCullFace              GLStateManager::hook_glCullFace
+#define glColorMaski            GLStateManager::hook_glColorMaski
+#define glBlendFunci            GLStateManager::hook_glBlendFunci
 
 #endif // BUILDING_STATE_MANAGER

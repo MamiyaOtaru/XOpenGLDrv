@@ -1079,6 +1079,7 @@ void UXOpenGLRenderDevice::SetBlend(DWORD PolyFlags)
 			{
 				if (ScreenSpaceReflections && !(PolyFlags & PF_Gouraud))
 				{
+					// non gouraud aka billboarded modulated.  basically ONLY rocket smoke.  Convert to alpah based
 					glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 				}
 				else {

@@ -54,6 +54,13 @@ namespace GLStateManager {
     // Force viewport metrics out of bounds so the main window setup pass runs cleanly
     GLViewportRect activeViewport = { -1, -1, -1, -1 };
 
+    static GLboolean ColorMaskiState[16][4] = { { GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE } };
+
+    static GLenum BlendSrcState[16];
+    static GLenum BlendDstState[16];
+
+    static GLboolean BlendEnableState[16] = { GL_FALSE };
+
     // --- HOOKED CACHING WRAPPERS ---
     void APIENTRY hook_glActiveTexture(GLenum textureUnit) {
         if (textureUnit != activeTextureUnit) {
@@ -140,35 +147,145 @@ namespace GLStateManager {
         (glad_glDeleteFramebuffers)(n, fbos);
     }
 
-    void APIENTRY hook_glEnable(GLenum cap) {
-        if (cap == GL_BLEND) {
-            if (blendEnabled != GL_TRUE) { (glad_glEnable)(GL_BLEND); blendEnabled = GL_TRUE; }
-        } else if (cap == GL_DEPTH_TEST) {
-            if (depthTestEnabled != GL_TRUE) { (glad_glEnable)(GL_DEPTH_TEST); depthTestEnabled = GL_TRUE; }
-        } else if (cap == GL_CULL_FACE) {
-            if (cullFaceEnabled != GL_TRUE) { (glad_glEnable)(GL_CULL_FACE); cullFaceEnabled = GL_TRUE; }
-        } else if (cap == GL_STENCIL_TEST) {
-            if (stencilEnabled != GL_TRUE) { (glad_glEnable)(GL_STENCIL_TEST); stencilEnabled = GL_TRUE; }
-        } else if (cap == GL_SCISSOR_TEST) {
-            if (scissorEnabled != GL_TRUE) { (glad_glEnable)(GL_SCISSOR_TEST); scissorEnabled = GL_TRUE; }
-        } else {
-            (glad_glEnable)(cap);
+    void APIENTRY hook_glEnable(GLenum cap)
+    {
+        if (cap == GL_BLEND)
+        {
+            bool anyDiff = false;
+
+            // Check if ANY indexed blend enable differs from global enable
+            for (int i = 0; i < 16; i++)
+            {
+                if (BlendEnableState[i] != GL_TRUE)
+                {
+                    anyDiff = true;
+                    break;
+                }
+            }
+
+            if (blendEnabled != GL_TRUE || anyDiff)
+            {
+                // Update global state
+                blendEnabled = GL_TRUE;
+
+                // Update ALL indexed states
+                for (int i = 0; i < 16; i++)
+                    BlendEnableState[i] = GL_TRUE;
+
+                // Call real GL
+                glad_glEnable(GL_BLEND);
+            }
+
+            return;
+        }
+
+        // --- other caps unchanged ---
+        if (cap == GL_DEPTH_TEST)
+        {
+            if (depthTestEnabled != GL_TRUE)
+            {
+                depthTestEnabled = GL_TRUE;
+                glad_glEnable(GL_DEPTH_TEST);
+            }
+        }
+        else if (cap == GL_CULL_FACE)
+        {
+            if (cullFaceEnabled != GL_TRUE)
+            {
+                cullFaceEnabled = GL_TRUE;
+                glad_glEnable(GL_CULL_FACE);
+            }
+        }
+        else if (cap == GL_STENCIL_TEST)
+        {
+            if (stencilEnabled != GL_TRUE)
+            {
+                stencilEnabled = GL_TRUE;
+                glad_glEnable(GL_STENCIL_TEST);
+            }
+        }
+        else if (cap == GL_SCISSOR_TEST)
+        {
+            if (scissorEnabled != GL_TRUE)
+            {
+                scissorEnabled = GL_TRUE;
+                glad_glEnable(GL_SCISSOR_TEST);
+            }
+        }
+        else
+        {
+            glad_glEnable(cap);
         }
     }
 
-    void APIENTRY hook_glDisable(GLenum cap) {
-        if (cap == GL_BLEND) {
-            if (blendEnabled != GL_FALSE) { (glad_glDisable)(GL_BLEND); blendEnabled = GL_FALSE; }
-        } else if (cap == GL_DEPTH_TEST) {
-            if (depthTestEnabled != GL_FALSE) { (glad_glDisable)(GL_DEPTH_TEST); depthTestEnabled = GL_FALSE; }
-        } else if (cap == GL_CULL_FACE) {
-            if (cullFaceEnabled != GL_FALSE) { (glad_glDisable)(GL_CULL_FACE); cullFaceEnabled = GL_FALSE; }
-        } else if (cap == GL_STENCIL_TEST) {
-            if (stencilEnabled != GL_FALSE) { (glad_glDisable)(GL_STENCIL_TEST); stencilEnabled = GL_FALSE; }
-        } else if (cap == GL_SCISSOR_TEST) {
-            if (scissorEnabled != GL_FALSE) { (glad_glDisable)(GL_SCISSOR_TEST); scissorEnabled = GL_FALSE; }
-        } else {
-            (glad_glDisable)(cap);
+    void APIENTRY hook_glDisable(GLenum cap)
+    {
+        if (cap == GL_BLEND)
+        {
+            bool anyDiff = false;
+
+            // Check if ANY indexed blend enable differs from global disable
+            for (int i = 0; i < 16; i++)
+            {
+                if (BlendEnableState[i] != GL_FALSE)
+                {
+                    anyDiff = true;
+                    break;
+                }
+            }
+
+            if (blendEnabled != GL_FALSE || anyDiff)
+            {
+                // Update global state
+                blendEnabled = GL_FALSE;
+
+                // Update ALL indexed states
+                for (int i = 0; i < 16; i++)
+                    BlendEnableState[i] = GL_FALSE;
+
+                // Call real GL
+                glad_glDisable(GL_BLEND);
+            }
+
+            return;
+        }
+
+        // --- other caps unchanged ---
+        if (cap == GL_DEPTH_TEST)
+        {
+            if (depthTestEnabled != GL_FALSE)
+            {
+                depthTestEnabled = GL_FALSE;
+                glad_glDisable(GL_DEPTH_TEST);
+            }
+        }
+        else if (cap == GL_CULL_FACE)
+        {
+            if (cullFaceEnabled != GL_FALSE)
+            {
+                cullFaceEnabled = GL_FALSE;
+                glad_glDisable(GL_CULL_FACE);
+            }
+        }
+        else if (cap == GL_STENCIL_TEST)
+        {
+            if (stencilEnabled != GL_FALSE)
+            {
+                stencilEnabled = GL_FALSE;
+                glad_glDisable(GL_STENCIL_TEST);
+            }
+        }
+        else if (cap == GL_SCISSOR_TEST)
+        {
+            if (scissorEnabled != GL_FALSE)
+            {
+                scissorEnabled = GL_FALSE;
+                glad_glDisable(GL_SCISSOR_TEST);
+            }
+        }
+        else
+        {
+            glad_glDisable(cap);
         }
     }
 
@@ -186,10 +303,32 @@ namespace GLStateManager {
         }
     }
 
-    void APIENTRY hook_glBlendFunc(GLenum sfactor, GLenum dfactor) {
-        if (blendSrcFunc != sfactor || blendDstFunc != dfactor) {
-            (glad_glBlendFunc)(sfactor, dfactor);
-            blendSrcFunc = sfactor; blendDstFunc = dfactor;
+    void APIENTRY hook_glBlendFunc(GLenum src, GLenum dst)
+    {
+        bool anyDiff = false;
+
+        for (int i = 0; i < 16; i++)
+        {
+            if (BlendSrcState[i] != src || BlendDstState[i] != dst)
+            {
+                anyDiff = true;
+                break;
+            }
+        }
+
+        if (anyDiff)
+        {
+            for (int i = 0; i < 16; i++)
+            {
+                BlendSrcState[i] = src;
+                BlendDstState[i] = dst;
+            }
+            // Update global state (for glGetIntegerv)
+            blendSrcFunc = src;
+            blendDstFunc = dst;
+
+            // Call real GL
+            glad_glBlendFunc(src, dst);
         }
     }
 
@@ -207,10 +346,42 @@ namespace GLStateManager {
         }
     }
 
-    void APIENTRY hook_glColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) {
-        if (colorMaskR != red || colorMaskG != green || colorMaskB != blue || colorMaskA != alpha) {
-            (glad_glColorMask)(red, green, blue, alpha);
-            colorMaskR = red; colorMaskG = green; colorMaskB = blue; colorMaskA = alpha;
+    void APIENTRY hook_glColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha)
+    {
+        bool anyDiff = false;
+
+        // Check all attachments for differences
+        for (int i = 0; i < 16; i++)
+        {
+            if (ColorMaskiState[i][0] != red ||
+                ColorMaskiState[i][1] != green ||
+                ColorMaskiState[i][2] != blue ||
+                ColorMaskiState[i][3] != alpha)
+            {
+                anyDiff = true;
+                break;
+            }
+        }
+
+        if (anyDiff)
+        {
+            // Update ALL per-attachment cached masks
+            for (int i = 0; i < 16; i++)
+            {
+                ColorMaskiState[i][0] = red;
+                ColorMaskiState[i][1] = green;
+                ColorMaskiState[i][2] = blue;
+                ColorMaskiState[i][3] = alpha;
+            }
+
+            // Update global mask (for glGetIntegerv emulation)
+            colorMaskR = red;
+            colorMaskG = green;
+            colorMaskB = blue;
+            colorMaskA = alpha;
+
+            // Call real GL
+            glad_glColorMask(red, green, blue, alpha);
         }
     }
 
@@ -296,6 +467,66 @@ namespace GLStateManager {
         if (mode != activeCullFaceMode) {
             (glad_glCullFace)(mode);
             activeCullFaceMode = mode;
+        }
+    }
+
+    void APIENTRY hook_glEnablei(GLenum cap, GLuint index)
+    {
+        if (cap == GL_BLEND)
+        {
+            //if (BlendEnableState[index] != GL_TRUE)
+            {
+                BlendEnableState[index] = GL_TRUE;
+                glad_glEnablei(cap, index);
+            }
+        }
+        else
+        {
+            // For other indexed caps, just forward
+            glad_glEnablei(cap, index);
+        }
+    }
+
+    void APIENTRY hook_glDisablei(GLenum cap, GLuint index)
+    {
+        if (cap == GL_BLEND)
+        {
+            if (BlendEnableState[index] != GL_FALSE)
+            {
+                BlendEnableState[index] = GL_FALSE;
+                glad_glDisablei(cap, index);
+            }
+        }
+        else
+        {
+            glad_glDisablei(cap, index);
+        }
+    }
+
+    void APIENTRY hook_glColorMaski(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a)
+    {
+        if (ColorMaskiState[index][0] != r ||
+            ColorMaskiState[index][1] != g ||
+            ColorMaskiState[index][2] != b ||
+            ColorMaskiState[index][3] != a)
+        {
+            ColorMaskiState[index][0] = r;
+            ColorMaskiState[index][1] = g;
+            ColorMaskiState[index][2] = b;
+            ColorMaskiState[index][3] = a;
+
+            glad_glColorMaski(index, r, g, b, a);
+        }
+    }
+
+    void APIENTRY hook_glBlendFunci(GLuint index, GLenum src, GLenum dst)
+    {
+        if (BlendSrcState[index] != src || BlendDstState[index] != dst)
+        {
+            BlendSrcState[index] = src;
+            BlendDstState[index] = dst;
+
+            glad_glBlendFunci(index, src, dst);
         }
     }
 

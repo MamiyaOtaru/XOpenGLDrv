@@ -89,6 +89,7 @@ DWORD UXOpenGLRenderDevice::PrepareGouraudCall(FSceneNode* Frame, FTextureInfo& 
 		Shader->Flush(!CanBuffer);
 
 		SetBlend(NextPolyFlags | PF_Gouraud);
+		glBlendFunci(1, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
 		if (NoNearZ &&
 			(StoredFovAngle != Frame->Viewport->Actor->FovAngle ||
@@ -161,6 +162,13 @@ DWORD UXOpenGLRenderDevice::PrepareGouraudCall(FSceneNode* Frame, FTextureInfo& 
 	{
 		DrawFlags |= ShaderDrawFlags::DF_Weapon;
 	}
+	if (!(PolyFlags & PF_Occlude))
+	{
+		//glColorMaski(1, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); // SSRBuffer
+		//glColorMaski(2, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); // SSRBufferSurface
+		//glColorMaski(3, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); // SolidSurfaces
+	}
+	glEnablei(GL_BLEND, 1);
 
 	DrawCallParams->DrawFlags = DrawFlags;
 	return DrawFlags;
@@ -178,6 +186,10 @@ void UXOpenGLRenderDevice::FinishGouraudCall(FTextureInfo& Info, DWORD DrawFlags
 
 	if (DrawFlags & ShaderDrawFlags::DF_MacroTexture)
 		Info.Texture->MacroTexture->Unlock(Shader->MacroTextureInfo);
+
+	//glColorMaski(1, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); // SSRBuffer
+	//glColorMaski(2, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); // SSRBufferSurface
+	//glColorMaski(3, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); // SolidSurfaces
 #endif
 }
 

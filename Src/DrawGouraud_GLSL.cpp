@@ -248,6 +248,7 @@ void UXOpenGLRenderDevice::DrawGouraudProgram::BuildFragmentShader(GLuint Shader
 {
     Out << R"(
 layout(location = 0) out vec4 FragColor;
+
 # if OPT_ScreenSpaceReflections
 layout(location = 1) out vec4 SSRBuffer;
 layout(location = 2) out vec4 SSRBufferSurface;
@@ -550,10 +551,14 @@ void main(void)
     float Ny = floor(N01.y * 255.0 + 0.5);
     float Nz = floor(N01.z * 255.0 + 0.5);
     float packedNormal = Nx * 65536.0 + Ny * 256.0 + Nz;
-    
+
     SSRBuffer = vec4(depth, 65280.0f, packedNormal, 1); // packed roughness 1, metalness 0
     SSRBufferSurface = vec4(depth, 1, packedNormal, 1); // depth (reflectee), isMesh, normal
     SolidSurfaces = vec4(TotalColor.rgb, 1.0);
+  }
+  else {
+    // not writing to these buffers when they already have a value (from BSP) leads to garbage.  so do a write that changes nothing
+    SSRBuffer = vec4(0,0,0,0);
   }
   if ((DrawFlags & DF_Weapon) == DF_Weapon) {
     Weapon = TotalColor;
