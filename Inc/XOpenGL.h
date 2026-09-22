@@ -1221,8 +1221,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 			DF_HDLightMap	  = 1 << 21,
 			DF_ShadowMaps	  = 1 << 22,
 			DF_Weapon		  = 1 << 23,
-			DF_AddToAlpha	  = 1 << 24,
-			DF_UI		      = 1 << 25,
+			DF_UI		      = 1 << 24,
 		};
 	};
     

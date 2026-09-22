@@ -903,7 +903,7 @@ return;
 
     float packedRM = floor(rough * 255.0) * 256.0 + floor(metal * 255.0);
     SSRBuffer = vec4(depth, packedRM, packedNormal, 1); // reflector depth, roughness/metal, normal
-    if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_AddToAlpha) != DF_AddToAlpha && (DrawFlags & DF_Modulated) != DF_Modulated) {
+    if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_Translucent) != DF_Translucent && (DrawFlags & DF_Modulated) != DF_Modulated) {
       SSRBufferSurface = vec4(depth, 0, packedNormal, 1); // reflectee depth, isMesh, normal
     }
 #endif
@@ -1263,7 +1263,7 @@ return;
 
 #if OPT_ScreenSpaceReflections
   // draw solid surfaces to apear in reflections
-  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_AddToAlpha) != DF_AddToAlpha) {
+  if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_Translucent) != DF_Translucent) {
     SolidSurfaces = vec4(TotalColor.rgb, 1.0);
   }
 #endif
