@@ -89,7 +89,8 @@ DWORD UXOpenGLRenderDevice::PrepareGouraudCall(FSceneNode* Frame, FTextureInfo& 
 		Shader->Flush(!CanBuffer);
 
 		SetBlend(NextPolyFlags | PF_Gouraud);
-		glBlendFunci(1, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+		if (ScreenSpaceReflections)
+			glBlendFunci(1, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); // blend ssrbuffer correctly (not eg. modulated)
 
 		if (NoNearZ &&
 			(StoredFovAngle != Frame->Viewport->Actor->FovAngle ||

@@ -1083,6 +1083,7 @@ void UXOpenGLRenderDevice::SetBlend(DWORD PolyFlags)
 					glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 				}
 				else {
+					// decals, drawComplex stuff like weapon pickup highlights in FoT
 					glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
 				}
 			}

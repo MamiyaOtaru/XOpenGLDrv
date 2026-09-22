@@ -1428,8 +1428,9 @@ class UXOpenGLRenderDevice : public URenderDevice
 	{
 		glm::uvec4 LightMeta;        // x = startIndex, y = countStatic, z = countDynamic
 		glm::vec4 StaticUVMinMax;    // MinU, MaxU, MinV, MaxV
+		glm::vec4 Centroid; 
 	};
-	static_assert(sizeof(FFacetData) == 32, "FacetData size mismatch");
+	static_assert(sizeof(FFacetData) == 48, "FacetData size mismatch");
 
 	// Base class for shader implementations
     template
@@ -1834,8 +1835,17 @@ class UXOpenGLRenderDevice : public URenderDevice
 		TArray<glm::uint> TriIdx;
 
 		FLOAT   Area;                    // polygon area (computed from VertIndices)
+		FLOAT ExtentU;
+		FLOAT ExtentV;
+		FLOAT Aspect;
 		FVector SurfaceNormal;           // editor normal (FBspSurf.vNormal)
 		INT LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
+
+		FVector Centroid;
+
+		UBOOL bLargeSurface;
+		UBOOL bThinSurface;
+		UBOOL bSmallSurface;
 
 		UBOOL IsMover = false;
 		AActor* Owner;

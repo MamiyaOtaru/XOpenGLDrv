@@ -36,6 +36,10 @@ bool VectorsEquivalent(const FVector& A, const FVector& B, float Tolerance = KIN
 		(A + B).SizeSquared() < Tolerance * Tolerance; // allow flipped axis
 }
 
+const FLOAT LargeThreshold = 4;   // tune for UT scale
+const FLOAT SmallThreshold = 64.0f;
+const FLOAT ThinAspectThreshold = 4.0f;
+
 void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 {
 	SurfaceInfoMap.Empty();
@@ -149,6 +153,42 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 			SI.Area = 1.0f;
 		}
 
+		// get centroid
+		FVector FacetPos(0, 0, 0);
+		for (INT vi = 0; vi < SI.Verts.Num(); ++vi)
+		{
+			const FVector& P = SI.Verts(vi);
+			FacetPos += P;
+		}
+		FacetPos /= SI.Verts.Num();
+		SI.Centroid = FacetPos;
+
+		// --- Compute extents along surface U/V axes ---
+		float minU = FLT_MAX, maxU = -FLT_MAX;
+		float minV = FLT_MAX, maxV = -FLT_MAX;
+
+		for (INT vi = 0; vi < SI.UVs.Num(); ++vi)
+		{
+			float U = SI.UVs(vi).X;
+			float V = SI.UVs(vi).Y;
+
+			if (U < minU) minU = U;
+			if (U > maxU) maxU = U;
+			if (V < minV) minV = V;
+			if (V > maxV) maxV = V;
+		}
+
+		SI.ExtentU = maxU - minU;
+		SI.ExtentV = maxV - minV;
+		SI.Aspect = (SI.ExtentU > SI.ExtentV)
+			? SI.ExtentU / Max(0.0001f, SI.ExtentV)
+			: SI.ExtentV / Max(0.0001f, SI.ExtentU);
+
+		SI.bLargeSurface = (SI.ExtentU > LargeThreshold || SI.ExtentV > LargeThreshold);
+		SI.bSmallSurface = (SI.ExtentU < SmallThreshold && SI.ExtentV < SmallThreshold);
+		SI.bThinSurface = (SI.Aspect > ThinAspectThreshold);
+
+
 		// Build quantized position map entries for smoothing
 		for (INT vi = 0; vi < SI.Verts.Num(); ++vi)
 		{
@@ -191,7 +231,7 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 
 			// accumulate weighted normals
 			FVector accum(0,0,0);
-			float totalWeight = 0.f;
+			FLOAT totalWeight = 0.f;
 
 			// find base surface info (fall back to a stable normal if missing)
 			FSurfInfo* baseSI = SurfaceInfoMap.Find(tgtSurf);
@@ -207,11 +247,58 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 					continue; // skip missing surface entries
 
 				const FVector& otherNormal = otherSI->SurfaceNormal;
-				float areaWeight = otherSI->Area;
+				FLOAT areaWeight = otherSI->Area;
 
 				// include only if angle between baseNormal and otherNormal is within threshold
-				float dp = baseNormal | otherNormal;
-				if (dp >= dotThreshold)
+				FLOAT dp = baseNormal | otherNormal;
+				UBOOL allowSmoothing = (dp >= dotThreshold);
+
+				//if (baseSI->bLargeSurface)
+				//	allowSmoothing = false;
+				// Thin surfaces smooth only along the long axis
+				/*if (baseSI->bThinSurface)
+				{
+					// Determine long axis in UV space
+					bool bLongU = (baseSI->ExtentU >= baseSI->ExtentV);
+					bool bLongV = !bLongU;
+
+					// Project normals onto U/V axes using UV gradients
+					// We approximate axis direction using UV deltas
+					FVector Uaxis(0, 0, 0);
+					FVector Vaxis(0, 0, 0);
+
+					if (baseSI->UVs.Num() >= 2)
+					{
+						// Build approximate U/V directions from UV gradients
+						const FVector& P0 = baseSI->Verts(0);
+						for (INT vi = 1; vi < baseSI->Verts.Num(); ++vi)
+						{
+							float du = baseSI->UVs(vi).X - baseSI->UVs(0).X;
+							float dv = baseSI->UVs(vi).Y - baseSI->UVs(0).Y;
+							FVector dP = baseSI->Verts(vi) - P0;
+
+							Uaxis += dP * du;
+							Vaxis += dP * dv;
+						}
+					}
+
+					Uaxis = Uaxis.SafeNormal();
+					Vaxis = Vaxis.SafeNormal();
+
+					// Choose long axis
+					FVector longAxis = bLongU ? Uaxis : Vaxis;
+
+					// If the normal diverges across the short axis, reject smoothing
+					float dpLong = otherNormal | longAxis;
+
+					// Threshold: tweakable
+					if (fabs(dpLong) < 0.5f)
+						allowSmoothing = false;
+					else
+						allowSmoothing = true;
+				}*/
+
+				if (allowSmoothing)
 				{
 					accum += otherNormal * areaWeight;
 					totalWeight += areaWeight;

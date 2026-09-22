@@ -116,7 +116,6 @@ precision lowp int;
 	Out << "#define DF_PhongShading " << ShaderDrawFlags::DF_PhongShading << "u" << END_LINE;
 	Out << "#define DF_ReadDepth " << ShaderDrawFlags::DF_ReadDepth << "u" << END_LINE;
 	Out << "#define DF_Weapon " << ShaderDrawFlags::DF_Weapon << "u" << END_LINE;
-	Out << "#define DF_AddToAlpha " << ShaderDrawFlags::DF_AddToAlpha << "u" << END_LINE;
 	Out << "#define DF_UI " << ShaderDrawFlags::DF_UI << "u" << END_LINE;
 	Out << "#define DF_AmbientOcclusion " << ShaderDrawFlags::DF_AmbientOcclusion << "u" << END_LINE;
 	Out << "#define DF_HDLightMap " << ShaderDrawFlags::DF_HDLightMap << "u" << END_LINE;
@@ -226,9 +225,9 @@ layout(std140) uniform LightInfo
 	Out << R"(
 struct FacetData
 {
-    uvec4 LightMeta;          // x = startIndex, y = count
-
+    uvec4 LightMeta;          // x = startIndex, y = countStatic, z = countDynamic
     vec4  StaticUVMinMax;     // MinU, MaxU, MinV, MaxV
+	vec4  Centroid;
 };
 layout(std430, binding = )" << GlobalShaderBindingIndices::FacetMetaIndex << R"() readonly buffer FacetMetaBuffer
 {
@@ -312,23 +311,59 @@ vec4 GetTexel(uvec2 BindlessTexHandle, sampler2D BoundSampler, vec2 TexCoords)
 {
   return texture(sampler2D(BindlessTexHandle), TexCoords);
 }
+vec4 GetTexelLod(uvec2 BindlessTexHandle, sampler2D BoundSampler, vec2 TexCoords, float lod)
+{
+  return textureLod(sampler2D(BindlessTexHandle), TexCoords, lod);
+}
+vec4 GetTexelMip(uvec2 BindlessTexHandle, sampler2D BoundSampler, ivec2 TexelCoords, int lod)
+{
+  return texelFetch(sampler2D(BindlessTexHandle), TexelCoords, lod);
+}
+vec2 GetTexLodQuery(uvec2 BindlessTexHandle, sampler2D BoundSampler, vec2 TexCoords)
+{
+  return textureQueryLod(sampler2D(BindlessTexHandle), TexCoords);
+}
+int GetTexMaxLevels(uvec2 BindlessTexHandle, sampler2D BoundSampler)
+{
+  return textureQueryLevels(sampler2D(BindlessTexHandle));
+}
+ivec2 GetTexSize(uvec2 BindlessTexHandle, sampler2D BoundSampler)
+{
+    return textureSize(sampler2D(BindlessTexHandle), 0);
+}
+ivec2 GetTexSizeMip(uvec2 BindlessTexHandle, sampler2D BoundSampler, int mipLevel)
+{
+    return textureSize(sampler2D(BindlessTexHandle), mipLevel);
+}
 #else
 // texture bound to TMU. BindlessTexBum is meaningless here
 vec4 GetTexel(uvec2 BindlessTexHandle, sampler2D BoundSampler, vec2 TexCoords)
 {
   return texture(BoundSampler, TexCoords);
 }
-#endif
-
-#if OPT_BindlessTextures
-ivec2 GetTexSize(uvec2 BindlessTexHandle, sampler2D BoundSampler)
+vec4 GetTexelLod(uvec2 BindlessTexHandle, sampler2D BoundSampler, vec2 TexCoords, float lod)
 {
-    return textureSize(sampler2D(BindlessTexHandle), 0);
+  return textureLod(BoundSampler, TexCoords, lod);
 }
-#else
+vec4 GetTexelMip(uvec2 BindlessTexHandle, sampler2D BoundSampler, ivec2 TexelCoords, int lod)
+{
+  return texelFetch(BoundSampler, TexelCoords, lod);
+}
+vec2 GetTexLodQuery(uvec2 BindlessTexHandle, sampler2D BoundSampler, vec2 TexCoords)
+{
+  return textureQueryLod(BoundSampler, TexCoords);
+}
+int GetTexMaxLevels(uvec2 BindlessTexHandle, sampler2D BoundSampler)
+{
+  return textureQueryLevels(BoundSampler);
+}
 ivec2 GetTexSize(uvec2 BindlessTexHandle, sampler2D BoundSampler)
 {
     return textureSize(BoundSampler, 0);
+}
+ivec2 GetTexSizeMip(uvec2 BindlessTexHandle, sampler2D BoundSampler, int mipLevel)
+{
+    return textureSize(BoundSampler, mipLevel);
 }
 #endif
 )";

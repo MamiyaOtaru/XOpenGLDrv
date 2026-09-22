@@ -81,6 +81,8 @@ out vec2 vBumpTexCoords;
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
 out mat3 vViewToTangentMat_geo;
 out mat3 vTangentToViewMat_geo;
+out vec3 vN_geo;
+out vec3 vCentroid;
 out vec3 vN;
 out vec3 vT;
 out vec3 vB;
@@ -209,6 +211,9 @@ void main(void)
   }
 #endif
 
+  vN_geo = N_geo;
+  FacetData fd = FacetMetaArr[FacetID];
+  vCentroid = fd.Centroid.xyz;
   vN = N_smooth;
   vT = T_smooth;
   vB = B_smooth;
@@ -321,8 +326,14 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
             constexpr FLOAT maxLayers   = 20.f;
             constexpr INT   numSearches = 5;
     Out << R"(
-  int mipLevel = int(floor(textureQueryLOD(Texture7, ptexCoords).y));
-  //if (mipLevel > 3) return ptexCoords;
+  // Safe, bindless-aware LOD calculation
+  vec2 lodQuery = GetTexLodQuery(TexHandle, Texture7, ptexCoords);
+  int rawMip    = int(floor(lodQuery.y));
+  int maxLevels = GetTexMaxLevels(TexHandle, Texture7);
+
+  // Safe clamp against the asset's real layout bounds
+  int mipLevel  = clamp(rawMip, 0, maxLevels - 1);
+  if (mipLevel > 3) return ptexCoords;
 
   // BasicRace-style angle factor
   float ndotv = abs(dot(vec3(0,0,1), viewDir));  // 1 = head-on, 0 = grazing
@@ -346,18 +357,26 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
 
   // BasicRace-style P vector (angleFactor applied here)
   float vz = max(abs(viewDir.z), 0.02);
-  vec2 P = (vParallaxScale * viewDir.xy * angleFactor) / vz;
-  vec2 delta = P / numLayers;
+  //vec2 P = (vParallaxScale * viewDir.xy * angleFactor) / vz;
+  //vec2 delta = P / numLayers;
+  // Pre-calculate the scalar multiplier denominator
+  float rcpSteps = 1.0 / (vz * numLayers); 
+  vec2 delta = (vParallaxScale * viewDir.xy * angleFactor) * rcpSteps;
 
   vec2 currentTexCoords = ptexCoords;
-  float height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
+  //float height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
+  //float height = 1.0 - GetTexelLod(TexHandle, Texture7, currentTexCoords, float(mipLevel)).r;
+  ivec2 texSize = GetTexSizeMip(TexHandle, Texture7, mipLevel);
+  float height = 1.0 - GetTexelMip(TexHandle, Texture7, ivec2(floor(fract(currentTexCoords) * texSize)), mipLevel).r;
 
   // Coarse Relief search
   while (height > currentLayerHeight)
   {
     currentLayerHeight += layerHeight;
     currentTexCoords -= delta;
-    height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
+    //height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
+    //height = 1.0 - GetTexelLod(TexHandle, Texture7, currentTexCoords, float(mipLevel)).r;
+    height = 1.0 - GetTexelMip(TexHandle, Texture7, ivec2(floor(fract(currentTexCoords) * texSize)), mipLevel).r;
   }
 
   // Binary search refinement
@@ -373,7 +392,9 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
   {
     vec2 mid = (a + b) * 0.5;
     float midH = (aH + bH) * 0.5;
-    float midTexH = 1.0 - GetTexel(TexHandle, Texture7, mid).r;
+    //float midTexH = 1.0 - GetTexel(TexHandle, Texture7, mid).r;
+    //float midTexH = 1.0 - GetTexelLod(TexHandle, Texture7, mid, float(mipLevel)).r;
+    float midTexH = 1.0 - GetTexelMip(TexHandle, Texture7, ivec2(floor(fract(mid) * texSize)), mipLevel).r;
 
     if (midTexH > midH)
     {
@@ -434,6 +455,8 @@ in vec2 vBumpTexCoords;
 #if OPT_BumpMaps || OPT_HWLighting || OPT_HeightMaps
 in mat3 vViewToTangentMat_geo;
 in mat3 vTangentToViewMat_geo;
+in vec3 vN_geo;
+in vec3 vCentroid;
 in vec3 vN;
 in vec3 vT;
 in vec3 vB;
@@ -463,74 +486,6 @@ uvec2 GetTexHandleHelper(uint DrawID, uint Index)
 	return (Index % 2u == 0u) ? Handles.xy : Handles.zw;
 }
 
-float LinearizeDepth(float depth, float nearZ, float farZ)
-{
-    float z = depth * 2.0 - 1.0;        // back to NDC
-    return (2.0 * nearZ * farZ) /
-           (farZ + nearZ - z * (farZ - nearZ));
-}
-
-vec2 ViewToUV(vec3 viewPos) {
-    vec4 clip = projMat * vec4(viewPos, 1.0);
-    vec3 ndc  = clip.xyz / clip.w;
-    vec2 uv   = ndc.xy * 0.5 + 0.5;
-    
-    uv.x = 1.0 - uv.x; // The "Inversion" Fix
-    return uv;
-}
-
-// to continue to use this will need to tweak GetDepthTexel to handle AA (or rather lack of it from prepass), like a new GetPrepassDepthTexel
-/*float ShadowForLight(vec3 fragPosVS, vec3 lightPosVS)
-{
-    const float bias = 5.0;
-    const int   maxSteps = 48;
-
-    // View-space normal
-    vec3 normalVS = normalize(vNormal);
-
-    // Push origin
-    vec3 rayOrigin = fragPosVS + normalVS * bias;
-
-    // Direction and distance
-    vec3 L = lightPosVS - rayOrigin;
-    float distToLight = length(L);
-    vec3 lightDirVS = L / distToLight;
-
-    // Depth-relative step size
-    float baseStep = max(2.0, fragPosVS.z * 0.02);
-
-    // Clamp number of steps based on distance
-    int steps = clamp(int(distToLight / baseStep), 1, maxSteps);
-
-    // Jitter to break up banding
-    float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
-
-    // Final step size
-    float stepSize = distToLight / float(steps);
-
-    // Thickness scales with step size
-    float thickness = stepSize * 4.0;
-
-    for (int i = 0; i < steps; i++)
-    {
-        float t = (float(i) + jitter) * stepSize;
-        vec3 currentPos = rayOrigin + lightDirVS * t;
-
-        vec2 uv = ViewToUV(currentPos);
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
-            return 0.0;
-
-        float depth = GetDepthTexel(GetTexHandleHelper(vDrawID, PrepassDepthIndex),
-                                    TMUPrepassDepthMap, uv).r;
-        float sceneZ = LinearizeDepth(depth, 0.5, 65336.0);
-
-        float dz = currentPos.z - sceneZ;
-        if (dz > 0.0 && dz < thickness)
-            return 1.0;
-    }
-
-    return 0.0;
-}*/
 #if OPT_ShadowMaps
 // Controls the blur width (softness) of the shadow edges on the wall surfaces
 const float SHADOW_FILTER_RADIUS = 0.0035f; 
@@ -664,7 +619,8 @@ void main(void)
 #if OPT_PhongShading
   mat3 ViewToTangentMat;
   mat3 TangentToViewMat;
-  if ((DrawFlags & DF_PhongShading) == DF_PhongShading) {
+
+  if ((DrawFlags & DF_PhongShading) == DF_PhongShading){// && isConcave) {
     vec3 N = normalize(vN);
     vec3 T = normalize(vT);
     vec3 B = normalize(vB);
@@ -693,10 +649,38 @@ void main(void)
 #if OPT_HeightMaps
   float baseAlpha;
   float applyConservative;
+  vec4 Color;
   if ((DrawFlags & DF_HeightMap) == DF_HeightMap) {
+    // is concave or convex
+    // Get the direction vector along the polygon face
+    vec3 faceDir = vCoords - vCentroid;
+    float lenSq = dot(faceDir, faceDir);
+
+    // Default to flat if we are exactly on top of the centroid to prevent NaN
+    float isConvex  = 0;
+
+    if (lenSq > 0.00001) {
+      // Strip out the distance so we are measuring PURE angles
+      faceDir    = normalize(faceDir);
+      vec3 smoothNormal = normalize(vN);
+
+      // Measure the turn angle. A perfect 90-degree turn is exactly 0.0.
+      float turnCos = dot(smoothNormal, faceDir);
+
+      // Clean, static epsilon to kill floating-point chatter
+      float angularEpsilon = 0.001; 
+      // .001 introduces some tolerance so a perfectly flat poly doesn't 
+      // shimmer between the two mats which should be the same but still leads to terrible visual artifacts
+      isConvex = step(angularEpsilon, turnCos);
+    }
+    mat3 ViewToTangentMatForPOM;
+    ViewToTangentMatForPOM[0] = mix(ViewToTangentMat[0], vViewToTangentMat_geo[0], isConvex);
+    ViewToTangentMatForPOM[1] = mix(ViewToTangentMat[1], vViewToTangentMat_geo[1], isConvex);
+    ViewToTangentMatForPOM[2] = mix(ViewToTangentMat[2], vViewToTangentMat_geo[2], isConvex);
+    
     float parallaxHeight = 1.0;
     // get new texture coordinates from Parallax Mapping
-    vec3 TangentViewDir = normalize(ViewToTangentMat * -vCoords.xyz);
+    vec3 TangentViewDir = normalize(ViewToTangentMatForPOM * -vCoords.xyz);
     texCoords = ParallaxMapping(vTexCoords, TangentViewDir, GetTexHandleHelper(vDrawID, HeightMapIndex), parallaxHeight);
   
     vec2 f = fract(vTexCoords);
@@ -707,7 +691,7 @@ void main(void)
     float nearHorizontalBorder = step(borderY, borderZone);   // top/bottom
 
     // Parallaxed sample
-    vec4 Color = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, texCoords.xy);
+    Color = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, texCoords.xy);
     // Build safe UV that protects only the needed axis
     vec2 safeUV = texCoords.xy;
     safeUV.x = mix(safeUV.x, vTexCoords.x, nearVerticalBorder);
@@ -716,16 +700,14 @@ void main(void)
     vec4 safeSample = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, safeUV);
     baseAlpha = safeSample.a;
     applyConservative = max(nearVerticalBorder, nearHorizontalBorder);
-  }
-#endif
-    
-  // (possibly) Parallaxed sample
-  vec4 Color = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, texCoords.xy);
-#if OPT_HeightMaps
-  if ((DrawFlags & DF_HeightMap) == DF_HeightMap) {
     // Conservative alpha only near borders
     Color.a = mix(Color.a, baseAlpha, applyConservative);
+  } // end if there IS a heightmap
+  else {
+    Color = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, texCoords.xy);
   }
+#else
+  vec4 Color = GetTexel(GetTexHandleHelper(vDrawID, DiffuseTextureIndex), TMUDiffuse, texCoords.xy);
 #endif
 
   // Apply diffuse factors
@@ -921,7 +903,7 @@ return;
 
     float packedRM = floor(rough * 255.0) * 256.0 + floor(metal * 255.0);
     SSRBuffer = vec4(depth, packedRM, packedNormal, 1); // reflector depth, roughness/metal, normal
-    if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_AddToAlpha) != DF_AddToAlpha) {
+    if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_AddToAlpha) != DF_AddToAlpha && (DrawFlags & DF_Modulated) != DF_Modulated) {
       SSRBufferSurface = vec4(depth, 0, packedNormal, 1); // reflectee depth, isMesh, normal
     }
 #endif
@@ -1092,7 +1074,7 @@ return;
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {
-      float hdLightmapIntensity = 2; // vanilla boosts 2 X LightMapIntensity.  We do a little less or it ends up too bright
+      float hdLightmapIntensity = 2; // vanilla boosts 2 X LightMapIntensity.  We do a little less or it ends up too bright^H^H^H^H^H
       totalStaticLight *= (LightMapIntensity * hdLightmapIntensity);
       totalSubtractedLight *= (LightMapIntensity * hdLightmapIntensity);
       totalDynamicLight *= (LightMapIntensity * hdLightmapIntensity);      
@@ -1117,7 +1099,11 @@ return;
 #else
       vec3 blendedLM = LightColor.rgb;
 #endif
-      totalSubtractedLight *= LightColor.rgb;
+      // shadowmaps not affected by HD lightmap (thus also not blended LM)
+      // as the meshes do not show up at all in the shadowmap if obstructed by BSP
+      // that is to say they ONLY occlude light that is not already occluded by BSP
+      // so should not be modulated by the occlusion map that tracks how much BSP occludes lights
+      totalSubtractedLight *= LightColor.rgb; 
 #if OPT_AmbientOcclusion
       if ((DrawFlags & DF_AmbientOcclusion) == DF_AmbientOcclusion) {
         // Sample SSAO (0 = dark, 1 = no occlusion)
@@ -1134,7 +1120,7 @@ return;
       vec3 totalLight = totalStaticLight + totalDynamicLight;
 
       LightColor.rgb = totalLight;
-      //LightColor.rgb = applyReinhard(LightColor.rgb, 1.34);
+      //LightColor.rgb = applyReinhard(LightColor.rgb, threshold);
       
       // lighting debug
       /*if (true) {
@@ -1280,17 +1266,13 @@ return;
   if ((DrawFlags & DF_ReadDepth) != DF_ReadDepth && (DrawFlags & DF_AddToAlpha) != DF_AddToAlpha) {
     SolidSurfaces = vec4(TotalColor.rgb, 1.0);
   }
-  if ((DrawFlags & DF_AddToAlpha) == DF_AddToAlpha) {
-    float vis = max(TotalColor.r, max(TotalColor.g, TotalColor.b));
-    TotalColor.rgb /= max(0.0001, vis);
-    TotalColor.a = vis;
-  }
 #endif
   FragColor = TotalColor;
 
 #if !OPT_Editor
-  if ((DrawFlags & DF_Modulated) != DF_Modulated)
+  if ((DrawFlags & DF_Modulated) != DF_Modulated) {
     FragColor = GammaCorrect(Gamma, FragColor);
+  }
 #endif
 }
 )";

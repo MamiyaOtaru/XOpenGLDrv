@@ -79,7 +79,8 @@ void UXOpenGLRenderDevice::DumpSurfInfo(INT iSurf, const FSurfInfo& SI)
 	}
 }
 
-INT UploadLights(UXOpenGLRenderDevice::FSurfInfo* SI,
+INT UploadLights(FSceneNode* Frame, 
+	UXOpenGLRenderDevice::FSurfInfo* SI,
 	UXOpenGLRenderDevice::DrawComplexProgram* Shader,
 	BOOL BumpMaps,
 	BOOL HDLightMap,
@@ -114,6 +115,11 @@ INT UploadLights(UXOpenGLRenderDevice::FSurfInfo* SI,
 
 			facetPtr->LightMeta = glm::uvec4(startIndex, staticCount, dynamicCount, 0);
 		}
+		// pass centroid for concave vs convex detection
+		if (SI) { // && SI->Centroid)
+			FVector CentroidVS = SI->Centroid.TransformPointBy(Frame->Coords);
+			facetPtr->Centroid = glm::vec4(CentroidVS.X, CentroidVS.Y, CentroidVS.Z, 1.0f);
+		}
 	}
 	if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)
 	{
@@ -146,15 +152,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	// Gather options
 	DWORD DrawFlags = ShaderDrawFlags::DF_None;
-	bool addToAlphaHack = false;
-	if (ScreenSpaceReflections && Surface.PolyFlags & PF_Translucent)
-	{
-		addToAlphaHack = true;
-		Surface.PolyFlags &= ~PF_Translucent;
-		Surface.PolyFlags |= PF_AlphaTexture;
-	}
 	const DWORD NextPolyFlags = GetPolyFlagsAndDrawFlags(Surface.PolyFlags, DrawFlags, FALSE);
-	if (addToAlphaHack) DrawFlags |= ShaderDrawFlags::DF_AddToAlpha;
 	if (GIsEditor && NextPolyFlags & PF_Selected)
 		DrawFlags |= ShaderDrawFlags::DF_Selected;
 
@@ -286,7 +284,9 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		Shader->Flush(!CanBuffer);
 
 		// Update global GL state
-		SetBlend(NextPolyFlags);
+		SetBlend(NextPolyFlags | PF_Gouraud); // Gouraud is a lie but prevents messing with modulated textures (eg water ripples on arcane's waterfall)
+		if (ScreenSpaceReflections)
+			glBlendFunci(1, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); // blend ssrbuffer correctly (not eg. modulated)
 	}
 
 	// Write static lightmap params (if present).
@@ -295,7 +295,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)
 	{
 		// absolute index into FacetMeta SSBO
-		facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
+		facetIDForVerts = UploadLights(Frame, SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
 		if (HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)
 			DrawFlags |= ShaderDrawFlags::DF_HDLightMap;
 	}
@@ -481,8 +481,9 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
 		DrawCallParams->Metalness = GetMetalnessFromTextureName(Surface);
 	}
-	if (PhongShading && BumpMaps && (SI && !SI->IsMover)) // phong only works in per pixel lighting mode
+	if (PhongShading && BumpMaps && (SI && !SI->IsMover)) { // phong only works in per pixel lighting mode
 		DrawFlags |= ShaderDrawFlags::DF_PhongShading;
+	}
 	bool safeToReadDepth = !(Surface.PolyFlags & PF_Occlude);
 	if (safeToReadDepth && !IsSolidBSP && (Surface.PolyFlags & (PF_AlphaTexture | PF_Translucent)) && !(Surface.PolyFlags & PF_Semisolid) && IsDepthFadeFX(Surface.Texture->Texture)) // don't fade out "non solid" that is really just unlit
 	{
@@ -574,7 +575,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 					HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
 				{
 					// absolute index into FacetMeta SSBO
-					facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
+					facetIDForVerts = UploadLights(Frame, SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
 				}
 
 				if (neededVerts >= Shader->VertexBufferSize)
@@ -733,7 +734,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 					HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
 				{
 					// absolute index into FacetMeta SSBO
-					facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
+					facetIDForVerts = UploadLights(Frame, SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
 				}
 
 				// just in case...
@@ -834,7 +835,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 					HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)// && (!SI->IsMover || NI))
 				{
 					// absolute index into FacetMeta SSBO
-					facetIDForVerts = UploadLights(SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
+					facetIDForVerts = UploadLights(Frame, SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
 				}
 
 				// just in case...

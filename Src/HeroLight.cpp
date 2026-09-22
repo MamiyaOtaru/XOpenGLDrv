@@ -316,6 +316,8 @@ void UXOpenGLHeroLight::PartitionBSPSurfaces(UModel* Model, UXOpenGLRenderDevice
         const TArray<glm::uint>& TriIdx = pSI->TriIdx;
 
         TArray<FVector> Triangles;
+        Triangles.Reserve(TriIdx.Num() / 3);
+
         for (INT t = 0; t < TriIdx.Num(); t += 3)
         {
             Triangles.AddItem(Verts(TriIdx(t)));

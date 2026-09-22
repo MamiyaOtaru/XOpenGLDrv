@@ -252,6 +252,8 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 
     // Get precomputed triangulation (surface is degenerate if there is none)
     TArray<FVector> Triangles;
+    Triangles.Reserve(TriIdx.Num() / 3);
+
     for (INT t = 0; t < TriIdx.Num(); t += 3)
     {
         Triangles.AddItem(Verts(TriIdx(t)));
@@ -946,7 +948,7 @@ float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& 
         return 0.2f;
 
     // Glass
-    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("liquid")))
+    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("pond")) || Has(TEXT("liquid")) || Has(TEXT("goop")))
         return 0.1f;
 
     // Stone / rock / brick
@@ -989,8 +991,8 @@ float UXOpenGLRenderDevice::ComputeMetalnessFromTextureName(const FSurfaceInfo& 
     if (Has(TEXT("metal")) || Has(TEXT("steel")) || Has(TEXT("iron")) || Has(TEXT("pipe")) || Has(TEXT("bolt")))// || Has(TEXT("trim")))
         return 1.0f;
 
-    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("liquid")))
-        return 0.2f; // a lie but boost reflections a little
+    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("pond")) || Has(TEXT("liquid")) || Has(TEXT("goop")))
+        return 0.3f; // a lie but boost reflections a little
 
     // Default for everything else
     return 0.0f;

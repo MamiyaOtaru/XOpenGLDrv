@@ -32,6 +32,8 @@ namespace GLStateManager {
     void APIENTRY hook_glDeleteSamplers(GLsizei n, const GLuint* samplers);
     void APIENTRY hook_glFrontFace(GLenum mode);
     void APIENTRY hook_glCullFace(GLenum mode);
+    void APIENTRY hook_glEnablei(GLenum cap, GLuint index);
+    void APIENTRY hook_glDisablei(GLenum cap, GLuint index);
     void APIENTRY hook_glColorMaski(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a);
     void APIENTRY hook_glBlendFunci(GLuint index, GLenum src, GLenum dst);
 }
@@ -67,6 +69,8 @@ namespace GLStateManager {
 #undef glDeleteSamplers
 #undef glFrontFace
 #undef glCullFace
+#undef glEnablei
+#undef glDisablei
 #undef glColorMaski
 #undef glBendFunci
 
@@ -96,6 +100,8 @@ namespace GLStateManager {
 #define glDeleteSamplers        GLStateManager::hook_glDeleteSamplers
 #define glFrontFace             GLStateManager::hook_glFrontFace
 #define glCullFace              GLStateManager::hook_glCullFace
+#define glEnablei               GLStateManager::hook_glEnablei
+#define glDisablei              GLStateManager::hook_glDisablei
 #define glColorMaski            GLStateManager::hook_glColorMaski
 #define glBlendFunci            GLStateManager::hook_glBlendFunci
 
