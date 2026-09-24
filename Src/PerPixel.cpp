@@ -12,7 +12,7 @@ INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet&
     if (!Facet.Polys || !Frame || !Frame->Level || !Frame->Level->Model)
         return INDEX_NONE;
 
-	ULevel* Level = Frame->Level;
+    ULevel* Level = Frame->Level;
 
     // Walk polys until we find one with a valid iNode
     for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
@@ -23,18 +23,18 @@ INT UXOpenGLRenderDevice::GetFacetSurfId(FSceneNode* Frame, const FSurfaceFacet&
         if (iNode < 0 || iNode >= Level->Model->Nodes.Num())
             continue;
 
-		const FBspNode& Node = Level->Model->Nodes(iNode);
-		const INT iSurf = Node.iSurf;
+        const FBspNode& Node = Level->Model->Nodes(iNode);
+        const INT iSurf = Node.iSurf;
 
         // Surface index must be valid
         if (iSurf < 0 || iSurf >= Level->Model->Surfs.Num())
             continue;
 
-		//const FBspSurf& Surf = Level->Model->Surfs(iSurf);
-		//AActor* Owner = Surf.Actor;
+        //const FBspSurf& Surf = Level->Model->Surfs(iSurf);
+        //AActor* Owner = Surf.Actor;
 
-		//if (Owner && Owner->IsA(AMover::StaticClass()))
-			//return INDEX_NONE;
+        //if (Owner && Owner->IsA(AMover::StaticClass()))
+            //return INDEX_NONE;
 
         return iSurf; // Found a valid surface ID
     }
@@ -74,28 +74,28 @@ inline bool IsDynamicLight(AActor* A)
         return false;
 
     if (A->bDynamicLight)
-       return true;
+        return true;
 
     if (A->bMovable && !A->bStatic) // Liandri's green teleport light is "movable" but also "static", so we check both flags to be sure
         return true;
 
     // Animated light types are dynamic
-	/*switch (A->LightType)
-	{
-		case LT_Pulse:
-		case LT_Blink:
-		case LT_Flicker:
-		case LT_Strobe:
-		case LT_SubtlePulse:
-		case LT_TexturePaletteOnce:
-		case LT_TexturePaletteLoop:
-			return true;   // dynamic
+    /*switch (A->LightType)
+    {
+        case LT_Pulse:
+        case LT_Blink:
+        case LT_Flicker:
+        case LT_Strobe:
+        case LT_SubtlePulse:
+        case LT_TexturePaletteOnce:
+        case LT_TexturePaletteLoop:
+            return true;   // dynamic
 
-		case LT_Steady:
-		case LT_BackdropLight:
-		default:
-			break;         // not dynamic
-	}*/
+        case LT_Steady:
+        case LT_BackdropLight:
+        default:
+            break;         // not dynamic
+    }*/
 
     return false;
 }
@@ -196,7 +196,7 @@ FVector UXOpenGLRenderDevice::ClosestPointOnTriangle(const FVector& P, const FVe
 
     if (d3 >= 0.f && d4 <= d3) return B;
 
-    float vc = d1*d4 - d3*d2;
+    float vc = d1 * d4 - d3 * d2;
     if (vc <= 0.f && d1 >= 0.f && d3 <= 0.f)
     {
         float v = d1 / (d1 - d3);
@@ -209,14 +209,14 @@ FVector UXOpenGLRenderDevice::ClosestPointOnTriangle(const FVector& P, const FVe
 
     if (d6 >= 0.f && d5 <= d6) return C;
 
-    float vb = d5*d2 - d1*d6;
+    float vb = d5 * d2 - d1 * d6;
     if (vb <= 0.f && d2 >= 0.f && d6 <= 0.f)
     {
         float w = d2 / (d2 - d6);
         return A + w * AC;
     }
 
-    float va = d3*d6 - d5*d4;
+    float va = d3 * d6 - d5 * d4;
     if (va <= 0.f && (d4 - d3) >= 0.f && (d5 - d6) >= 0.f)
     {
         float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
@@ -257,12 +257,12 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
     for (INT t = 0; t < TriIdx.Num(); t += 3)
     {
         Triangles.AddItem(Verts(TriIdx(t)));
-        Triangles.AddItem(Verts(TriIdx(t+1)));
-        Triangles.AddItem(Verts(TriIdx(t+2)));
+        Triangles.AddItem(Verts(TriIdx(t + 1)));
+        Triangles.AddItem(Verts(TriIdx(t + 2)));
     }
 
     FBspSurf bspSurf = Level->Model->Surfs(iSurf);
-    bool twoSided   = (bspSurf.PolyFlags & PF_TwoSided);
+    bool twoSided = (bspSurf.PolyFlags & PF_TwoSided);
     bool specialLit = (bspSurf.PolyFlags & PF_SpecialLit);
 
     TArray<RankedLight> Ranked;
@@ -293,7 +293,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         // For spotlights, pull coordinates from the ceiling fixture (TopLight)
         // For regular point lights, use their own location
         FVector LightPos = bIsSpot ? SpotData->TopLight->Location : L->Location;
-        
+
         FVector TargetPoint;
         bool bFoundValidPoint = false;
 
@@ -302,21 +302,21 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
         {
             // 1. Trace the center ray of the spotlight to the infinite plane of the surface
             float Denominator = SpotData->SpotDirection | FacetNormal;
-            
+
             // If the spotlight beam is not completely parallel to the surface plane
             if (Abs(Denominator) > 0.0001f)
             {
                 float T = ((BaseVert - LightPos) | FacetNormal) / Denominator;
-                
+
                 // If the surface is in front of the spotlight direction
                 if (T > 0.f && T < Radius)
                 {
                     FVector InfinitePlaneIntersection = LightPos + SpotData->SpotDirection * T;
-                    
+
                     // Check if this intersection point actually falls inside our polygon triangles
                     for (INT t = 0; t < Triangles.Num(); t += 3)
                     {
-                        if (PointInTriangle(InfinitePlaneIntersection, Triangles(t), Triangles(t+1), Triangles(t+2), FacetNormal))
+                        if (PointInTriangle(InfinitePlaneIntersection, Triangles(t), Triangles(t + 1), Triangles(t + 2), FacetNormal))
                         {
                             TargetPoint = InfinitePlaneIntersection;
                             bFoundValidPoint = true;
@@ -330,37 +330,37 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
             if (!bFoundValidPoint)
             {
                 float minDistSq = FLT_MAX;
-                
+
                 for (INT t = 0; t < Triangles.Num(); t += 3)
                 {
                     const FVector& A = Triangles(t);
-                    const FVector& B = Triangles(t+1);
-                    const FVector& C = Triangles(t+2);
-                    
+                    const FVector& B = Triangles(t + 1);
+                    const FVector& C = Triangles(t + 2);
+
                     // Core structural array of edge combinations
                     FVector Edges[3][2] = { {A, B}, {B, C}, {C, A} };
-                    
+
                     for (int e = 0; e < 3; ++e)
                     {
                         const FVector& Start = Edges[e][0];
-                        const FVector& End   = Edges[e][1];
-                        
+                        const FVector& End = Edges[e][1];
+
                         // Sample 5 discrete points along the segment (Start, 25%, Mid, 75%, End)
                         // This perfectly catches grazing steep ramps cutting through the cone edge!
                         for (int step = 0; step <= 4; ++step)
                         {
                             float Alpha = (float)step * 0.25f;
                             FVector SamplePoint = Start + (End - Start) * Alpha;
-                            
+
                             FVector ToSample = SamplePoint - LightPos;
                             float DistSq = ToSample.SizeSquared();
-                            
+
                             if (DistSq < (Radius * Radius))
                             {
                                 float SampleDist = appSqrt(DistSq);
-                                FVector DirNorm  = ToSample / Max(SampleDist, 0.001f);
-                                float CosAngle   = DirNorm | SpotData->SpotDirection;
-                                
+                                FVector DirNorm = ToSample / Max(SampleDist, 0.001f);
+                                float CosAngle = DirNorm | SpotData->SpotDirection;
+
                                 // If this specific segment sample sits inside the cone, lock it in!
                                 if (CosAngle >= SpotData->SpotCosOuter)
                                 {
@@ -375,7 +375,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
                         }
                     }
                 }
-                
+
                 // Final safety fallback: If completely missing the cone boundary, use closest point on triangle
                 if (!bFoundValidPoint)
                 {
@@ -385,7 +385,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 
                     for (INT t = 0; t < Triangles.Num(); t += 3)
                     {
-                        FVector cp = ClosestPointOnTriangle(projected, Triangles(t), Triangles(t+1), Triangles(t+2));
+                        FVector cp = ClosestPointOnTriangle(projected, Triangles(t), Triangles(t + 1), Triangles(t + 2));
                         float d2 = (cp - projected).SizeSquared();
                         if (d2 < minDistSq2)
                         {
@@ -406,7 +406,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 
             for (INT t = 0; t < Triangles.Num(); t += 3)
             {
-                if (PointInTriangle(projected, Triangles(t), Triangles(t+1), Triangles(t+2), FacetNormal))
+                if (PointInTriangle(projected, Triangles(t), Triangles(t + 1), Triangles(t + 2), FacetNormal))
                 {
                     inside = true;
                     TargetPoint = projected;
@@ -419,7 +419,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
                 float minDistSq = FLT_MAX;
                 for (INT t = 0; t < Triangles.Num(); t += 3)
                 {
-                    FVector cp = ClosestPointOnTriangle(projected, Triangles(t), Triangles(t+1), Triangles(t+2));
+                    FVector cp = ClosestPointOnTriangle(projected, Triangles(t), Triangles(t + 1), Triangles(t + 2));
                     float d2 = (cp - projected).SizeSquared();
                     if (d2 < minDistSq)
                     {
@@ -471,8 +471,8 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(
 
         FPlane RGBColor = FGetHSV(L->LightHue, L->LightSaturation, (BYTE)BaseBrightness);
         float lum = 0.299f * Clamp(RGBColor.X / 255.0f, 0.0f, 1.0f) +
-                    0.587f * Clamp(RGBColor.Y / 255.0f, 0.0f, 1.0f) +
-                    0.114f * Clamp(RGBColor.Z / 255.0f, 0.0f, 1.0f);
+            0.587f * Clamp(RGBColor.Y / 255.0f, 0.0f, 1.0f) +
+            0.114f * Clamp(RGBColor.Z / 255.0f, 0.0f, 1.0f);
         float brightnessFactor = Max(lum, brightness);
 
         // --- LAMBERT FACTOR ---
@@ -519,12 +519,12 @@ void UXOpenGLRenderDevice::GetAxes(FRotator R, FVector& X, FVector& Y, FVector& 
     // UT99 angles map 65536 units to a full 360-degree circle (2 * PI)
     DOUBLE SP = appSin((DOUBLE)R.Pitch * AngleScale);
     DOUBLE CP = appCos((DOUBLE)R.Pitch * AngleScale);
-    
-    DOUBLE SY = appSin((DOUBLE)R.Yaw   * AngleScale);
-    DOUBLE CY = appCos((DOUBLE)R.Yaw   * AngleScale);
-    
-    DOUBLE SR = appSin((DOUBLE)R.Roll  * AngleScale);
-    DOUBLE CR = appCos((DOUBLE)R.Roll  * AngleScale);
+
+    DOUBLE SY = appSin((DOUBLE)R.Yaw * AngleScale);
+    DOUBLE CY = appCos((DOUBLE)R.Yaw * AngleScale);
+
+    DOUBLE SR = appSin((DOUBLE)R.Roll * AngleScale);
+    DOUBLE CR = appCos((DOUBLE)R.Roll * AngleScale);
 
     // FORWARD VECTOR (X Axis)
     X.X = (FLOAT)(CP * CY);
@@ -560,16 +560,30 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForMover(
     FSurfInfo* SurfaceInfo = SurfaceInfoMap.Find(iSurf);
     if (!SurfaceInfo || SurfaceInfo->Verts.Num() < 3) return;
 
-    // Calculate baseline centroid in REST WORLD SPACE (FSurfInfo::Verts are rest-space world verts)
-    FVector RestCentroid(0.f, 0.f, 0.f);
-    for (INT v = 0; v < SurfaceInfo->Verts.Num(); ++v)
-    {
-        RestCentroid += SurfaceInfo->Verts(v);
-    }
-    RestCentroid /= (FLOAT)SurfaceInfo->Verts.Num();
+    // Retreive baseline centroid in REST WORLD SPACE (FSurfInfo::Verts are rest-space world verts)
+    FVector RestCentroid = SurfaceInfo->Centroid;
 
     // Convert centroid to LOCAL REST SPACE relative to mover's rest pivot (BasePos)
     FVector RestLocal = RestCentroid - Mover->BasePos;
+
+    TArray<FVector> KeyWorldCentroids;
+    KeyWorldCentroids.AddZeroed(Mover->NumKeys);
+
+    for (INT k = 0; k < Mover->NumKeys; ++k)
+    {
+        FRotator KeyRotation = Mover->BaseRot + Mover->KeyRot[k];
+        FVector  KeyPos = Mover->BasePos + Mover->KeyPos[k];
+
+        FVector RX, RY, RZ;
+        GetAxes(KeyRotation, RX, RY, RZ);
+
+        FVector Rotated;
+        Rotated.X = RestLocal.X * RX.X + RestLocal.Y * RY.X + RestLocal.Z * RZ.X;
+        Rotated.Y = RestLocal.X * RX.Y + RestLocal.Y * RY.Y + RestLocal.Z * RZ.Y;
+        Rotated.Z = RestLocal.X * RX.Z + RestLocal.Y * RY.Z + RestLocal.Z * RZ.Z;
+
+        KeyWorldCentroids(k) = KeyPos + Rotated;
+    }
 
     UBOOL specialLit = (bspSurf.PolyFlags & PF_SpecialLit) != 0;
     TArray<RankedLight> Ranked;
@@ -599,22 +613,7 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForMover(
         // Iterate through all mover keyframes, reconstructing position and calculating illumination
         for (INT k = 0; k < Mover->NumKeys; ++k)
         {
-            // Correct rest-space ? keyframe-space transform
-            FRotator KeyRotation = Mover->BaseRot + Mover->KeyRot[k];
-            FVector  KeyPos      = Mover->BasePos + Mover->KeyPos[k];
-
-            // Extract axes for rotation
-            FVector RX, RY, RZ;
-            GetAxes(KeyRotation, RX, RY, RZ);
-
-            // Rotate rest-local centroid into keyframe orientation
-            FVector Rotated;
-            Rotated.X = RestLocal.X * RX.X + RestLocal.Y * RY.X + RestLocal.Z * RZ.X;
-            Rotated.Y = RestLocal.X * RX.Y + RestLocal.Y * RY.Y + RestLocal.Z * RZ.Y;
-            Rotated.Z = RestLocal.X * RX.Z + RestLocal.Y * RY.Z + RestLocal.Z * RZ.Z;
-
-            // Reconstruct world-space centroid for this keyframe
-            FVector KeyWorldCentroid = KeyPos + Rotated;
+            FVector KeyWorldCentroid = KeyWorldCentroids(k);
 
             // Distance check against light radius
             FVector LightToTarget = KeyWorldCentroid - LightPos;
@@ -641,8 +640,8 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForMover(
             float BaseBrightness = bIsSpot ? (float)SpotData->Brightness : (float)L->LightBrightness;
             FPlane RGBColor = FGetHSV(L->LightHue, L->LightSaturation, (BYTE)BaseBrightness);
             float lum = 0.299f * Clamp(RGBColor.X / 255.0f, 0.0f, 1.0f)
-                      + 0.587f * Clamp(RGBColor.Y / 255.0f, 0.0f, 1.0f)
-                      + 0.114f * Clamp(RGBColor.Z / 255.0f, 0.0f, 1.0f);
+                + 0.587f * Clamp(RGBColor.Y / 255.0f, 0.0f, 1.0f)
+                + 0.114f * Clamp(RGBColor.Z / 255.0f, 0.0f, 1.0f);
 
             float score = attenuation * Max(lum, BaseBrightness / 255.f) * ConeFactor;
             if (score > MaxScore)
@@ -676,94 +675,93 @@ void UXOpenGLRenderDevice::ComputeStaticLightsForMover(
 }
 
 void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(
-    ULevel* Level,
+    FSceneNode* Frame,
     INT iSurf,
     TArray<AActor*>& OutLights)
 {
-	OutLights.Empty();
+    OutLights.Empty();
 
-	if (!Level || !Level->Model || iSurf < 0 || iSurf >= Level->Model->Surfs.Num())
-		return;
+    if (!Frame || !Frame->Level || !Frame->Level->Model || iSurf < 0 || iSurf >= Frame->Level->Model->Surfs.Num())
+        return;
 
-	// Try cached verts
+    // Try cached verts, centroid, radius
     TArray<FVector> Verts;
-	FSurfInfo* SurfaceInfo = SurfaceInfoMap.Find(iSurf);
-	if (SurfaceInfo)
-	{
+    FVector C(0, 0, 0);
+    float facetRadius = 0.f;
+    FSurfInfo* SurfaceInfo = SurfaceInfoMap.Find(iSurf);
+    if (SurfaceInfo)
+    {
         Verts = SurfaceInfo->Verts;
-	}
+        C = SurfaceInfo->Centroid;
+        facetRadius = SurfaceInfo->FacetRadius;
+    }
     else
     {
         // fallback: compute world-space verts now
-        GetWorldspaceSurfaceVerts(Level, iSurf, Verts);
+        GetWorldspaceSurfaceVerts(Frame->Level, iSurf, Verts);
+        // --- Stable world-space centroid ---
+        for (INT i = 0; i < Verts.Num(); i++)
+            C += Verts(i);
+        C /= Verts.Num();
+        // --- Radius ---
+        float facetRadiusSq = 0.f;
+        for (INT i = 0; i < Verts.Num(); i++)
+        {
+            float dSq = (Verts(i) - C).SizeSquared();
+            if (dSq > facetRadiusSq)
+                facetRadiusSq = dSq;
+        }
+        facetRadius = appSqrt(facetRadiusSq);
     }
 
     if (Verts.Num() < 3)
         return;
 
-    // --- Stable world-space normal ---
-    FVector N = Level->Model->Vectors(Level->Model->Surfs(iSurf).vNormal);
-    N.Normalize();
-
-    // --- Stable world-space centroid ---
-    FVector C(0,0,0);
-    for (INT i = 0; i < Verts.Num(); i++)
-        C += Verts(i);
-    C /= Verts.Num();
-
-    // --- Radius ---
-    float facetRadius = 0.f;
-    for (INT i = 0; i < Verts.Num(); i++)
-    {
-        float d = (Verts(i) - C).Size();
-        if (d > facetRadius)
-            facetRadius = d;
-    }
+    if ((C - Frame->Coords.Origin).SizeSquared() > 1000000)
+        return;
 
     // Iterate dynamic lights
-    for (INT i = 0; i < Level->Actors.Num(); ++i)
+    for (INT i = 0; i < DynamicLevelLights.Num(); ++i)
     {
-        AActor* A = Level->Actors(i);
-        if (!A || !IsDynamicLight(A))
+        AActor* A = DynamicLevelLights(i);
+
+        const FVector LightWorld = A->Location;
+
+        float distSq = (LightWorld - C).SizeSquared();
+        float cutoff = A->WorldLightRadius() + facetRadius;
+
+        if (distSq > cutoff * cutoff)
             continue;
-
-		const FVector LightWorld = A->Location;
-
-		const float dist1 = (LightWorld - C).Size();
-
-		if (dist1 > A->WorldLightRadius()+facetRadius) {
-			continue;
-		}
 
         OutLights.AddItem(A);
     }
 }
 
 void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
-	FSceneNode* Frame,
+    FSceneNode* Frame,
     FSurfaceFacet& Facet,
     TArray<AActor*>& OutStaticLights,
     TArray<AActor*>& OutDynamicLights,
-	INT MaxLights)
+    INT MaxLights)
 {
-	OutStaticLights.Empty();
+    OutStaticLights.Empty();
     OutDynamicLights.Empty();
 
-	if (!Frame || !Frame->Level || !Frame->Level->Model)
-		return;
+    if (!Frame || !Frame->Level || !Frame->Level->Model)
+        return;
 
-	ULevel* Level = Frame->Level;
+    ULevel* Level = Frame->Level;
 
-	INT Count = 0;
-	FVector CentroidView(0,0,0);
-	TArray<FVector> VertsView;
-	FVector FacetNormalView(0,0,0);
-	FSavedPoly* P = Facet.Polys;
-	bool haveNormal = false;
+    INT Count = 0;
+    FVector CentroidView(0, 0, 0);
+    TArray<FVector> VertsView;
+    FVector FacetNormalView(0, 0, 0);
+    FSavedPoly* P = Facet.Polys;
+    bool haveNormal = false;
 
     bool twoSided = false;
-	for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
-	{
+    for (FSavedPoly* Poly = Facet.Polys; Poly; Poly = Poly->Next)
+    {
         INT iNode = Facet.Polys->iNode;
         if (iNode >= 0 && iNode < Level->Model->Nodes.Num())
         {
@@ -775,55 +773,58 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
             }
         }
 
-		// Normal extraction: try to find a non-degenerate triangle
-		if (!haveNormal && Poly->NumPts >= 3)
-		{
-			const FVector& v0 = Poly->Pts[0]->Point;
+        // Normal extraction: try to find a non-degenerate triangle
+        if (!haveNormal && Poly->NumPts >= 3)
+        {
+            const FVector& v0 = Poly->Pts[0]->Point;
 
-			for (INT i = 1; i < Poly->NumPts - 1; ++i)
-			{
-				const FVector& v1 = Poly->Pts[i]->Point;
-				const FVector& v2 = Poly->Pts[i+1]->Point;
+            for (INT i = 1; i < Poly->NumPts - 1; ++i)
+            {
+                const FVector& v1 = Poly->Pts[i]->Point;
+                const FVector& v2 = Poly->Pts[i + 1]->Point;
 
-				FVector e1 = v1 - v0;
-				FVector e2 = v2 - v0;
-				FVector n  = e1 ^ e2;
+                FVector e1 = v1 - v0;
+                FVector e2 = v2 - v0;
+                FVector n = e1 ^ e2;
 
-				if (!n.IsNearlyZero())
-				{
-					FacetNormalView = n.SafeNormal();
-					haveNormal = true;
-					break;
-				}
-			}
-		}
+                if (!n.IsNearlyZero())
+                {
+                    FacetNormalView = n.SafeNormal();
+                    haveNormal = true;
+                    break;
+                }
+            }
+        }
 
-		// Centroid + radius accumulation
-		for (INT i = 0; i < Poly->NumPts; ++i)
-		{
-            const FVector& ViewPt  = Poly->Pts[i]->Point; // view space
+        // Centroid + radius accumulation
+        for (INT i = 0; i < Poly->NumPts; ++i)
+        {
+            const FVector& ViewPt = Poly->Pts[i]->Point; // view space
             VertsView.AddItem(ViewPt);
             CentroidView += ViewPt;
             Count += 1;
-		}
-	}
-	CentroidView /= Count;
-	FVector CentroidWorld = CentroidView.TransformPointBy(Frame->Uncoords);
-	FVector FacetNormalWorld = FacetNormalView.TransformVectorBy(Frame->Uncoords).SafeNormal();
+        }
+    }
+    CentroidView /= Count;
+    FVector CentroidWorld = CentroidView.TransformPointBy(Frame->Uncoords);
+    FVector FacetNormalWorld = FacetNormalView.TransformVectorBy(Frame->Uncoords).SafeNormal();
 
     // --- Radius ---
-    float facetRadius = 0.f;
+    float facetRadiusSq = 0.f;
     for (INT i = 0; i < VertsView.Num(); i++)
     {
-        float d = (VertsView(i) - CentroidView).Size();
-        if (d > facetRadius)
-            facetRadius = d;
+        float dSq = (VertsView(i) - CentroidView).SizeSquared();
+        if (dSq > facetRadiusSq)
+            facetRadiusSq = dSq;
     }
+    float facetRadius = appSqrt(facetRadiusSq);
 
-	TArray<RankedLight> Ranked;
+    TArray<RankedLight> Ranked;
     Ranked.Reserve(Level->Actors.Num());
 
     AActor* DummyLight = nullptr; // keep one light to ensure each surface has at least one, so the shader doesn't draw a surface with none as fullbright6
+
+    FLOAT centroidDistanceSq = (CentroidWorld - Frame->Coords.Origin).SizeSquared();
 
     // Iterate lights
     for (INT i = 0; i < Level->Actors.Num(); ++i)
@@ -838,42 +839,45 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
         if (!isDynamic && !isStatic)
             continue;
 
+        if (isDynamic && centroidDistanceSq > 1000000)
+            continue;
+
         if (!DummyLight && isStatic)
             DummyLight = A;
 
-		if (A->WorldLightRadius() <= 0.f)
-			continue;
-		
-		const FVector LightWorld = A->Location;
+        if (A->WorldLightRadius() <= 0.f)
+            continue;
 
-		const float dist = (LightWorld - CentroidWorld).Size();
+        const FVector LightWorld = A->Location;
 
-		if (dist > A->WorldLightRadius()+facetRadius) {
-			continue;
-		}
+        float dist = (LightWorld - CentroidWorld).Size();
+        float cutoff = A->WorldLightRadius() + facetRadius;
+
+        if (dist > cutoff)
+            continue;
 
         float x = Clamp(dist / A->WorldLightRadius(), 0.0f, 1.0f);
         float attenuation = (1.f - x) / (1.f + 4.f * x * x);
 
-		float brightness = A->LightBrightness / 255.f;
-		FPlane RGBColor = FGetHSV(
-			A->LightHue,
-			A->LightSaturation,
-			A->LightBrightness
-		);
-		float lum =
-			0.299f * Clamp(RGBColor.X / 255.0f, 0.0f, 1.0f) +
-			0.587f * Clamp(RGBColor.Y / 255.0f, 0.0f, 1.0f) +
-			0.114f * Clamp(RGBColor.Z / 255.0f, 0.0f, 1.0f);
+        float brightness = A->LightBrightness / 255.f;
+        FPlane RGBColor = FGetHSV(
+            A->LightHue,
+            A->LightSaturation,
+            A->LightBrightness
+        );
+        float lum =
+            0.299f * Clamp(RGBColor.X / 255.0f, 0.0f, 1.0f) +
+            0.587f * Clamp(RGBColor.Y / 255.0f, 0.0f, 1.0f) +
+            0.114f * Clamp(RGBColor.Z / 255.0f, 0.0f, 1.0f);
         float brightnessFactor = Max(lum, brightness);
 
-		FVector LightDir = (LightWorld - CentroidWorld).SafeNormal();
+        FVector LightDir = (LightWorld - CentroidWorld).SafeNormal();
         float dot = FacetNormalWorld | LightDir;
         if (twoSided && dot < 0.f)
             dot = -dot;
         float lambert = Max(0.f, dot);
 
-		float score = attenuation * brightnessFactor;
+        float score = attenuation * brightnessFactor;
 
         if (score > 0)
         {
@@ -895,7 +899,7 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
         R.IsStatic = true;
         Ranked.AddItem(R);
     }
-	Sort(&Ranked(0), Ranked.Num());
+    Sort(&Ranked(0), Ranked.Num());
 
     Count = Min(MaxLights, Ranked.Num());
     for (int i = 0; i < Count; ++i)
@@ -909,11 +913,11 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 
 float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface)
 {
-	if (float* Cached = RoughnessCache.Find(Surface.Texture->Texture))
+    if (float* Cached = RoughnessCache.Find(Surface.Texture->Texture))
         return *Cached;
 
-	float Cached = ComputeRoughnessFromTextureName(Surface);
-	RoughnessCache.Set(Surface.Texture->Texture, Cached);
+    float Cached = ComputeRoughnessFromTextureName(Surface);
+    RoughnessCache.Set(Surface.Texture->Texture, Cached);
     return Cached;
 }
 
@@ -932,16 +936,16 @@ float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& 
     if (!Surface.Texture || !Surface.Texture->Texture)
         return 0.5f; // neutral fallback
 
-	if (Surface.PolyFlags & PF_Environment)
+    if (Surface.PolyFlags & PF_Environment)
         return 0.05f; // chrome like surfaces are very smooth
 
     FString Name = Surface.Texture->Texture->GetName();
     Name = Name.Locs();
 
     auto Has = [&](const TCHAR* Sub) -> bool
-    {
-        return Name.InStr(Sub) != -1;
-    };
+        {
+            return Name.InStr(Sub) != -1;
+        };
 
     // Metals
     if (Has(TEXT("metal")) || Has(TEXT("steel")) || Has(TEXT("iron")) || Has(TEXT("pipe")) || Has(TEXT("bolt")))// || Has(TEXT("trim")))
@@ -1010,12 +1014,12 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     LevelOverrides.Empty();
 
     auto Add = [&](const TCHAR* Match, INT Cap)
-    {
-        FLevelLightOverride Ovr;
-        Ovr.Match = FString(Match).Locs();  // lowercase once
-        Ovr.Cap   = Cap;
-        LevelOverrides.AddItem(Ovr);
-    };
+        {
+            FLevelLightOverride Ovr;
+            Ovr.Match = FString(Match).Locs();  // lowercase once
+            Ovr.Cap = Cap;
+            LevelOverrides.AddItem(Ovr);
+        };
 
     // some built in values, can be overridden by config file
     // Defaults: 55 unless explicitly listed below.
@@ -1118,38 +1122,38 @@ void UXOpenGLRenderDevice::InitLightLevelOverrides()
     const TCHAR* IniFile = TEXT("XOpenGLDrv.ini");
     const TCHAR* Section = TEXT("XOpenGLDrv.LevelLightCaps");
 
-    TMultiMap<FString,FString>* Map = GConfig->GetSectionPrivate(Section, /*Force=*/false, /*Const=*/true, IniFile);
+    TMultiMap<FString, FString>* Map = GConfig->GetSectionPrivate(Section, /*Force=*/false, /*Const=*/true, IniFile);
 
     if (!Map)
         return;
 
-    for (TMultiMap<FString,FString>::TIterator It(*Map); It; ++It)
+    for (TMultiMap<FString, FString>::TIterator It(*Map); It; ++It)
     {
-        const FString& Key   = It.Key();
+        const FString& Key = It.Key();
         const FString& Value = It.Value();
-		if (Key.Len() == 0 || !Value.IsNum()) {
-			continue;
-		}
+        if (Key.Len() == 0 || !Value.IsNum()) {
+            continue;
+        }
         FString Match = Key.Locs();
         INT Cap = appAtoi(*Value);
 
-		bool existing = false;
-		for (INT i = 0; i < LevelOverrides.Num(); ++i)
-		{
-			if (LevelOverrides(i).Match == Match)
-			{
-				LevelOverrides(i).Cap = Cap; // override existing
-				existing = true;
-				break;
-			}
-		}
-		if (!existing)
-		{
-			FLevelLightOverride Ovr;
-			Ovr.Match = Match;
-			Ovr.Cap = Cap;
-			LevelOverrides.AddItem(Ovr);
-		}
+        bool existing = false;
+        for (INT i = 0; i < LevelOverrides.Num(); ++i)
+        {
+            if (LevelOverrides(i).Match == Match)
+            {
+                LevelOverrides(i).Cap = Cap; // override existing
+                existing = true;
+                break;
+            }
+        }
+        if (!existing)
+        {
+            FLevelLightOverride Ovr;
+            Ovr.Match = Match;
+            Ovr.Cap = Cap;
+            LevelOverrides.AddItem(Ovr);
+        }
     }
 }
 
@@ -1169,7 +1173,7 @@ TMap<AActor*, INT> SpotlightFloorIndexMap;
 void DetectFakeSpotlights(ULevel* Level, TArray<AActor*>& AllLights)
 {
     UModel* Model = Level->Model;
-    
+
     FakeSpotlightPairs.Empty();
     FakeSpotlightFloorToTopMap.Empty();
     FakeSpotlightTopToFloorMap.Empty();
@@ -1224,8 +1228,8 @@ void DetectFakeSpotlights(ULevel* Level, TArray<AActor*>& AllLights)
 
             // --- PAIR FOUND! ---
             UXOpenGLRenderDevice::FakeSpotlightPair Pair;
-            Pair.FloorLight  = FloorCandidate;
-            Pair.TopLight    = TopCandidate;
+            Pair.FloorLight = FloorCandidate;
+            Pair.TopLight = TopCandidate;
 
             FLOAT FloorRadius = FloorCandidate->WorldLightRadius();
             FLOAT h = Abs(FloorCandidate->Location.Z - TopCandidate->Location.Z);
@@ -1244,7 +1248,7 @@ void DetectFakeSpotlights(ULevel* Level, TArray<AActor*>& AllLights)
 
             // Direction vector
             Pair.SpotDirection = (FloorCandidate->Location - TopCandidate->Location).SafeNormal();
-            
+
             // Map tracking updates
             INT NewIdx = FakeSpotlightPairs.AddItem(Pair);
             SpotlightFloorIndexMap.Set(FloorCandidate, NewIdx);
@@ -1259,7 +1263,7 @@ void DetectFakeSpotlights(ULevel* Level, TArray<AActor*>& AllLights)
             //    FloorCandidate->Location.X, FloorCandidate->Location.Y, FloorCandidate->Location.Z,
             //    TopCandidate->Location.X, TopCandidate->Location.Y, TopCandidate->Location.Z);
 
-            break; 
+            break;
         }
     }
 }
@@ -1295,18 +1299,18 @@ UXOpenGLRenderDevice::FakeSpotlightPair* UXOpenGLRenderDevice::GetSpotlightData(
 // run on new level to gather list of lights per surface,
 void UXOpenGLRenderDevice::NewLevelPP()
 {
-	StaticLightsForFacet.Empty();
+    StaticLightsForFacet.Empty();
     DynamicLightsForFacet.Empty();
     CurrentLightToIndex.Empty();
     StaticLevelLights.Empty();
-		
-	// empty these on new level.  Otherwise can get stale pointers
-	RoughnessCache.Empty();
+
+    // empty these on new level.  Otherwise can get stale pointers
+    RoughnessCache.Empty();
     MetalnessCache.Empty();
 
     if (LastLevel && LastLevel->Model && LastLevel->GetLevelInfo())
-	{
-	    // set number of lights for this level
+    {
+        // set number of lights for this level
         // Get the map filename (package name), lowercase
         FString MapName = FString(LastLevel->GetOuter()->GetName()).Locs();
         debugf(TEXT("new level (mapname) %s"), *MapName);
@@ -1340,8 +1344,8 @@ void UXOpenGLRenderDevice::NewLevelPP()
             // until we can sort out which surfaces affect movers at all possible positions, 
             // this won't affect drawComplex because that checks isMover before StaticLightsForFacet
             const FBspSurf& Surf = Model->Surfs(SurfIndex);
-			AActor* Owner = Surf.Actor;
-			bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
+            AActor* Owner = Surf.Actor;
+            bool isMover = (Owner && Owner->IsA(AMover::StaticClass()));
             //if (isMover)
             //    continue;
 
@@ -1377,11 +1381,11 @@ INT UXOpenGLRenderDevice::GetLevelLightCap(const FString& LevelTitle)
 
     INT Cap = DefaultLightCap;
 
-	for (int t = 0; t < LevelOverrides.Num(); ++t)
-	{
-		const auto& Ovr = LevelOverrides(t);
+    for (int t = 0; t < LevelOverrides.Num(); ++t)
+    {
+        const auto& Ovr = LevelOverrides(t);
         if (Lower == Ovr.Match)
-			Cap = Ovr.Cap;
+            Cap = Ovr.Cap;
     }
 
     return Cap;
@@ -1456,11 +1460,3 @@ bool UXOpenGLRenderDevice::IsDepthFadeFX(const UTexture* Tex)
 
     return BinarySearchDepthFade(LowerName);
 }
-
-
-
-
-
-
-
-

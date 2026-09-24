@@ -180,41 +180,25 @@ Fbo::Fbo(int w, int h,
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 }
 
-// Custom static constructor for individual cubemap face FBO view targets
-Fbo::Fbo(int size, GLuint sharedColorCubemapID, GLuint sharedDepthCubemapID, int faceIndex)
-    : width(size), height(size), samples(1), isCubemap(true)
-{
-    prevFbo = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&prevFbo);
+// blank constructor ready to have attachments given to it later (shadowmaps stored data)
+Fbo::Fbo() {
+    // Save previous FBO
+    GLint prevFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
 
-    // Instantiate our hardware frame target block cleanly
+    // Create the FBO
     glGenFramebuffers(1, &fboID);
     glBindFramebuffer(GL_FRAMEBUFFER, fboID);
 
-    // Statically bind this FBO container to its target cubemap color face stride!
-    glFramebufferTexture2D(
-        GL_FRAMEBUFFER,
-        GL_COLOR_ATTACHMENT0,
-        GL_TEXTURE_CUBE_MAP_POSITIVE_X + faceIndex,
-        sharedColorCubemapID,
-        0
-    );
+    // Does NOT attach anything here.
+    // Does NOT allocate textures.
+    // Does NOT call glDrawBuffers.
+    // Does NOT call CheckStatus() yet.
+    //
+    // This FBO is intentionally "incomplete" until we attach
+    // the cube-map face during shadow rendering.
 
-    // Statically bind this FBO container to its target cubemap depth face stride!
-    glFramebufferTexture2D(
-        GL_FRAMEBUFFER,
-        GL_DEPTH_ATTACHMENT,
-        GL_TEXTURE_CUBE_MAP_POSITIVE_X + faceIndex,
-        sharedDepthCubemapID,
-        0
-    );
-
-    // Execute all of your standard class completion steps seamlessly!
-    GLenum bufs[] = { GL_COLOR_ATTACHMENT0 };
-    glDrawBuffers(1, bufs);
-
-    CheckStatus();
-
+    // Restore previous FBO
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
 }
 
@@ -320,9 +304,10 @@ Fbo::~Fbo() {
 void Fbo::Bind() {
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&prevFbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fboID);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        debugf(TEXT("FBO broken between frames!"));
-    }
+    // save some cpu until we need to debug something
+    //if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    //    debugf(TEXT("FBO broken between frames!"));
+    //}
 }
 
 void Fbo::Unbind() {

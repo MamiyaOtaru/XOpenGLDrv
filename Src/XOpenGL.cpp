@@ -1372,7 +1372,8 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
         delete CompositeFbo;
         CompositeFbo = nullptr;
     }
-	DeleteFullscreenQuad();
+
+    DeleteFullscreenQuad();
 	DeleteSSAONoiseTexture(); // new context?
 
     SceneWidth  = NewX;
@@ -1471,6 +1472,11 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 
 		CreateFullscreenQuad();
     }
+
+	if (!ShadowMapFbo)
+	{
+		ShadowMapFbo = new  Fbo();
+	}
 
 	// Flush textures.
 	Flush(1);
@@ -1950,6 +1956,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 	else {
 		// Gather actors
 		LightList.Empty();
+		DynamicLevelLights.Empty();
 		for (INT i = 0; i < Level->Actors.Num(); ++i)
 		{
 			AActor* Actor = Level->Actors(i);
@@ -1968,6 +1975,13 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
 			LightList.AddItem(Actor);
+			if (Actor->LightType != LT_None &&
+				Actor->LightBrightness != 0 && 
+				Actor->LightRadius != 0 &&
+				(Actor->bDynamicLight ||
+				(Actor->bMovable && !Actor->bStatic)) &&
+				(Actor->Location - Frame->Coords.Origin).SizeSquared() < 1000000)
+				DynamicLevelLights.AddItem(Actor);
 #else
 			if (Actor->NormalLightRadius) //for normal mapping only add lights with normallightradius set. Needs performance tests if not.
 				LightList.AddItem(Actor);
@@ -2682,6 +2696,7 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 		NewLevelBSP(); // gathers geometry and adds normals
 		NewLevelPP(); // gathers lights for geometry and preloads textures
 		NewLevelOC(); // loads or generates occlusion map
+		MoverWorldspaceCache.Empty();
 	}
 	if (GOcclusionState == EOcclusionState::Building)
 	{

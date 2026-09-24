@@ -211,7 +211,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 					ComputeStaticLightsForMover(Frame->Level, facetSurfId, list, LevelLightCap - 10);
 				else
 					ComputeStaticLightsForFacet(Frame->Level, facetSurfId, list, LevelLightCap - 10);
-        
 
 				// Since no entry exists, there is no occlusion data. 
 				// Add the raw list to both maps for future lookup
@@ -223,7 +222,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			}
 
 			// Dynamic lights (cheap)
-			ComputeDynamicLightsForFacet(Frame->Level, facetSurfId, dynamicList);
+			ComputeDynamicLightsForFacet(Frame, facetSurfId, dynamicList);
 
 			staticList = *SurfaceLightList;
 		} // end else is static BSP facet with valid key
@@ -477,7 +476,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	DrawCallParams->XAxis = glm::vec4(Facet.MapCoords.XAxis.X, Facet.MapCoords.XAxis.Y, Facet.MapCoords.XAxis.Z, Facet.MapCoords.XAxis | Facet.MapCoords.Origin);
 	DrawCallParams->YAxis = glm::vec4(Facet.MapCoords.YAxis.X, Facet.MapCoords.YAxis.Y, Facet.MapCoords.YAxis.Z, Facet.MapCoords.YAxis | Facet.MapCoords.Origin);
 	DrawCallParams->ZAxis = glm::vec4(Facet.MapCoords.ZAxis.X, Facet.MapCoords.ZAxis.Y, Facet.MapCoords.ZAxis.Z, 0.0);
-	if (BumpMaps && !hasORM) {
+	if ((BumpMaps || ScreenSpaceReflections) && !hasORM) {
 		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
 		DrawCallParams->Metalness = GetMetalnessFromTextureName(Surface);
 	}
@@ -532,6 +531,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		TArray<glm::uint>& TriIdx = SI->TriIdx;
 
 		// Build per-vertex data for this node polygon
+		BOOL lmReady = (GOcclusionState == EOcclusionState::Ready && PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num());
 		for (INT vi = 0; vi < NumPts; ++vi)
 		{
 			FVector Vert      = SurfWorldVerts(vi).TransformPointBy(Frame->Coords);
@@ -543,7 +543,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			PolyVertexNormals(vi)     = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
 			PolyVertexTangents(vi)    = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
 			PolyVertexBitangents(vi)  = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
-			if (GOcclusionState == EOcclusionState::Ready && PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num())
+			if (lmReady)
 				PolyVertexLightmapUVs(vi) = glm::vec2(SurfLightmapUVs(vi).X, SurfLightmapUVs(vi).Y);
 			//else
 			//	debugf(TEXT("XOpenGL: not enough UVs: %d %d"), PolyVertexLightmapUVs.Num(), SurfLightmapUVs.Num());
@@ -638,7 +638,16 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	else if (SI && ((HDLightMap && GOcclusionState == EOcclusionState::Ready) || (BumpMaps)))
 	{
 		const SurfaceBasis& Basis = SI->LightmapBasis;
-
+		FVector Origin;
+		if (SI->IsMover)
+		{
+			// Adjust origin for current mover position
+			Origin = SI->Owner->Location + SI->HDLightmap.OriginOffset;
+		}
+		else
+		{
+			Origin = SI->LightmapBasis.Origin;
+		}
 		//debugf(TEXT("Facet: iSurf %d"), facetSurfId);
 		// 
 		// No smoothing data available: compute polygon normal from facet.MapCoords.ZAxis (already provided in DrawCallParams)
@@ -689,16 +698,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 				if (HDLightMap && GOcclusionState == EOcclusionState::Ready)
 				{
-					FVector Origin;
-					if (SI->IsMover)
-					{
-						// Adjust origin for current mover position
-						Origin = SI->Owner->Location + SI->HDLightmap.OriginOffset;
-					}
-					else
-					{
-						Origin = SI->LightmapBasis.Origin;
-					}
 					// Project into surf basis relative to adjusted origin
 					FVector WorldPos = Pvs.TransformPointBy(Frame->Uncoords);
 					FVector Local = WorldPos - Origin;

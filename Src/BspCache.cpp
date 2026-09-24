@@ -163,6 +163,16 @@ void UXOpenGLRenderDevice::BuildSmoothVertexNormalsForLevel(ULevel* Level)
 		FacetPos /= SI.Verts.Num();
 		SI.Centroid = FacetPos;
 
+		// compute facet radius (bounding sphere)
+		float facetRadiusSq = 0.f;
+		for (INT vi = 0; vi < SI.Verts.Num(); ++vi)
+		{
+			float dSq = (SI.Verts(vi) - FacetPos).SizeSquared();
+			if (dSq > facetRadiusSq)
+				facetRadiusSq = dSq;
+		}
+		SI.FacetRadius = appSqrt(facetRadiusSq);
+
 		// --- Compute extents along surface U/V axes ---
 		float minU = FLT_MAX, maxU = -FLT_MAX;
 		float minV = FLT_MAX, maxV = -FLT_MAX;

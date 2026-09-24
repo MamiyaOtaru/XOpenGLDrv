@@ -12,11 +12,6 @@ UXOpenGLHeroLight::UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<
     AffectedZones.Empty();
     AffectedBSPSurfaces.Empty();
 
-    for (INT f = 0; f < 6; f++)
-    {
-        FaceFbos[f] = nullptr;
-    }
-
     if (!LightActor || !Level || !Level->Model) return;
     OwnerLevel = Level;
 
@@ -112,17 +107,6 @@ UXOpenGLHeroLight::~UXOpenGLHeroLight()
         glMakeTextureHandleNonResidentARB(BindlessMaskHandle);
         bIsHandleResident = FALSE;
         BindlessMaskHandle = 0;
-    }
-
-    // Delete the face-specific FBO frame structures cleanly
-    // Thanks to the 'if (FaceFbos[face])' gate, this handles per-face lazy loading flawlessly!
-    for (INT face = 0; face < 6; face++)
-    {
-        if (FaceFbos[face] != nullptr)
-        {
-            delete FaceFbos[face]; // Safely triggers destructor -> Dispose() natively
-            FaceFbos[face] = nullptr;
-        }
     }
 
     // ATOMIC UNIFIED CUBEMAP RECLAMATION
@@ -993,27 +977,6 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 		if (!(ChangedFaceMask & (1 << face)))
 			continue;
 
-		// The individual face FBO is only constructed right here, at the exact split-second 
-		// its frustum index passes the visibility mask, saving thousands of FBO handles!
-		if (!FaceFbos[face] && newFbosThisFrame < MAX_FBO_PER_FRAME)
-		{
-            newFbosThisFrame++;
-			FaceFbos[face] = new Fbo(shadowmapSize, ColorCubemapID, DepthCubemapID, face);
-		}
-        else if (!FaceFbos[face])
-        {
-            // made too many already this frame
-            glDepthMask(GL_TRUE);
-	        glViewport(PrevViewport[0], PrevViewport[1], PrevViewport[2], PrevViewport[3]);
-            return;
-        }
-
-		// --- BIND THE PERMANENT STATIC FACE FBO ---
-		// Absolutely zero attachment swaps, texture layer rebindings, or unbinds! 
-		// The driver treats this memory layout as a permanent, persistent asset block.
-		FaceFbos[face]->Bind();
-		glDrawBuffers(1, DrawBuffers);
-
 		// --- SELECTIVE CLEARING BASED ON BSP CACHE ---
         UBOOL bIsFaceInActiveFrustum = (CurrentFaceMask & (1 << face)) != 0;
         // draw BSP if it has not before, or if some BSP moved
@@ -1023,6 +986,19 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 		// This protects your write-once static world depth maps from being corrupted by dynamic actors.
 		if (CurrentFaceMask & (1 << face))
 		{
+            // --- ATTACH THE CORRECT CUBEMAP FACE (DEPTH + COLOR) ---
+            glFramebufferTexture2D(GL_FRAMEBUFFER,
+                GL_DEPTH_ATTACHMENT,
+                GL_TEXTURE_CUBE_MAP_POSITIVE_X + face,
+                DepthCubemapID,
+                0);
+
+            glFramebufferTexture2D(GL_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_CUBE_MAP_POSITIVE_X + face,
+                ColorCubemapID,
+                0);
+            glDrawBuffers(1, DrawBuffers);
 			RenderFaceGeometry(Level, Frame, face, CurrentFrameActors, bspNeedsDrawn, GL);
 		}
         // Face successfully rendered: clear its dirty bit
@@ -1030,7 +1006,6 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 
 		// Restore standard depth writing capability before stepping to the next face quadrant
 		glDepthMask(GL_TRUE);
-		FaceFbos[face]->Unbind();
 	}
 
 	// Restore standard screen depth writes and viewport coordinates for the main player pass

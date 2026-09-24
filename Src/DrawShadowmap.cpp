@@ -164,16 +164,30 @@ void UXOpenGLRenderDevice::DrawShadowMapSurface(
 
     if (SI.IsMover)
     {
-        CachedMoverGeometry* CachedMesh = PerFrameMoverCache.Find(SI.iSurf);
+        AMover* Mov = Cast<AMover>(SI.Owner);
+        if (!Mov) return;
+
+        CachedMoverGeometry* CachedMesh = MoverWorldspaceCache.Find(SI.iSurf);
+
         if (!CachedMesh)
         {
-            // Cache Miss! First face/light processing this static mesh on this tick.
+            // First time: allocate once
             CachedMoverGeometry NewCache;
-
+            NewCache.Verts.Empty();
+            //NewCache.Verts.Reserve(SI.Verts.Num());
+            NewCache.Verts.AddZeroed(SI.Verts.Num());
             ExtractMoverVertices(SI, NewCache.Verts);
-            
-            PerFrameMoverCache.Set(SI.iSurf, NewCache);
-            CachedMesh = PerFrameMoverCache.Find(SI.iSurf);
+            NewCache.LastPos = Mov->Location;
+            NewCache.LastRot = Mov->Rotation;
+            MoverWorldspaceCache.Set(SI.iSurf, NewCache);
+            CachedMesh = MoverWorldspaceCache.Find(SI.iSurf);
+        }
+        else if (CachedMesh->LastPos != Mov->Location || CachedMesh->LastRot != Mov->Rotation)
+        {
+            // Mover moved: overwrite existing verts
+            ExtractMoverVertices(SI, CachedMesh->Verts);
+            CachedMesh->LastPos = Mov->Location;
+            CachedMesh->LastRot = Mov->Rotation;
         }
         for (INT vi = 0; vi < NumPts; vi++)
         {
@@ -324,27 +338,24 @@ void UXOpenGLRenderDevice::DrawShadowMapMesh(
     {
         const FShadowTriangle& T = ShadowTris(i);
 
-        // buffer into your shadowmap vertex buffer
-        FVector V0 = T.V0;
-        FVector V1 = T.V1;
-        FVector V2 = T.V2;
+        // buffer into the shadowmap vertex buffer
 
         // Triangle Corner 0: Fully pack the mirrored 24-byte layout footprint [Result 1]
-        Out->Coords     = glm::vec3(V0.X, V0.Y, V0.Z); 
+        Out->Coords     = *(glm::vec3*)&T.V0;
         Out->DrawID     = DrawID;
         Out->Class      = 1u; // 1u flags this vertex as an animated dynamic actor mesh [Result 1]
         Out->Padding    = 0u;
         Out++;
 
         // Triangle Corner 1
-        Out->Coords     = glm::vec3(V1.X, V1.Y, V1.Z); 
+        Out->Coords     = *(glm::vec3*)&T.V1;
         Out->DrawID     = DrawID;
         Out->Class      = 1u; 
         Out->Padding    = 0u;
         Out++;
 
         // Triangle Corner 2
-        Out->Coords     = glm::vec3(V2.X, V2.Y, V2.Z); 
+        Out->Coords     = *(glm::vec3*)&T.V2;
         Out->DrawID     = DrawID;
         Out->Class      = 1u;
         Out->Padding    = 0u;

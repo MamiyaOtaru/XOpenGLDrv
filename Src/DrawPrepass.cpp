@@ -52,14 +52,30 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
     // Build per-vertex data for this node polygon
     if (SI.IsMover)
     {
-        CachedMoverGeometry* CachedMesh = PerFrameMoverCache.Find(SI.iSurf);
+        AMover* Mov = Cast<AMover>(SI.Owner);
+        if (!Mov) return;
+
+        CachedMoverGeometry* CachedMesh = MoverWorldspaceCache.Find(SI.iSurf);
+
         if (!CachedMesh)
         {
+            // First time: allocate once
             CachedMoverGeometry NewCache;
-            ExtractMoverVertices(SI, NewCache.Verts);      // world-space moved verts
-            PerFrameMoverCache.Set(SI.iSurf, NewCache);
-            CachedMesh = PerFrameMoverCache.Find(SI.iSurf);
-            // will fill in normals for movers in the triangle iteration
+            NewCache.Verts.Empty();
+            //NewCache.Verts.Reserve(SI.Verts.Num());
+            NewCache.Verts.AddZeroed(SI.Verts.Num());
+            ExtractMoverVertices(SI, NewCache.Verts);
+            NewCache.LastPos = Mov->Location;
+            NewCache.LastRot = Mov->Rotation;
+            MoverWorldspaceCache.Set(SI.iSurf, NewCache);
+            CachedMesh = MoverWorldspaceCache.Find(SI.iSurf);
+        }
+        else if (CachedMesh->LastPos != Mov->Location || CachedMesh->LastRot != Mov->Rotation)
+        {
+            // Mover moved: overwrite existing verts
+            ExtractMoverVertices(SI, CachedMesh->Verts);
+            CachedMesh->LastPos = Mov->Location;
+            CachedMesh->LastRot = Mov->Rotation;
         }
 
         for (INT vi = 0; vi < NumPts; ++vi)

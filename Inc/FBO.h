@@ -34,9 +34,8 @@ public:
         bool depthTexture,
         bool depthRbo);
 
-    // special constructor for cubemap FBOs (single FBO for single face)
-    Fbo(int size, GLuint sharedColorCubemapID, GLuint sharedDepthCubemapID, int faceIndex);
-
+    // blank constructor ready to have attachments given to it later (shadowmaps stored data)
+    Fbo();
 
     // specialized constructor for all in one cubemaps
     Fbo(int size, int numColorAttachments, GLenum colorFormat);

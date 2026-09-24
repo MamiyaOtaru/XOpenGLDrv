@@ -1841,6 +1841,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		INT LastDrawnFrame = -1;		 // keep track of whether this surface was drawn this frame (only draw once)
 
 		FVector Centroid;
+		FLOAT FacetRadius;
 
 		UBOOL bLargeSurface;
 		UBOOL bThinSurface;
@@ -1864,6 +1865,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TMap<INT, TArray<AActor*>> DynamicLightsForFacet;
 	// per level list of all static lights used for quick iteration for setting up hero lights etc.
 	TArray<AActor*> StaticLevelLights;
+	// per frame, quickly iterate through dynamic lights without having to iterate all of them
+	TArray<AActor*> DynamicLevelLights;
 
 	// --- Fake Spotlight Pair Tracking ---
 	struct FakeSpotlightPair
@@ -1895,7 +1898,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	void UXOpenGLRenderDevice::GetWorldspaceSurfaceVerts(ULevel* Level, INT iSurf, TArray<FVector>& OutVerts);
 	void UXOpenGLRenderDevice::ComputeStaticLightsForFacet(ULevel* Level, INT iSurf, TArray<AActor*>& outLights, int MaxStaticLights);
 	void UXOpenGLRenderDevice::ComputeStaticLightsForMover(ULevel* Level, INT iSurf, TArray<AActor*>& OutTopLights, int MaxStaticLights);
-	void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(ULevel* Level, INT iSurf, TArray<AActor*>& outLights);
+	void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(FSceneNode* Frame, INT iSurf, TArray<AActor*>& outLights);
 	void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(FSceneNode* Frame, FSurfaceFacet& Facet, TArray<AActor*>& OutStaticLights, TArray<AActor*>& OutDynamicLights, INT MaxLights);
 	float UXOpenGLRenderDevice::GetRoughnessFromTextureName(const FSurfaceInfo& Surface);
 	float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& Surface);
@@ -1976,12 +1979,14 @@ class UXOpenGLRenderDevice : public URenderDevice
 	struct CachedMoverGeometry
 	{
 		TArray<FVector> Verts; // Fully transformed world-space verts
+		FVector LastPos;
+		FRotator LastRot;
 	};
 
 	// per frame worldpos data
 	TMap<AActor*, CachedActorSplatArray> PerFrameActorSplatCache;
 	TMap<AActor*, CachedStaticMeshGeometry> PerFrameStaticMeshCache;
-	TMap<INT, CachedMoverGeometry> PerFrameMoverCache;
+	TMap<INT, CachedMoverGeometry> MoverWorldspaceCache;
 	inline FVector UXOpenGLRenderDevice::TransformMeshSpaceToWorld(const FVector& P, ULodMesh* L, const FVector& MX, const FVector& MY, const FVector& MZ, const FVector& AX, const FVector& AY, const FVector& AZ, FLOAT DrawScale, const FVector& ActorLocation, const FVector& PrePivot);
 	void UXOpenGLRenderDevice::ExtractLodMeshCapsules(ULodMesh* L, AActor* Actor, TArray<FCapsuleSplat>& OutCapsules);
 	void UXOpenGLRenderDevice::ExtractMappedAnimatedTriangles(ULodMesh* L, AActor* Actor, const FMeshConnectivity& Blueprint, TArray<FShadowTriangle>& OutTris);
@@ -2026,6 +2031,8 @@ class UXOpenGLRenderDevice : public URenderDevice
     Fbo* ResolveFbo = nullptr; // if MSAA is enabled, we need a separate FBO to resolve the scene into for postprocessing and/or presenting. If not, this will just be a reference to SceneFbo.
 
 	Fbo* CompositeFbo = nullptr; // for post processing.  can't read from and write to resolve at the same time
+
+	Fbo* ShadowMapFbo = nullptr; // used for rendering shadowmaps
 
 	// --- Prepass / GBuffer (depth + normal, maybe more later) ---
 	Fbo* gbufferFbo = nullptr;

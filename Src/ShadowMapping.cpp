@@ -938,8 +938,6 @@ void UXOpenGLRenderDevice::ExtractMoverVertices(
     const FSurfInfo& SI,
     TArray<FVector>& OutVerts)
 {
-    OutVerts.Empty();
-
     if (!SI.IsMover || !SI.Owner)
         return;
 
@@ -960,8 +958,6 @@ void UXOpenGLRenderDevice::ExtractMoverVertices(
     FVector RXb, RYb, RZb;
     GetAxes(BaseRot, RXb, RYb, RZb);
 
-    OutVerts.Reserve(SI.Verts.Num());
-
     for (INT i = 0; i < SI.Verts.Num(); ++i)
     {
         // Remove BaseRot from the stored world-space vertex
@@ -978,7 +974,7 @@ void UXOpenGLRenderDevice::ExtractMoverVertices(
         Rotated.Y = RestLocal.X * RXc.Y + RestLocal.Y * RYc.Y + RestLocal.Z * RZc.Y;
         Rotated.Z = RestLocal.X * RXc.Z + RestLocal.Y * RYc.Z + RestLocal.Z * RZc.Z;
 
-        OutVerts.AddItem(CurPos + Rotated);
+        OutVerts(i) = (CurPos + Rotated);
     }
 }
 
@@ -1561,7 +1557,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
 {
     PerFrameActorSplatCache.Empty();
     PerFrameStaticMeshCache.Empty();
-    PerFrameMoverCache.Empty();
+
     UXOpenGLHeroLight::newCubemapsThisFrame = 0;
     UXOpenGLHeroLight::newFbosThisFrame = 0;
 
@@ -1598,6 +1594,9 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     glBlendEquationSeparate(GL_MIN, GL_MAX);
     glBlendFunc(GL_ONE, GL_ONE);
     glDisable(GL_CULL_FACE);
+
+    // --- BIND THE GLOBAL SHADOWMAP FBO ---
+    glBindFramebuffer(GL_FRAMEBUFFER, ShadowMapFbo->fboID);
 
     // ========================================================
     // PHASE 1: THE UNCONDITIONAL HIGH-PRIORITY PASS

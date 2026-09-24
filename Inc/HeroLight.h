@@ -25,7 +25,6 @@ private:
     FLOAT     LastRadius;
     FVector   LastLocation;
 
-    Fbo*      FaceFbos[6];
     INT       shadowmapSize = 512;
 
     GLuint    ColorCubemapID = 0;

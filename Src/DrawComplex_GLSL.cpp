@@ -865,13 +865,14 @@ return;
 
   // BumpMap (Normal Map)
   vec3 totalSpec  = vec3(0.0);
+  vec3 totalSubtractedSpec = vec3(0.0);
   uint numSurfaceLights = 0;
-  float rough = 1;
-  float metal = 0;
+  float rough = DrawDrawComplexParams[vDrawID].Roughness;
+  float metal = DrawDrawComplexParams[vDrawID].Metalness;
+  vec3 ViewNormal = vNormal;
+
 #if OPT_BumpMaps
   {
-    float MinLight = 0.05f;
-
     vec3 TangentNormal;
     vec3 ViewNormal;
     if ((DrawFlags & DF_BumpMap) == DF_BumpMap) {
@@ -882,9 +883,7 @@ return;
       TangentNormal = ViewToTangentMat * vNormal;
       ViewNormal = vNormal;
     }
-
-    rough = DrawDrawComplexParams[vDrawID].Roughness;
-    metal = DrawDrawComplexParams[vDrawID].Metalness;
+#endif
 #if OPT_ScreenSpaceReflections
     if ((DrawFlags & DF_ORMMap) == DF_ORMMap) {
         vec4 ORM = GetTexel(GetTexHandles(vDrawID, 2).zw, Texture8, texCoords);
@@ -907,7 +906,7 @@ return;
       SSRBufferSurface = vec4(depth, 0, packedNormal, 1); // reflectee depth, isMesh, normal
     }
 #endif
-
+#if OPT_BumpMaps
     vec3 totalStaticLight = vec3(0.0);
     vec3 totalSubtractedLight = vec3(0.0);
     vec3 totalDynamicLight = vec3(0.0);
@@ -1063,12 +1062,11 @@ return;
       float spec = pow(specDot, shininess)
                    * specStrength
                    * brightnessFactor
-                   * attenuation
-                   * shadowFactor;
+                   * attenuation;
 
       vec3 specular = spec * rawColor;   // colored specular, matches UT99 lights
       totalSpec += specular;
-
+      totalSubtractedSpec += specular * (1.0 - shadowFactor);
       //contributingLights++;
     }
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
@@ -1079,11 +1077,8 @@ return;
       totalSubtractedLight *= (LightMapIntensity * hdLightmapIntensity);
       totalDynamicLight *= (LightMapIntensity * hdLightmapIntensity);      
       totalSpec *= (LightMapIntensity * 1.5f); // give specular less of a boost
+      totalSubtractedSpec *= (LightMapIntensity * 1.5f);
 
-      float specThreshold = 1.0; // for specular, we want to allow it to be as bright as the light color, but not brighter
-      totalSpec = applyReinhard(totalSpec, specThreshold);
-
-      float threshold = 1.34; // must match the GPU_Threshold in the CPU occlusion calculator
 #if OPT_HDLightMap
       // preserve color from both HD and vanilla and use the darker shadow term
       float HDShadow  = max(Occlusion.r, max(Occlusion.g, Occlusion.b));
@@ -1099,11 +1094,6 @@ return;
 #else
       vec3 blendedLM = LightColor.rgb;
 #endif
-      // shadowmaps not affected by HD lightmap (thus also not blended LM)
-      // as the meshes do not show up at all in the shadowmap if obstructed by BSP
-      // that is to say they ONLY occlude light that is not already occluded by BSP
-      // so should not be modulated by the occlusion map that tracks how much BSP occludes lights
-      totalSubtractedLight *= LightColor.rgb; 
 #if OPT_AmbientOcclusion
       if ((DrawFlags & DF_AmbientOcclusion) == DF_AmbientOcclusion) {
         // Sample SSAO (0 = dark, 1 = no occlusion)
@@ -1111,16 +1101,29 @@ return;
         blendedLM *= AO * AO * AO * AO * AO;// * AO;
       }
 #endif
+      // shadowmaps not affected by HD lightmap (thus also not blended LM)
+      // as the meshes do not show up at all in the shadowmap if obstructed by BSP
+      // that is to say they ONLY occlude light that is not already occluded by BSP
+      // so should not be modulated by the occlusion map that tracks how much BSP occludes lights
+      totalSubtractedLight *= LightColor.rgb;
+      totalSubtractedSpec *= LightColor.rgb;
+
+      float specThreshold = 1.34; // for specular, we want to allow it to be as bright as the light color, but not brighter
+      float threshold = 1.34; // must match the GPU_Threshold in the CPU occlusion calculator
+      
       float lmIntensity = dot(blendedLM, vec3(0.299, 0.587, 0.114));
       totalSpec *= lmIntensity;
-      totalStaticLight = totalStaticLight * blendedLM;
+      totalSpec -= totalSubtractedSpec;
+      totalSpec = clamp(totalSpec, vec3(0.0), totalSpec);
+      totalSpec = applyReinhard(totalSpec, specThreshold);
+
+      totalStaticLight *= blendedLM;
       totalStaticLight -= totalSubtractedLight;
       totalStaticLight = clamp(totalStaticLight, vec3(0.0), totalStaticLight);
       totalStaticLight = applyReinhard(totalStaticLight, threshold);
       vec3 totalLight = totalStaticLight + totalDynamicLight;
 
       LightColor.rgb = totalLight;
-      //LightColor.rgb = applyReinhard(LightColor.rgb, threshold);
       
       // lighting debug
       /*if (true) {
@@ -1160,8 +1163,6 @@ return;
 
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
   {
-    //TotalColor.rgb = applyReinhard(TotalColor.rgb * LightColor.rgb + totalSpec.rgb, 1.34);
-    //TotalColor = clamp(TotalColor * LightColor + vec4(totalSpec.rgb, 1.0), 0.0, 1.0);
     vec4 diffuseColor = TotalColor;// mix(TotalColor, vec4(0.0), metal); // commented out REQUIRES SSR plus cubemap fallback when nothing hits or metal is black
     vec3 specColor = mix(vec3(1.0), TotalColor.rgb, metal);
     TotalColor = clamp(diffuseColor * LightColor + vec4(specColor * totalSpec.rgb, 1.0), 0.0, 1.0);
