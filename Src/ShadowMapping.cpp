@@ -1589,7 +1589,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     glGetIntegerv(GL_BLEND_DST, &oldDst);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    glDepthMask(GL_TRUE);
+    glDepthMask(GL_FALSE);
     glEnable(GL_BLEND);
     glBlendEquationSeparate(GL_MIN, GL_MAX);
     glBlendFunc(GL_ONE, GL_ONE);
@@ -1597,6 +1597,9 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
 
     // --- BIND THE GLOBAL SHADOWMAP FBO ---
     glBindFramebuffer(GL_FRAMEBUFFER, ShadowMapFbo->fboID);
+
+    // Dynamically align the drawing window dimensions to match the FBO size
+    glViewport(0, 0, 512/*shadowmapSize*/, 512/*shadowmapSize */ );
 
     // ========================================================
     // PHASE 1: THE UNCONDITIONAL HIGH-PRIORITY PASS
@@ -1635,6 +1638,8 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
             }
         }
     }
+
+    glDepthMask(GL_TRUE);
 
     // ========================================================
     // PHASE 3: THE HEADROOM SENSOR & PREDICTIVE SCALING

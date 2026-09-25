@@ -545,8 +545,6 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
             glDepthMask(GL_FALSE); // don't write to depth buffer for meshes, only BSP
         }
         else {
-            glDepthMask(GL_FALSE);
-
             // BSP already cached: only clear .a channel (mesh data) while preserving .r (BSP depth)
             glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);  // Alpha only
             glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -963,13 +961,6 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
         return;
     }
 
-	// Backup previous main screen viewport coordinates
-	GLint PrevViewport[4];
-	glGetIntegerv(GL_VIEWPORT, PrevViewport);
-
-	// Dynamically align the drawing window dimensions to match your FBO size
-	glViewport(0, 0, shadowmapSize, shadowmapSize);
-
 	GLenum DrawBuffers[] = { GL_COLOR_ATTACHMENT0 };
 
 	for (INT face = 0; face < 6; face++)
@@ -1003,14 +994,7 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 		}
         // Face successfully rendered: clear its dirty bit
         ChangedFaceMask &= ~(1 << face);
-
-		// Restore standard depth writing capability before stepping to the next face quadrant
-		glDepthMask(GL_TRUE);
-	}
-
-	// Restore standard screen depth writes and viewport coordinates for the main player pass
-	glDepthMask(GL_TRUE);
-	glViewport(PrevViewport[0], PrevViewport[1], PrevViewport[2], PrevViewport[3]);
+	} // end loop through faces of cube
 }
 
 void UXOpenGLHeroLight::ClearShadowMapTexture()

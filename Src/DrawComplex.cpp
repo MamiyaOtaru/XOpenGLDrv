@@ -46,7 +46,7 @@ static void SetTextureHelper
 	DrawFlags |= AddDrawFlag;
 }
 
-void UXOpenGLRenderDevice::DumpSurfInfo(INT iSurf, const FSurfInfo& SI)
+/*void UXOpenGLRenderDevice::DumpSurfInfo(INT iSurf, const FSurfInfo& SI)
 {
 	debugf(TEXT("Dumping FSurfInfo for iSurf %d"), iSurf);
 	debugf(TEXT("Verts: %d, UVs: %d, Nodes: %d"), SI.Verts.Num(), SI.UVs.Num(), SI.Nodes.Num());
@@ -77,7 +77,7 @@ void UXOpenGLRenderDevice::DumpSurfInfo(INT iSurf, const FSurfInfo& SI)
 		}
 		debugf(TEXT("    TriIdx: %s"), *triStr);
 	}
-}
+}*/
 
 INT UploadLights(FSceneNode* Frame, 
 	UXOpenGLRenderDevice::FSurfInfo* SI,

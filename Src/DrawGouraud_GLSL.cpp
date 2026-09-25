@@ -253,6 +253,7 @@ layout(location = 0) out vec4 FragColor;
 layout(location = 1) out vec4 SSRBuffer;
 layout(location = 2) out vec4 SSRBufferSurface;
 layout(location = 3) out vec4 SolidSurfaces;
+layout(location = 4) out vec4 FragColorAdditive;
 layout(location = 5) out vec4 Weapon;
 # endif
 
@@ -564,7 +565,12 @@ void main(void)
     Weapon = TotalColor;
   }
 #endif
+if ((DrawFlags & DF_Translucent) == DF_Translucent) {
+  FragColorAdditive = TotalColor;
+}
+else {
   FragColor = TotalColor;
+}
 
 #if !OPT_Editor
   if ((DrawFlags & DF_Modulated) != DF_Modulated)
