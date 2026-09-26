@@ -565,12 +565,16 @@ void main(void)
     Weapon = TotalColor;
   }
 #endif
+#if OPT_ScreenSpaceReflections
 if ((DrawFlags & DF_Translucent) == DF_Translucent) {
   FragColorAdditive = TotalColor;
 }
 else {
   FragColor = TotalColor;
 }
+#else
+FragColor = TotalColor;
+#endif
 
 #if !OPT_Editor
   if ((DrawFlags & DF_Modulated) != DF_Modulated)

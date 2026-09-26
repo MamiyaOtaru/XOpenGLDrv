@@ -364,19 +364,19 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
   vec2 delta = (vParallaxScale * viewDir.xy * angleFactor) * rcpSteps;
 
   vec2 currentTexCoords = ptexCoords;
-  //float height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
+  float height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
   //float height = 1.0 - GetTexelLod(TexHandle, Texture7, currentTexCoords, float(mipLevel)).r;
-  ivec2 texSize = GetTexSizeMip(TexHandle, Texture7, mipLevel);
-  float height = 1.0 - GetTexelMip(TexHandle, Texture7, ivec2(floor(fract(currentTexCoords) * texSize)), mipLevel).r;
+  //ivec2 texSize = GetTexSizeMip(TexHandle, Texture7, mipLevel);
+  //float height = 1.0 - GetTexelMip(TexHandle, Texture7, ivec2(floor(fract(currentTexCoords) * texSize)), mipLevel).r;
 
   // Coarse Relief search
   while (height > currentLayerHeight)
   {
     currentLayerHeight += layerHeight;
     currentTexCoords -= delta;
-    //height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
+    height = 1.0 - GetTexel(TexHandle, Texture7, currentTexCoords).r;
     //height = 1.0 - GetTexelLod(TexHandle, Texture7, currentTexCoords, float(mipLevel)).r;
-    height = 1.0 - GetTexelMip(TexHandle, Texture7, ivec2(floor(fract(currentTexCoords) * texSize)), mipLevel).r;
+    //height = 1.0 - GetTexelMip(TexHandle, Texture7, ivec2(floor(fract(currentTexCoords) * texSize)), mipLevel).r;
   }
 
   // Binary search refinement
@@ -392,9 +392,9 @@ vec2 ParallaxMapping(vec2 ptexCoords, vec3 viewDir, uvec2 TexHandle, out float p
   {
     vec2 mid = (a + b) * 0.5;
     float midH = (aH + bH) * 0.5;
-    //float midTexH = 1.0 - GetTexel(TexHandle, Texture7, mid).r;
+    float midTexH = 1.0 - GetTexel(TexHandle, Texture7, mid).r;
     //float midTexH = 1.0 - GetTexelLod(TexHandle, Texture7, mid, float(mipLevel)).r;
-    float midTexH = 1.0 - GetTexelMip(TexHandle, Texture7, ivec2(floor(fract(mid) * texSize)), mipLevel).r;
+    //float midTexH = 1.0 - GetTexelMip(TexHandle, Texture7, ivec2(floor(fract(mid) * texSize)), mipLevel).r;
 
     if (midTexH > midH)
     {
