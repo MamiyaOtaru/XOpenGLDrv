@@ -396,9 +396,10 @@ else if ((DrawFlags & DF_Modulated) == DF_Modulated)
     outTo5 = 1;
     outTo6 = 0;
 }
-else if ((DrawFlags & DF_Masked) == DF_Masked)
+else if ((DrawFlags & DF_Masked) == DF_Masked && ((DrawFlags & DF_Translucent) != DF_Translucent))
 {
     // masked (level props eg. king josh city) into buffer to be alpha blended later
+    // masked AND additive (blood splats) handled below
     vis = TotalColor.a;
     outTo4 = 0;
     outTo5 = 1;
