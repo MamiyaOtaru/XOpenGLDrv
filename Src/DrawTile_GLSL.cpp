@@ -361,7 +361,7 @@ if ((DrawFlags & DF_AlphaBlended) == DF_AlphaBlended)
 {
     if ((DrawFlags & DF_UI) == DF_UI)
     {
-        // draw into a buffer that will be blended additively.  multiply alpha into color
+        // draw into a buffer that will be blended additively.  multiply alpha into color.  Windowing UI text
         TotalColor.rgb = TotalColor.rgb * TotalColor.a;
         outTo4 = 0;
         outTo5 = 0;
@@ -369,7 +369,7 @@ if ((DrawFlags & DF_AlphaBlended) == DF_AlphaBlended)
     }
     else
     {
-        // true alpha-blend mode (UI, at least text)
+        // true alpha-blend mode (UI, at least on screen text)
         vis = TotalColor.a;
         outTo4 = 0;
         outTo5 = 1;
@@ -378,7 +378,7 @@ if ((DrawFlags & DF_AlphaBlended) == DF_AlphaBlended)
 }
 else if ((DrawFlags & DF_Modulated) == DF_Modulated)
 {
-    // modulated smoke (decals are in DrawGouraud)
+    // modulated smoke (other modulated things are decals, which are in DrawGouraud)
     // into buffer to be alpha blended later (add if to draw to different output)
     float intensity = dot(TotalColor.rgb, vec3(0.3333));
     vis = abs(intensity - 0.5) * 2.0;
@@ -396,7 +396,16 @@ else if ((DrawFlags & DF_Modulated) == DF_Modulated)
     outTo5 = 1;
     outTo6 = 0;
 }
+else if ((DrawFlags & DF_Masked) == DF_Masked)
+{
+    // masked (level props eg. king josh city) into buffer to be alpha blended later
+    vis = TotalColor.a;
+    outTo4 = 0;
+    outTo5 = 1;
+    outTo6 = 0;
+}
 else {
+    // additive (coronas, explosions, etc) into buffer to be additively blended later
     if ((DrawFlags & DF_UI) == DF_UI)
     {
         outTo4 = 0;

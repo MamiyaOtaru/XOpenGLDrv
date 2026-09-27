@@ -221,7 +221,7 @@ void UXOpenGLRenderDevice::DrawTile(FSceneNode* Frame, FTextureInfo& Info, FLOAT
 		}
 	} // end if coronaScaling and this is a corona
 
-	bool safeToReadDepth = !(PolyFlags & PF_Occlude);
+	bool safeToReadDepth = !(PolyFlags & PF_Occlude) && !(PolyFlags & PF_Masked); // masked to not fade level props (eg. king josh city)
 	if (safeToReadDepth && Z > 1.0f)
 	{
 		// Fix shader-side behavior

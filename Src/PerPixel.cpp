@@ -952,7 +952,7 @@ float UXOpenGLRenderDevice::ComputeRoughnessFromTextureName(const FSurfaceInfo& 
         return 0.2f;
 
     // Glass
-    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("pond")) || Has(TEXT("liquid")) || Has(TEXT("goop")) || Has(TEXT("warer"))) // warer is nalifx lol
+    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("pond")) || Has(TEXT("liquid")) || Has(TEXT("fluid")) || Has(TEXT("goop")) || Has(TEXT("warer"))) // warer is nalifx lol
         return 0.1f;
 
     // Stone / rock / brick
@@ -995,7 +995,7 @@ float UXOpenGLRenderDevice::ComputeMetalnessFromTextureName(const FSurfaceInfo& 
     if (Has(TEXT("metal")) || Has(TEXT("steel")) || Has(TEXT("iron")) || Has(TEXT("pipe")) || Has(TEXT("bolt")))// || Has(TEXT("trim")))
         return 1.0f;
 
-    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("pond")) || Has(TEXT("liquid")) || Has(TEXT("goop")) || Has(TEXT("warer")))
+    if (Has(TEXT("glass")) || Has(TEXT("window")) || Has(TEXT("screen")) || Has(TEXT("water")) || Has(TEXT("pond")) || Has(TEXT("liquid")) || Has(TEXT("fluid")) || Has(TEXT("goop")) || Has(TEXT("warer")))
         return 0.3f; // a lie but boost reflections a little
 
     // Default for everything else
@@ -1400,6 +1400,9 @@ static const char* DepthFadeKeys[] = {
     "asasring",
     "cststeam", // green steam in DM-Conveyor
     "donfire", // DM-Barricade
+    "goop3", // DM-Deck16
+    "hfluid", // DM-Ultimum
+    "hfluid2", // ???
     "lightning6", // blue flame in DM-ArcaneTemple
     "liquid6", // water eg CTF-Ratchet
     "liquid7", // ???
