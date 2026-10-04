@@ -189,18 +189,11 @@ void UXOpenGLRenderDevice::DrawShadowMapSurface(
             CachedMesh->LastPos = Mov->Location;
             CachedMesh->LastRot = Mov->Rotation;
         }
-        for (INT vi = 0; vi < NumPts; vi++)
-        {
-            FVector Vert = CachedMesh->Verts(vi);
-            PolyVertices(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
-        }
+        memcpy(PolyVertices.GetData(), (float*)CachedMesh->Verts.GetData(), NumPts * sizeof(glm::vec3));
     }
     else
     {
-        for (INT vi = 0; vi < NumPts; ++vi) {
-            FVector Vert = SI.Verts(vi);
-            PolyVertices(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
-        }
+        memcpy(PolyVertices.GetData(), (float*)SI.Verts.GetData(), NumPts * sizeof(glm::vec3));
     }
 
     // Grab the current active DrawID. Because the face loop manages starting the call, 
@@ -376,8 +369,8 @@ void UXOpenGLRenderDevice::DrawShadowMapMesh(
 UXOpenGLRenderDevice::DrawShadowMapProgram::DrawShadowMapProgram(const TCHAR* Name, UXOpenGLRenderDevice* RenDev)
 	: ShaderProgramImpl(Name, RenDev)
 {
-	// Scale buffer capacities exactly like your core DrawComplex pipelines
-	VertexBufferSize             = DRAWCOMPLEX_SIZE * sizeof(DrawShadowMapVertex);
+	// Scale buffer capacities like the core DrawComplex pipelines except I might bump it up some
+	VertexBufferSize             = DRAWCOMPLEX_SIZE * 10 *sizeof(DrawShadowMapVertex);
 	ParametersBufferSize         = DRAWCOMPLEX_SIZE; 
     ParametersBufferBindingIndex = GlobalShaderBindingIndices::ShadowMapParametersIndex;
 	NumTextureSamplers           = 0;

@@ -124,7 +124,10 @@ namespace ExternalTexture
 
 	// Map stable storage for externally-created FTextureInfo objects for extras.
 	// Key is string "<parentID>_<extraIdx>".
-	static std::map<std::string, FTextureInfo*> g_extraInfos;
+	//static std::map<std::string, FTextureInfo*> g_extraInfos;
+    // Key is uint64_t made from parentID and extraIdx, value is FTextureInfo*. 
+    // can go back to string for debugging if ever needed, but this is more efficient and avoids string construction.
+    static std::map<uint64_t, FTextureInfo*> g_extraInfos;
 
 	// Forward declaration so stb fallback can call it before the full definition below.
 	static FMipmap* MakeMipFromRGBA8(unsigned char* rgba, int width, int height);
@@ -696,8 +699,8 @@ namespace ExternalTexture
 			return nullptr;
 
 		// Check cached extras
-		std::string key = MakeExtraKey(parentID, extraIdx);
-		auto infoIt = g_extraInfos.find(key);
+		//std::string key = MakeExtraKey(parentID, extraIdx);
+        auto infoIt = g_extraInfos.find(stateKey); // use key if need to debug, but we can also just use parentID+extraIdx as a pair
 		if (infoIt != g_extraInfos.end())
 			return infoIt->second;
 
@@ -776,7 +779,7 @@ namespace ExternalTexture
 		// Mark extras exist
 		g_hasExtraState[stateKey] = true;
 
-		g_extraInfos.emplace(key, newInfo);
+		g_extraInfos.emplace(stateKey, newInfo); // use key if need to debug, but we can also just use parentID+extraIdx as a pair
 		return newInfo;
 	}
 

@@ -82,19 +82,10 @@
     <ClCompile Include="PostProcess.cpp">
       <Filter>Src</Filter>
     </ClCompile>
-    <ClCompile Include="SSAOPass.cpp">
-      <Filter>Src</Filter>
-    </ClCompile>
-    <ClCompile Include="BlurPass.cpp">
-      <Filter>Src</Filter>
-    </ClCompile>
     <ClCompile Include="Occlusion.cpp">
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="StbImpl.cpp">
-      <Filter>Src</Filter>
-    </ClCompile>
-    <ClCompile Include="SSGIPass.cpp">
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="HeroLight.cpp">
@@ -119,6 +110,12 @@
       <Filter>Src</Filter>
     </ClCompile>
     <ClCompile Include="SSRProgram.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="SSAOProgram.cpp">
+      <Filter>Src</Filter>
+    </ClCompile>
+    <ClCompile Include="BlurProgram.cpp">
       <Filter>Src</Filter>
     </ClCompile>
   </ItemGroup>
