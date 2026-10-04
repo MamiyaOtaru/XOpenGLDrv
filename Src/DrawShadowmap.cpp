@@ -370,7 +370,7 @@ UXOpenGLRenderDevice::DrawShadowMapProgram::DrawShadowMapProgram(const TCHAR* Na
 	: ShaderProgramImpl(Name, RenDev)
 {
 	// Scale buffer capacities like the core DrawComplex pipelines except I might bump it up some
-	VertexBufferSize             = DRAWCOMPLEX_SIZE * 10 *sizeof(DrawShadowMapVertex);
+	VertexBufferSize             = DRAWCOMPLEX_SIZE * 2 *sizeof(DrawShadowMapVertex);
 	ParametersBufferSize         = DRAWCOMPLEX_SIZE; 
     ParametersBufferBindingIndex = GlobalShaderBindingIndices::ShadowMapParametersIndex;
 	NumTextureSamplers           = 0;
