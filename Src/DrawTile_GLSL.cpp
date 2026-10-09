@@ -359,26 +359,15 @@ float outTo5 = 0;
 float outTo6 = 0;
 if ((DrawFlags & DF_AlphaBlended) == DF_AlphaBlended)
 {
-    if ((DrawFlags & DF_UI) == DF_UI)
-    {
-        // draw into a buffer that will be blended additively.  multiply alpha into color.  Windowing UI text
-        TotalColor.rgb = TotalColor.rgb * TotalColor.a;
-        outTo4 = 0;
-        outTo5 = 0;
-        outTo6 = 1;
-    }
-    else
-    {
-        // true alpha-blend mode (UI, at least on screen text)
-        vis = TotalColor.a;
-        outTo4 = 0;
-        outTo5 = 1;
-        outTo6 = 0;
-    }
+    // true alpha-blend mode (some HUD eg. on screen text), UI text (which is additionally marked DF_UI but can ignore here)
+    vis = TotalColor.a;
+    outTo4 = 0;
+    outTo5 = 1;
+    outTo6 = 0;
 }
 else if ((DrawFlags & DF_Modulated) == DF_Modulated)
 {
-    // modulated smoke (other modulated things are decals, which are in DrawGouraud)
+    // modulated smoke (all? other modulated things are decals, which are in DrawGouraud)
     // into buffer to be alpha blended later (add if to draw to different output)
     float intensity = dot(TotalColor.rgb, vec3(0.3333));
     vis = abs(intensity - 0.5) * 2.0;
@@ -399,26 +388,41 @@ else if ((DrawFlags & DF_Modulated) == DF_Modulated)
 else if ((DrawFlags & DF_Masked) == DF_Masked && ((DrawFlags & DF_Translucent) != DF_Translucent))
 {
     // masked (level props eg. king josh city) into buffer to be alpha blended later
-    // masked AND additive (blood splats) handled below
+    // also window UI (tabs, checkboxes)
+    // HUD (non selected weapon number, ammo bar)
+    // masked AND additive (blood splats, weapon selection BG) handled below
     vis = TotalColor.a;
     outTo4 = 0;
     outTo5 = 1;
     outTo6 = 0;
 }
 else {
-    // additive (coronas, explosions, etc) into buffer to be additively blended later
+    // things that get here are not modulated.  They are not alpha blended.  
+    // They are not masked (unless they are masked AND translucent
     if ((DrawFlags & DF_UI) == DF_UI)
     {
-        outTo4 = 0;
-        outTo5 = 0;
-        outTo6 = 1;
+        // HUD: weapon bar BG, weapon selection highlight (masked AND translucent)
+        if ((DrawFlags & DF_Translucent) == DF_Translucent)
+        {
+            outTo4 = 0;
+            outTo5 = 0;
+            outTo6 = 1;
+        }
+        // no transparency or anything!  window UI (panel body, buttons, top bar)
+        // HUD: selected weapon icon
+        else
+        {
+            outTo4 = 0;
+            outTo5 = 1;
+            outTo6 = 0;
+        }
     }
-    else
-    {
-        outTo4 = 1;
-        outTo5 = 0;
-        outTo6 = 0;
-    }
+    // additive (coronas, explosions, etc) into buffer to be additively blended later
+    // IF drawtile does something IN WORLD that has no blending modes at all, would need to handle it here
+    // by sending not translucent to 5
+    outTo4 = 1;
+    outTo5 = 0;
+    outTo6 = 0;
 }
 TotalColor.a = vis;
 #endif
