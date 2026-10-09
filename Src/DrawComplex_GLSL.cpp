@@ -729,8 +729,9 @@ void main(void)
     float LightRadius = LightData2[i].w;
     float RWorldLightRadius = WorldLightRadius * WorldLightRadius;
 
-    vec3 InLightPos = ((LightPos[i].xyz - FrameCoords[0].xyz) * InFrameCoords); // Frame->Coords.
-    float dist = distance(vCoords, InLightPos);
+    // LightPos now stored in view-space by the CPU. Use directly to avoid per-fragment
+    // world->view transform.
+    float dist = distance(vCoords, LightPos[i].xyz);
 
     if (dist < RWorldLightRadius)
     {
@@ -927,28 +928,26 @@ return;
       if (WorldLightRadius == 0.0)
         continue; // skip lights with zero radius, which are used for non-lighting purposes (e.g. zone restriction) 
 
-      vec3 InLightPos = ((LightPos[i].xyz - FrameCoords[0].xyz) * InFrameCoords);
-      float dist = distance(vCoords, InLightPos);
+      // Use squared distance where possible to avoid sqrt
+      vec3 diff1 = vCoords - LightPos[i].xyz;
+      float dist2 = dot(diff1, diff1);
 
-      // Distance early out test
-      if (dist > WorldLightRadius)
+      // Distance early out test (use squared distance to avoid sqrt for rejects)
+      if (dist2 > WorldLightRadius * WorldLightRadius)
         continue;
+      float dist = sqrt(dist2);
 
       // --- RUNTIME SPOTLIGHT CONE EVALUATION ---
       float coneFactor = 1.0f;
       
-      // Check if LightData6 contains an active spotlight configuration
+      // Check if LightData6 contains an active spotlight configuration (spotDir in view-space)
       if (LightData6[i].w > -0.99f)
       {
-          // Reconstruct the true world-space direction vector from the light to this pixel position
-          vec3 X = FrameCoords[1].xyz; vec3 Y = FrameCoords[2].xyz; vec3 Z = FrameCoords[3].xyz;
-          mat3 ViewToWorld = mat3(X, Y, Z);
-          vec3 pixelWorldPos = FrameCoords[0].xyz + ViewToWorld * vCoords;
+          // Compute direction from light to pixel in view-space and compare with spot direction (also view-space)
+          vec3 lightToPixelVS = normalize(vCoords - LightPos[i].xyz);
+          vec3 spotDirVS      = normalize(LightData6[i].xyz);
 
-          vec3 lightToPixelWS = normalize(pixelWorldPos - LightPos[i].xyz);
-          vec3 spotDirWS      = normalize(LightData6[i].xyz);
-
-          float fragAngleCos = dot(lightToPixelWS, spotDirWS);
+          float fragAngleCos = dot(lightToPixelVS, spotDirVS);
           float cosOuter     = LightData6[i].w;
           float cosInner     = LightData1[i].w; // Using the repurposed LightCone slot
 
@@ -974,10 +973,7 @@ return;
           // radius raised to ~distance*1.2 to compensate, but it still attenuates by the time it reaches the floor
           coneFactor *= 2.5f; 
       }
-
-      vec3 originVS = vec3(vCoords.x, vCoords.y, vCoords.z);
-      vec3 lightPosVS = vec3(InLightPos.x, InLightPos.y, InLightPos.z);
-      
+ 
       float shadowFactor = 1.0f;
  #if OPT_ShadowMaps   
       // unpack the type-punned float bits (Z and W of LightData5) back into raw 32-bit unsigned ints
@@ -992,13 +988,15 @@ return;
         samplerCube shadowMap = samplerCube(handleBits);
         int activeFacesMask = int(LightData5[i].y); 
 
-        // Reconstruct true world coordinates (Your stable, locked-down math!)
+        // Compute world-space lookup vector from light to pixel.
+        // Both pixel and light are available in view-space (vCoords and LightPos[i].xyz).
+        // Convert the view-space difference vector to world-space using FrameCoords' rotation (no translation).
         vec3 X = FrameCoords[1].xyz; vec3 Y = FrameCoords[2].xyz; vec3 Z = FrameCoords[3].xyz;
         mat3 ViewToWorld = mat3(X, Y, Z);
-        vec3 pixelWorldPos = FrameCoords[0].xyz + ViewToWorld * vCoords;
 
         // Compute absolute world distance metrics
-        vec3 rawLookupWS = LightPos[i].xyz - pixelWorldPos;
+        vec3 rawLookupVS = LightPos[i].xyz - vCoords;
+        vec3 rawLookupWS = ViewToWorld * rawLookupVS;
         float currentPixelDist = length(rawLookupWS); 
         vec3 shadowLookupDirWS = vec3(rawLookupWS.x, -rawLookupWS.y, rawLookupWS.z);
 
@@ -1028,7 +1026,7 @@ return;
 
       // Tangent-space lighting using normal map
       N = TangentNormal; // already normalized
-      vec3 TangentLightDir = normalize(ViewToTangentMat * (InLightPos - vCoords));
+      vec3 TangentLightDir = normalize(ViewToTangentMat * (LightPos[i].xyz - vCoords));
       L = normalize(TangentLightDir);
       vec3 TangentViewDir = normalize(ViewToTangentMat * -vCoords.xyz);
       V = TangentViewDir;
@@ -1068,7 +1066,7 @@ return;
       totalSpec += specular;
       totalSubtractedSpec += specular * (1.0 - shadowFactor);
       //contributingLights++;
-    }
+    } // end loop through surface lights
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {

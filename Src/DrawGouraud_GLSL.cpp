@@ -314,7 +314,8 @@ void main(void)
     float LightRadius = LightData2[i].w;
     float RWorldLightRadius = WorldLightRadius * WorldLightRadius;
 
-    vec3 InLightPos = ((LightPos[i].xyz - FrameCoords[0].xyz) * InFrameCoords); // Frame->Coords.
+    // LightPos stored in view-space by CPU; use directly
+    vec3 InLightPos = LightPos[i].xyz;
     float dist = distance(In.Coords, InLightPos);
 
     if (dist < RWorldLightRadius)
@@ -426,7 +427,8 @@ void main(void)
         NormalLightRadius = LightData2[i].w * 64.0;
 
       bool bSunlight = bool(uint(LightData2[i].x) == LE_Sunlight);
-      vec3 InLightPos = ((LightPos[i].xyz - FrameCoords[0].xyz) * InFrameCoords); // Frame->Coords.
+      // LightPos is stored in view-space by the CPU. Use directly.
+      vec3 InLightPos = LightPos[i].xyz;
       float dist = distance(In.Coords, InLightPos);
       float b = NormalLightRadius / (NormalLightRadius * NormalLightRadius * MinLight);
       float attenuation = NormalLightRadius / (dist + b * dist * dist);

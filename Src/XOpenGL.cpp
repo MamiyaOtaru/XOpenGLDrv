@@ -2017,15 +2017,17 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			{
 				// --- POSITION OVERRIDE ---
 				// Ground light actor represents the spotlight, but its rays emanate from the ceiling fixture!
-				LightData->LightPos[i] = glm::vec4(SpotData->TopLight->Location.X, 
-												   SpotData->TopLight->Location.Y, 
-												   SpotData->TopLight->Location.Z, 
-												   1.f);
+				// Store view-space position to avoid per-fragment matrix multiply in shaders.
+				FVector WP(SpotData->TopLight->Location.X, SpotData->TopLight->Location.Y, SpotData->TopLight->Location.Z);
+				FVector V = WP.TransformPointBy(Frame->Coords);
+				LightData->LightPos[i] = glm::vec4(V.X, V.Y, V.Z, 1.f);
 			}
 			else
 			{
-				// Standard path
-				LightData->LightPos[i] = glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
+				// Standard path: store view-space position
+				FVector WP(Actor->Location.X, Actor->Location.Y, Actor->Location.Z);
+				FVector V = WP.TransformPointBy(Frame->Coords);
+				LightData->LightPos[i] = glm::vec4(V.X, V.Y, V.Z, 1.f);
 			}
 
 			GLuint64 MaskHandle = 0; // Default: 0 means no bindless shadow map
@@ -2196,12 +2198,10 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			// --- POPULATE THE NEW SPOTLIGHT PROPERTY CHANNELS ---
 			if (bIsSpot)
 			{
-				LightData->LightData6[i] = glm::vec4(
-					SpotData->SpotDirection.X,
-					SpotData->SpotDirection.Y,
-					SpotData->SpotDirection.Z,
-					SpotData->SpotCosOuter
-				);
+				// Transform spotlight direction to view-space so shaders can consume view-space directions directly.
+				FVector dirWS = SpotData->SpotDirection;
+				FVector dirVS = dirWS.TransformVectorBy(Frame->Coords);
+				LightData->LightData6[i] = glm::vec4(dirVS.X, dirVS.Y, dirVS.Z, SpotData->SpotCosOuter);
 				// Overwrite the LightCone tracking dimension within LightData1 so your shader has inner cone values
 				LightData->LightData1[i].w = SpotData->SpotCosInner;
 			}
@@ -2299,36 +2299,58 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			if (!InFrustum)
 				continue;
 
-			// Project to screen space using UT99 projection
-			// World-space light position
-			FVector P = L->Location;
-
-			// 1) World -> view: same as DrawComplex
-			FVector V = P.TransformPointBy(Frame->Coords); // this is what we already do for geometry
-
-			// 2) View -> clip: use the same modelviewprojMat we send to the shader
+			// Project to screen space using UT99 projection.
+			// Prefer using packed GPU-side light data (LightInfoBuffer) when available
 			const auto FrameState = FrameStateBuffer.GetElementPtr(0);
-			glm::vec4 viewPos(V.X, V.Y, V.Z, 1.0f);
-			glm::vec4 clipPos = FrameState->modelviewprojMat * viewPos;
+			const auto LightDataPtr = LightInfoBuffer.GetElementPtr(0);
 
-			// Behind camera or clipped
-			if (clipPos.w <= 0.0f)
-				continue;
+			// Try to lookup this actor in the current per-frame light index map.
+			INT* pIndex = CurrentLightToIndex.Find(L);
+			if (pIndex != nullptr)
+			{
+				INT li = *pIndex;
+				// LightPos stored in view-space already.
+				glm::vec4 vp = LightDataPtr->LightPos[li];
+				glm::vec3 viewPos(vp.x, vp.y, vp.z);
+				FLOAT radius = LightDataPtr->LightData4[li].x;
 
-			// 3) Clip -> NDC
-			glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w; // [-1,1] in x,y,z
+				// Project view-space position using only the projection matrix.
+				glm::vec4 clipPos = FrameState->projMat * glm::vec4(viewPos, 1.0f);
+				if (clipPos.w <= 0.0f)
+					continue;
+				glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
+				float sx = 0.5f * (ndc.x + 1.0f);
+				float sy = 0.5f * (1.0f - ndc.y);
 
-			// 4) NDC -> normalized screen [0,1]
-			float sx = 0.5f * (ndc.x + 1.0f);
-			float sy = 0.5f * (1.0f - ndc.y); // flip Y for screen space
+				FCoronaLight C;
+				C.Actor = L;
+				C.ScreenX = sx;
+				C.ScreenY = sy;
+				C.Distance = Abs(viewPos.z);
 
-			FCoronaLight C;
-			C.Actor = L;
-			C.ScreenX = sx;
-			C.ScreenY = sy;
-			C.Distance = Abs(V.Z);
+				CoronaLights.AddItem(C);
+			}
+			/*else
+			{
+				// Fallback: use world-space actor position as before.
+				FVector P = L->Location;
+				FVector V = P.TransformPointBy(Frame->Coords); // world -> view
+				glm::vec4 viewPos(V.X, V.Y, V.Z, 1.0f);
+				glm::vec4 clipPos = FrameState->modelviewprojMat * viewPos;
+				if (clipPos.w <= 0.0f)
+					continue;
+				glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
+				float sx = 0.5f * (ndc.x + 1.0f);
+				float sy = 0.5f * (1.0f - ndc.y);
 
-			CoronaLights.AddItem(C);
+				FCoronaLight C;
+				C.Actor = L;
+				C.ScreenX = sx;
+				C.ScreenY = sy;
+				C.Distance = Abs(V.Z);
+
+				CoronaLights.AddItem(C);
+			}*/
 		}
 	} // end if CoronaScaling
 
