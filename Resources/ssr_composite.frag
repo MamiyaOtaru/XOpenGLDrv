@@ -7,8 +7,7 @@ uniform sampler2D uDirect;      // full-res forward color
 uniform sampler2D uSSR;         // half-res SSR result (blurred)
 uniform sampler2D uAdditive;    // additive sprites to composite into final output
 uniform sampler2D uAlpha;       // alpha sprites to composite into final output (including first person weapons)
-uniform sampler2D uUIadditive;  // the user interface to composite over the final BSP colors
-uniform sampler2D uUIalpha;     // the user interface alpha to composite over the final BSP colors
+uniform sampler2D uUI;          // the user interface to composite over the final BSP colors
 
 void main()
 {
@@ -16,8 +15,7 @@ void main()
     vec4 ssrTex     = texture(uSSR,        TexCoords);
     vec4 additive   = texture(uAdditive,   TexCoords);
     vec4 alpha      = texture(uAlpha,      TexCoords);
-    vec4 uiadditive = texture(uUIadditive, TexCoords);
-    vec4 uialpha    = texture(uUIalpha,    TexCoords);
+    vec4 ui         = texture(uUI,         TexCoords);
     
     vec3 ssr = ssrTex.rgb;
     // SSR alpha is stored in uSSR's alpha channel (raymarch hit strength)
@@ -29,8 +27,7 @@ void main()
     // sprites + UI is drawn OVER the world+SSR
     color = additive.rgb + color * (1.0 - additive.rgb); // additive blending
     color = mix(color, alpha.rgb, alpha.a); // alpha blend
-    color = uiadditive.rgb + color * (1.0 - uiadditive.rgb); // additive blending
-    color = mix(color, uialpha.rgb, uialpha.a); // alpha blend
+    color = ui.rgb + color * (1.0 - ui.rgb); // additive blending
 
     FragColor = vec4(color, 1.0);
 }

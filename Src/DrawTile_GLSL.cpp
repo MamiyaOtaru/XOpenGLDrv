@@ -262,8 +262,7 @@ void UXOpenGLRenderDevice::DrawTileCoreProgram::BuildFragmentShader(GLuint Shade
 // draw to our own color attachments to composite in after reflections etc are resolved
 layout(location = 4) out vec4 FragColor;
 layout(location = 5) out vec4 FragColorAlpha;
-layout(location = 6) out vec4 FragColorUIadditive;
-layout(location = 7) out vec4 FragColorUIalpha;
+layout(location = 6) out vec4 FragColorUI;
 # else
 layout(location = 0) out vec4 FragColor;
 # endif
@@ -363,20 +362,9 @@ if ((DrawFlags & DF_AlphaBlended) == DF_AlphaBlended)
 {
     // true alpha-blend mode (some HUD eg. on screen text), UI text
     vis = TotalColor.a;
-    if ((DrawFlags & DF_UI) == DF_UI)
-    {
-        outTo4 = 0;
-        outTo5 = 0;
-        outTo6 = 0;
-        outTo7 = 1;
-    }
-    else
-    {
-        outTo4 = 0;
-        outTo5 = 1;
-        outTo6 = 0;
-        outTo7 = 0;
-    }
+    outTo4 = 0;
+    outTo5 = 1;
+    outTo6 = 0;
 }
 else if ((DrawFlags & DF_Modulated) == DF_Modulated)
 {
@@ -397,7 +385,6 @@ else if ((DrawFlags & DF_Modulated) == DF_Modulated)
     outTo4 = 0;
     outTo5 = 1;
     outTo6 = 0;
-    outTo7 = 0;
 }
 else if ((DrawFlags & DF_Masked) == DF_Masked && ((DrawFlags & DF_Translucent) != DF_Translucent))
 {
@@ -406,21 +393,10 @@ else if ((DrawFlags & DF_Masked) == DF_Masked && ((DrawFlags & DF_Translucent) !
     vis = TotalColor.a;
     // window UI (tabs, checkboxes)
     // HUD (non selected weapon number, ammo bar)
-    if ((DrawFlags & DF_UI) == DF_UI)
-    {
-      outTo4 = 0;
-      outTo5 = 0;
-      outTo6 = 0;
-      outTo7 = 1;
-    } 
     // (level props eg. king josh city)
-    else
-    {
-      outTo4 = 0;
-      outTo5 = 1;
-      outTo6 = 0;
-      outTo7 = 0;
-    }
+    outTo4 = 0;
+    outTo5 = 1;
+    outTo6 = 0;
 }
 else {
     // things that get here are not modulated.  They are not alpha blended.  
@@ -433,16 +409,14 @@ else {
             outTo4 = 0;
             outTo5 = 0;
             outTo6 = 1;
-            outTo7 = 0;
         }
         // no transparency or anything!  window UI (panel body, buttons, top bar)
         // HUD: selected weapon icon
         else
         {
             outTo4 = 0;
-            outTo5 = 0;
+            outTo5 = 1;
             outTo6 = 0;
-            outTo7 = 1;
         }
     }
     // additive (coronas, explosions, etc) into buffer to be additively blended later
@@ -453,7 +427,6 @@ else {
       outTo4 = 1;
       outTo5 = 0;
       outTo6 = 0;
-      outTo7 = 0;
     }
 }
 TotalColor.a = vis;
@@ -472,8 +445,7 @@ TotalColor.a = vis;
 # if OPT_ScreenSpaceReflections
   FragColor = TotalColor * outTo4;
   FragColorAlpha = TotalColor * outTo5;
-  FragColorUIadditive = TotalColor * outTo6;
-  FragColorUIalpha = TotalColor * outTo7;
+  FragColorUI = TotalColor * outTo6;
 # else
   FragColor = TotalColor;
 #endif

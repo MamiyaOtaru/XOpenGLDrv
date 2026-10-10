@@ -2598,8 +2598,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		GLint uSSR		  = -1;   // SsaoFbo color0 (SSR result)
 		GLint uAdditive   = -1;   // additive sprites
 		GLint uAlpha	  = -1;   // alpha sprites
-		GLint uUIadditive = -1; // ResolveFbo color6 (UI additive)
-		GLint uUIalpha	  = -1;   // ResolveFbo color7 (UI alpha)
+		GLint uUI		  = -1; // ResolveFbo color6 (UI additive)
 
 		void CreateInputLayout() {}
 
@@ -2611,15 +2610,13 @@ class UXOpenGLRenderDevice : public URenderDevice
 			GetUniformLocation(Spec, uSSR,		  "uSSR");
 			GetUniformLocation(Spec, uAdditive,	  "uAdditive");
 			GetUniformLocation(Spec, uAlpha,	  "uAlpha");
-			GetUniformLocation(Spec, uUIadditive, "uUIadditive");
-			GetUniformLocation(Spec, uUIalpha,	  "uUIalpha");
+			GetUniformLocation(Spec, uUI        , "uUI");
 
 			if (uDirect		!= -1) glUniform1i(uDirect,		20);
 			if (uSSR		!= -1) glUniform1i(uSSR,		21);
 			if (uAdditive	!= -1) glUniform1i(uAdditive,	22);
 			if (uAlpha		!= -1) glUniform1i(uAlpha,		23);
-			if (uUIadditive	!= -1) glUniform1i(uUIadditive,	24);
-			if (uUIalpha	!= -1) glUniform1i(uUIalpha,	25);
+			if (uUI     	!= -1) glUniform1i(uUI,			24);
 		}
 
 		void MapBuffers() {}
