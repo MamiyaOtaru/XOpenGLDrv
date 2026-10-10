@@ -918,6 +918,10 @@ return;
     uint numDynamicLights = meta.z;
     numSurfaceLights = clamp(numStaticLights + numDynamicLights, uint(0), uint(MAX_SURFACE_LIGHTS));
 
+    // max lights goes from numlights to 5 from 1500 to 2500 units away.  This is a hack to reduce the number of specular lights on distant surfaces, which are less important.
+    float fragDist = distance(vCoords, vec3(0.0));
+    uint maxDetailLights = clamp(uint(mix(float(numSurfaceLights), 5.0, (fragDist - 1500.0) / 1000.0)), 5, numSurfaceLights);
+
     for (uint li = 0u; li < numSurfaceLights; li++)
     {
       uint i = FacetIndicesArr[start + li];
@@ -935,9 +939,7 @@ return;
       // Distance early out test (use squared distance to avoid sqrt for rejects)
       if (dist2 > WorldLightRadius * WorldLightRadius)
         continue;
-
-      float dist = sqrt(dist2);
-      uint maxDetailLights = clamp(uint(mix(float(numSurfaceLights), 5.0, (dist - 500.0) / 1000.0)), 5, numSurfaceLights);
+      float dist = sqrt(dist2); 
 
       // --- RUNTIME SPOTLIGHT CONE EVALUATION ---
       float coneFactor = 1.0f;
@@ -1025,7 +1027,7 @@ return;
       // Tangent-space lighting using normal map
       N = TangentNormal; // already normalized
       vec3 TangentLightDir = normalize(ViewToTangentMat * (InLightPos - vCoords));
-      L = normalize(TangentLightDir);
+      L = TangentLightDir;
       vec3 TangentViewDir = normalize(ViewToTangentMat * -vCoords.xyz);
       V = TangentViewDir;
 
