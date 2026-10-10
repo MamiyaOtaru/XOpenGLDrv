@@ -933,6 +933,8 @@ return;
       // Distance early out test
       if (dist > WorldLightRadius)
         continue;
+      float dist = sqrt(dist2);
+      uint maxDetailLights = clamp(uint(mix(float(numSurfaceLights), 5.0, (dist - 1500.0) / 1000.0)), 5, numSurfaceLights);
 
       // --- RUNTIME SPOTLIGHT CONE EVALUATION ---
       float coneFactor = 1.0f;
@@ -969,7 +971,7 @@ return;
               coneFactor = baseCone * baseCone * baseCone * baseCone * baseCone * baseCone;
           }
 
-          // Apply your uniform distance intensity booster
+          // Apply uniform distance intensity booster
           // old pointlight was at floor.  new spotlight is at ceiling.
           // radius raised to ~distance*1.2 to compensate, but it still attenuates by the time it reaches the floor
           coneFactor *= 2.5f; 
@@ -987,7 +989,7 @@ return;
       );
 
       // If the 64-bit handle is non-zero, this light has an active, resident shadow map!
-      if (handleBits.x != 0u || handleBits.y != 0u)
+      if ((handleBits.x != 0u || handleBits.y != 0u) && (li < maxDetailLights))
       {
         samplerCube shadowMap = samplerCube(handleBits);
         int activeFacesMask = int(LightData5[i].y); 
@@ -1014,12 +1016,6 @@ return;
 
       // Light color + brightness
       vec3 rawColor = clamp(vec3(LightData1[i].x, LightData1[i].y, LightData1[i].z), 0.0, 1.0);
-      float lum = dot(rawColor, vec3(0.299, 0.587, 0.114));
-    
-      // LightData5[i].z has been repurposed for the herolight bindless texture handle (lower half).  if this is to run in Unreal will need to refactor all of that
-      //float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0.  (unless I pass Actor->LightBrightness like Unreal path does.  Why not?)
-      //float brightnessFactor = max(lum, brightness); // so in UT this == lum, but in Unreal it allows the light's brightness to boost the diffuse and specular even if the color is dark
-      float brightnessFactor = lum;
 
       // Choose normal / coordinate space based on whether we have a normal map
       vec3 N;
@@ -1046,29 +1042,38 @@ return;
       else {
         totalDynamicLight += rawColor * diff * attenuation;
       }
+      if (li < maxDetailLights)
+      {
+        float lum = dot(rawColor, vec3(0.299, 0.587, 0.114));
+    
+        // LightData5[i].z has been repurposed for the herolight bindless texture handle (lower half).  if this is to run in Unreal will need to refactor all of that
+        //float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0.  (unless I pass Actor->LightBrightness like Unreal path does.  Why not?)
+        //float brightnessFactor = max(lum, brightness); // so in UT this == lum, but in Unreal it allows the light's brightness to boost the diffuse and specular even if the color is dark
+        float brightnessFactor = lum;
 
-      // --- SPECULAR
-      float shininess    = mix(4.0, 64.0, 1.0 - rough);
-      float specStrength = mix(0.1, 1.0, 1.0 - rough);
+        // --- SPECULAR
+        float shininess    = mix(4.0, 64.0, 1.0 - rough);
+        float specStrength = mix(0.1, 1.0, 1.0 - rough);
 
-      vec3 H = normalize(L + V);
+        vec3 H = normalize(L + V);
 
-      float specDot;
-      if ((DrawFlags & DF_BumpMap) == DF_BumpMap)
-        specDot = abs(dot(N, H));
-      else
-        specDot = max(dot(N, H), 0.0);
+        float specDot;
+        if ((DrawFlags & DF_BumpMap) == DF_BumpMap)
+          specDot = abs(dot(N, H));
+        else
+          specDot = max(dot(N, H), 0.0);
 
-      float spec = pow(specDot, shininess)
+        float spec = pow(specDot, shininess)
                    * specStrength
                    * brightnessFactor
                    * attenuation;
 
-      vec3 specular = spec * rawColor;   // colored specular, matches UT99 lights
-      totalSpec += specular;
-      totalSubtractedSpec += specular * (1.0 - shadowFactor);
-      //contributingLights++;
-    }
+        vec3 specular = spec * rawColor;   // colored specular, matches UT99 lights
+        totalSpec += specular;
+        totalSubtractedSpec += specular * (1.0 - shadowFactor);
+        //contributingLights++;
+      } // end if a detail light (ie we are close OR one of the main lights, so we did specular)
+    } // end loop through surface lights
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {
