@@ -1662,6 +1662,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
         {
             GOtherStuffDurationMS = 8.0;
         }
+        GLastFrameEndTimestamp = StartTime;
 
         // Measure our dynamic frame budget headroom
         double DynamicBudgetMS = Min(5.0, Max(0.0, 16.6 - GOtherStuffDurationMS)); // 16.6
@@ -1711,7 +1712,7 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
             }
         }
 
-        QueryPerformanceCounter(&GLastFrameEndTimestamp);
+        //QueryPerformanceCounter(&GLastFrameEndTimestamp);
     }
     else
     {

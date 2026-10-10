@@ -937,7 +937,7 @@ return;
         continue;
 
       float dist = sqrt(dist2);
-      uint maxDetailLights = clamp(uint(mix(float(numSurfaceLights), 5.0, (dist - 1500.0) / 1000.0)), 5, numSurfaceLights);
+      uint maxDetailLights = clamp(uint(mix(float(numSurfaceLights), 5.0, (dist - 500.0) / 1000.0)), 5, numSurfaceLights);
 
       // --- RUNTIME SPOTLIGHT CONE EVALUATION ---
       float coneFactor = 1.0f;
@@ -989,7 +989,7 @@ return;
       );
 
       // If the 64-bit handle is non-zero, this light has an active, resident shadow map!
-      if ((handleBits.x != 0u || handleBits.y != 0u) && (li < maxDetailLights))
+      if ((handleBits.x != 0u || handleBits.y != 0u) && (li < maxDetailLights)) // dynamic shadow scaling should make this superfluous :shrug:
       {
         samplerCube shadowMap = samplerCube(handleBits);
         int activeFacesMask = int(LightData5[i].y); 
