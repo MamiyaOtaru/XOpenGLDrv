@@ -928,11 +928,14 @@ return;
         continue; // skip lights with zero radius, which are used for non-lighting purposes (e.g. zone restriction) 
 
       vec3 InLightPos = ((LightPos[i].xyz - FrameCoords[0].xyz) * InFrameCoords);
-      float dist = distance(vCoords, InLightPos);
+      // Use squared distance where possible to avoid sqrt
+      vec3 diff1 = vCoords - InLightPos;
+      float dist2 = dot(diff1, diff1);
 
-      // Distance early out test
-      if (dist > WorldLightRadius)
+      // Distance early out test (use squared distance to avoid sqrt for rejects)
+      if (dist2 > WorldLightRadius * WorldLightRadius)
         continue;
+
       float dist = sqrt(dist2);
       uint maxDetailLights = clamp(uint(mix(float(numSurfaceLights), 5.0, (dist - 1500.0) / 1000.0)), 5, numSurfaceLights);
 
@@ -976,9 +979,6 @@ return;
           // radius raised to ~distance*1.2 to compensate, but it still attenuates by the time it reaches the floor
           coneFactor *= 2.5f; 
       }
-
-      vec3 originVS = vec3(vCoords.x, vCoords.y, vCoords.z);
-      vec3 lightPosVS = vec3(InLightPos.x, InLightPos.y, InLightPos.z);
       
       float shadowFactor = 1.0f;
  #if OPT_ShadowMaps   
