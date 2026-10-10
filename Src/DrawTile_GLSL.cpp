@@ -262,7 +262,8 @@ void UXOpenGLRenderDevice::DrawTileCoreProgram::BuildFragmentShader(GLuint Shade
 // draw to our own color attachments to composite in after reflections etc are resolved
 layout(location = 4) out vec4 FragColor;
 layout(location = 5) out vec4 FragColorAlpha;
-layout(location = 6) out vec4 FragColorUI;
+layout(location = 6) out vec4 FragColorUIadditive;
+layout(location = 7) out vec4 FragColorUIalpha;
 # else
 layout(location = 0) out vec4 FragColor;
 # endif
@@ -357,13 +358,25 @@ float vis = 1;
 float outTo4 = 1;
 float outTo5 = 0;
 float outTo6 = 0;
+float outTo7 = 0;
 if ((DrawFlags & DF_AlphaBlended) == DF_AlphaBlended)
 {
-    // true alpha-blend mode (some HUD eg. on screen text), UI text (which is additionally marked DF_UI but can ignore here)
+    // true alpha-blend mode (some HUD eg. on screen text), UI text
     vis = TotalColor.a;
-    outTo4 = 0;
-    outTo5 = 1;
-    outTo6 = 0;
+    if ((DrawFlags & DF_UI) == DF_UI)
+    {
+        outTo4 = 0;
+        outTo5 = 0;
+        outTo6 = 0;
+        outTo7 = 1;
+    }
+    else
+    {
+        outTo4 = 0;
+        outTo5 = 1;
+        outTo6 = 0;
+        outTo7 = 0;
+    }
 }
 else if ((DrawFlags & DF_Modulated) == DF_Modulated)
 {
@@ -384,17 +397,30 @@ else if ((DrawFlags & DF_Modulated) == DF_Modulated)
     outTo4 = 0;
     outTo5 = 1;
     outTo6 = 0;
+    outTo7 = 0;
 }
 else if ((DrawFlags & DF_Masked) == DF_Masked && ((DrawFlags & DF_Translucent) != DF_Translucent))
 {
-    // masked (level props eg. king josh city) into buffer to be alpha blended later
-    // also window UI (tabs, checkboxes)
-    // HUD (non selected weapon number, ammo bar)
+    // masked into buffer to be alpha blended later
     // masked AND additive (blood splats, weapon selection BG) handled below
     vis = TotalColor.a;
-    outTo4 = 0;
-    outTo5 = 1;
-    outTo6 = 0;
+    // window UI (tabs, checkboxes)
+    // HUD (non selected weapon number, ammo bar)
+    if ((DrawFlags & DF_UI) == DF_UI)
+    {
+      outTo4 = 0;
+      outTo5 = 0;
+      outTo6 = 0;
+      outTo7 = 1;
+    } 
+    // (level props eg. king josh city)
+    else
+    {
+      outTo4 = 0;
+      outTo5 = 1;
+      outTo6 = 0;
+      outTo7 = 0;
+    }
 }
 else {
     // things that get here are not modulated.  They are not alpha blended.  
@@ -407,22 +433,28 @@ else {
             outTo4 = 0;
             outTo5 = 0;
             outTo6 = 1;
+            outTo7 = 0;
         }
         // no transparency or anything!  window UI (panel body, buttons, top bar)
         // HUD: selected weapon icon
         else
         {
             outTo4 = 0;
-            outTo5 = 1;
+            outTo5 = 0;
             outTo6 = 0;
+            outTo7 = 1;
         }
     }
     // additive (coronas, explosions, etc) into buffer to be additively blended later
     // IF drawtile does something IN WORLD that has no blending modes at all, would need to handle it here
     // by sending not translucent to 5
-    outTo4 = 1;
-    outTo5 = 0;
-    outTo6 = 0;
+    else
+    {
+      outTo4 = 1;
+      outTo5 = 0;
+      outTo6 = 0;
+      outTo7 = 0;
+    }
 }
 TotalColor.a = vis;
 #endif
@@ -440,7 +472,8 @@ TotalColor.a = vis;
 # if OPT_ScreenSpaceReflections
   FragColor = TotalColor * outTo4;
   FragColorAlpha = TotalColor * outTo5;
-  FragColorUI = TotalColor * outTo6;
+  FragColorUIadditive = TotalColor * outTo6;
+  FragColorUIalpha = TotalColor * outTo7;
 # else
   FragColor = TotalColor;
 #endif

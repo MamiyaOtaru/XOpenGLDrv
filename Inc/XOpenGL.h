@@ -2579,7 +2579,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 			VertexBufferSize             = 0;
 			ParametersBufferSize         = 0;
 			ParametersBufferBindingIndex = 0;
-			NumTextureSamplers           = 5;   // direct, ssr, additive, alpha, ui
+			NumTextureSamplers           = 6;   // direct, ssr, additive, alpha, ui_additive, ui_alpha
 			DrawMode                     = GL_TRIANGLES;
 			UseSSBOParametersBuffer      = false;
 			ParametersInfo               = nullptr;
@@ -2594,11 +2594,12 @@ class UXOpenGLRenderDevice : public URenderDevice
 		}
 
 		// Samplers
-		GLint uDirect	= -1;   // ResolveFbo color0
-		GLint uSSR		= -1;   // SsaoFbo color0 (SSR result)
-		GLint uAdditive	= -1;   // additive sprites
-		GLint uAlpha	= -1;   // alpha sprites
-		GLint uUI		= -1;   // ResolveFbo color6 (UI)
+		GLint uDirect	  = -1;   // ResolveFbo color0
+		GLint uSSR		  = -1;   // SsaoFbo color0 (SSR result)
+		GLint uAdditive   = -1;   // additive sprites
+		GLint uAlpha	  = -1;   // alpha sprites
+		GLint uUIadditive = -1; // ResolveFbo color6 (UI additive)
+		GLint uUIalpha	  = -1;   // ResolveFbo color7 (UI alpha)
 
 		void CreateInputLayout() {}
 
@@ -2606,17 +2607,19 @@ class UXOpenGLRenderDevice : public URenderDevice
 		{
 			ShaderProgramImpl::BindShaderState(Spec);
 
-			GetUniformLocation(Spec, uDirect,	"uDirect");
-			GetUniformLocation(Spec, uSSR,		"uSSR");
-			GetUniformLocation(Spec, uAdditive,	"uAdditive");
-			GetUniformLocation(Spec, uAlpha,	"uAlpha");
-			GetUniformLocation(Spec, uUI,		"uUI");
+			GetUniformLocation(Spec, uDirect,	  "uDirect");
+			GetUniformLocation(Spec, uSSR,		  "uSSR");
+			GetUniformLocation(Spec, uAdditive,	  "uAdditive");
+			GetUniformLocation(Spec, uAlpha,	  "uAlpha");
+			GetUniformLocation(Spec, uUIadditive, "uUIadditive");
+			GetUniformLocation(Spec, uUIalpha,	  "uUIalpha");
 
 			if (uDirect		!= -1) glUniform1i(uDirect,		20);
 			if (uSSR		!= -1) glUniform1i(uSSR,		21);
 			if (uAdditive	!= -1) glUniform1i(uAdditive,	22);
 			if (uAlpha		!= -1) glUniform1i(uAlpha,		23);
-			if (uUI			!= -1) glUniform1i(uUI,			24);
+			if (uUIadditive	!= -1) glUniform1i(uUIadditive,	24);
+			if (uUIalpha	!= -1) glUniform1i(uUIalpha,	25);
 		}
 
 		void MapBuffers() {}

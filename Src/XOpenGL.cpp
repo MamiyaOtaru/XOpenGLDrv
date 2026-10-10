@@ -1392,7 +1392,8 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 			GL_RGBA8,     // things that show in reflections
 			GL_RGBA8,	  // aditive blended sprites
 			GL_RGBA8,	  // alpha blended sprites
-			GL_RGBA8      // UI, when splitting that out (SSR)
+			GL_RGBA8,     // additive UI, when splitting that out (SSR)
+            GL_RGBA8      // alpha UI, when splitting that out (SSR)
 		},
 		TRUE,   // depth texture (active depth buffer)
 		FALSE   // no depth RBO
@@ -1411,7 +1412,8 @@ UBOOL UXOpenGLRenderDevice::SetRes(INT NewX, INT NewY, INT NewColorBytes, UBOOL 
 				GL_RGBA8,     // things that show in reflections
 				GL_RGBA8,	  // aditive blended sprites
 				GL_RGBA8,	  // alpha blended sprites
-				GL_RGBA8      // UI, when splitting that out (SSR)
+				GL_RGBA8,     // additive UI, when splitting that out (SSR)
+                GL_RGBA8      // alpha UI, when splitting that out (SSR)
 			},
 			FALSE,      // no depth needed
 			FALSE
@@ -2742,9 +2744,10 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 			GL_COLOR_ATTACHMENT3,
 			GL_COLOR_ATTACHMENT4,
 			GL_COLOR_ATTACHMENT5,
-			GL_COLOR_ATTACHMENT6
+			GL_COLOR_ATTACHMENT6,
+			GL_COLOR_ATTACHMENT7
 		};
-		glDrawBuffers(7, bufs);
+		glDrawBuffers(8, bufs);
 		glClearColor(0, 0, 0, 0);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	}

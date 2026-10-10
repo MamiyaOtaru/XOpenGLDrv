@@ -441,9 +441,13 @@ void UXOpenGLRenderDevice::RunSSRCompositePass()
     glActiveTexture(GL_TEXTURE23);
     glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[5]);
 
-    // UI
+    // additive UI
     glActiveTexture(GL_TEXTURE24);
     glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[6]);
+
+    // alpha UI
+    glActiveTexture(GL_TEXTURE25);
+    glBindTexture(GL_TEXTURE_2D, ResolveFbo->colorTexIDs[7]);
 
     DrawFullscreenQuad();
 
