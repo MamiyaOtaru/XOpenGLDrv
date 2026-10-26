@@ -517,14 +517,38 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 		INT NumPts = SurfWorldVerts.Num();
 
-		PolyVertices.Empty();
-		PolyVertices.AddZeroed(NumPts);
-		PolyVertexNormals.Empty();
-		PolyVertexNormals.AddZeroed(NumPts);
-		PolyVertexTangents.Empty();
-		PolyVertexTangents.AddZeroed(NumPts);
-		PolyVertexBitangents.Empty();
-		PolyVertexBitangents.AddZeroed(NumPts);
+		TArray<glm::vec3>& PolyVertices = SI->ViewSpaceVerts;
+		TArray<glm::vec4>& PolyVertexNormals = SI->ViewSpaceNormals;
+		TArray<glm::vec4>& PolyVertexTangents = SI->ViewSpaceTangents;
+		TArray<glm::vec4>& PolyVertexBitangents = SI->ViewSpaceBitangents;
+		const bool bHasCurrentViewCache = SI->ViewSpaceCacheStamp == ViewSpaceCacheGeneration &&
+			PolyVertices.Num() == NumPts &&
+			PolyVertexNormals.Num() == NumPts &&
+			PolyVertexTangents.Num() == NumPts &&
+			PolyVertexBitangents.Num() == NumPts;
+		if (!bHasCurrentViewCache)
+		{
+			if (PolyVertices.Num() != NumPts)
+			{
+				PolyVertices.Empty();
+				PolyVertices.AddZeroed(NumPts);
+			}
+			if (PolyVertexNormals.Num() != NumPts)
+			{
+				PolyVertexNormals.Empty();
+				PolyVertexNormals.AddZeroed(NumPts);
+			}
+			if (PolyVertexTangents.Num() != NumPts)
+			{
+				PolyVertexTangents.Empty();
+				PolyVertexTangents.AddZeroed(NumPts);
+			}
+			if (PolyVertexBitangents.Num() != NumPts)
+			{
+				PolyVertexBitangents.Empty();
+				PolyVertexBitangents.AddZeroed(NumPts);
+			}
+		}
 		PolyVertexLightmapUVs.Empty();
 		PolyVertexLightmapUVs.AddZeroed(NumPts);
 
@@ -532,22 +556,25 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 		// Build per-vertex data for this node polygon
 		BOOL lmReady = (GOcclusionState == EOcclusionState::Ready && PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num());
-		for (INT vi = 0; vi < NumPts; ++vi)
+		if (!bHasCurrentViewCache)
 		{
-			FVector Vert      = SurfWorldVerts(vi).TransformPointBy(Frame->Coords);
-			FVector Normal    = SurfNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
-			FVector Tangent   = SurfTangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
-			FVector Bitangent = SurfBitangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+			for (INT vi = 0; vi < NumPts; ++vi)
+			{
+				FVector Vert      = SurfWorldVerts(vi).TransformPointBy(Frame->Coords);
+				FVector Normal    = SurfNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+				FVector Tangent   = SurfTangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+				FVector Bitangent = SurfBitangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
 
-			PolyVertices(vi)          = glm::vec4(Vert.X, Vert.Y, Vert.Z, 0.0f);
-			PolyVertexNormals(vi)     = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
-			PolyVertexTangents(vi)    = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
-			PolyVertexBitangents(vi)  = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
+				PolyVertices(vi)          = glm::vec3(Vert.X, Vert.Y, Vert.Z);
+				PolyVertexNormals(vi)     = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
+				PolyVertexTangents(vi)    = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
+				PolyVertexBitangents(vi)  = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
+			}
+			SI->ViewSpaceCacheStamp = ViewSpaceCacheGeneration;
+		}
+		for (INT vi = 0; vi < NumPts; ++vi)
 			if (lmReady)
 				PolyVertexLightmapUVs(vi) = glm::vec2(SurfLightmapUVs(vi).X, SurfLightmapUVs(vi).Y);
-			//else
-			//	debugf(TEXT("XOpenGL: not enough UVs: %d %d"), PolyVertexLightmapUVs.Num(), SurfLightmapUVs.Num());
-		}
 
 		const INT numNodes = SI->Nodes.Num();
 		for (INT ni = 0; ni < numNodes; ++ni)
@@ -662,9 +689,9 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		} else {
 			T = glm::normalize(T);
 		}
-		// Gram–Schmidt T against N
+		// Gramï¿½Schmidt T against N
 		T = glm::normalize(T - N * glm::dot(N, T));
-		// Recompute B from N×T to guarantee orthonormality
+		// Recompute B from Nï¿½T to guarantee orthonormality
 		B = glm::normalize(glm::cross(N, T));
 
 		glm::vec4 fallbackN = glm::vec4(N, 0.0f);

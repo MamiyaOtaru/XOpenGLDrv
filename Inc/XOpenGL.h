@@ -20,6 +20,10 @@
 // multithreading support for occlusion map generation
 #include <queue>
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #include "GLStateManager.h"
 
@@ -1828,6 +1832,11 @@ class UXOpenGLRenderDevice : public URenderDevice
 		TArray<FVector> VertexNormals;   // per-instance normals (after smoothing)
 		TArray<FVector> Tangents;
 		TArray<FVector> Bitangents;
+		TArray<glm::vec3> ViewSpaceVerts;
+		TArray<glm::vec4> ViewSpaceNormals;
+		TArray<glm::vec4> ViewSpaceTangents;
+		TArray<glm::vec4> ViewSpaceBitangents;
+		INT ViewSpaceCacheStamp = -1;
 
 		// Per-surface triangulation indices. Stored as triplets of indices into SurfaceVertexPositions[iSurf].
 		// This avoids doing triangulation at draw-time.
@@ -1867,6 +1876,10 @@ class UXOpenGLRenderDevice : public URenderDevice
 	TArray<AActor*> StaticLevelLights;
 	// per frame, quickly iterate through dynamic lights without having to iterate all of them
 	TArray<AActor*> DynamicLevelLights;
+	// static lights are stable per level; keep their index order constant and only refresh when the level changes
+	TArray<AActor*> CachedStaticLights;
+	ULevel* StaticLightLevel = nullptr;
+	UBOOL bStaticLightDataReady = FALSE;
 
 	// --- Fake Spotlight Pair Tracking ---
 	struct FakeSpotlightPair
@@ -1883,12 +1896,12 @@ class UXOpenGLRenderDevice : public URenderDevice
 	#define MAX_SURFACE_LIGHTS 2048
 	// Just taking all that touch a surface now (they should be there) fine now that we don't pad out the array with junk so most surfaces can have one or two or some other small number
 	INT DefaultLightCap = 2000; // 25 good for most.  morpheus needs 65.  zeto needs 95 :-/ 
-    INT LevelLightCap = DefaultLightCap;
+	INT LevelLightCap = DefaultLightCap;
 
 	// per-frame mapping from AActor* -> index inside LightInfoBuffer (populated each SetSceneNode)
 	TMap<AActor*, INT> CurrentLightToIndex;
 
-    // per level mapping from texture to roughness value, used to avoid expensive String allocations on every frame for every surface
+	// per level mapping from texture to roughness value, used to avoid expensive String allocations on every frame for every surface
 	TMap<UTexture*, float> RoughnessCache;
 	// and the same for metalness
 	TMap<UTexture*, float> MetalnessCache;
@@ -1913,7 +1926,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	// util functions used also by eg. HeroLightstatic UBOOL UXOpenGLRenderDevice::PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N)
 	static UBOOL UXOpenGLRenderDevice::PointInTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C, const FVector& N);
-   	static FVector UXOpenGLRenderDevice::ClosestPointOnTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C);
+	static FVector UXOpenGLRenderDevice::ClosestPointOnTriangle(const FVector& P, const FVector& A, const FVector& B, const FVector& C);
 
 	// list of lights with coronas so we can shrink them based on distance
 	struct FCoronaLight
@@ -2002,8 +2015,27 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	// BSP smoothing stuff
 	INT UXOpenGLRenderDevice::LocalFrameCounter = 0;
+	INT ViewSpaceCacheGeneration = 0;
+	std::vector<std::thread> ViewCacheWorkers;
+	std::mutex ViewCacheMutex;
+	std::condition_variable ViewCacheWorkAvailable;
+	std::condition_variable ViewCacheWorkComplete;
+	bool bViewCacheWorkersInitialized = false;
+	bool bViewCacheWorkersStopping = false;
+	UINT ViewCacheWorkGeneration = 0;
+	INT ViewCacheReadyWorkers = 0;
+	INT ViewCacheCompletedWorkers = 0;
+	INT ViewCacheActiveWorkers = 0;
+	INT ViewCacheBatchSize = 0;
+	INT ViewCacheNumSurfaces = 0;
+	FSurfInfo** ViewCacheSurfaces = nullptr;
+	const FSceneNode* ViewCacheFrame = nullptr;
 
 	void UXOpenGLRenderDevice::NewLevelBSP();
+	void UXOpenGLRenderDevice::EnsureViewCacheWorkers();
+	void UXOpenGLRenderDevice::StopViewCacheWorkers();
+	void UXOpenGLRenderDevice::ViewCacheWorker(INT WorkerIndex);
+	void UXOpenGLRenderDevice::TransformSurfaceViewCache(const FSceneNode* Frame, FSurfInfo& SI);
 
 	// Map surface index -> FSurfInfo (built by BuildSmoothVertexNormalsForLevel)
 	TMap<INT, FSurfInfo> SurfaceInfoMap;
@@ -2279,6 +2311,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 
 	// ============================== DRAWPREPASS ==============================
 	void UXOpenGLRenderDevice::DrawPrepassSurface(const FSceneNode* Frame, /*const FSurfaceInfo& Surface,*/ FSurfInfo& SI);
+	void UXOpenGLRenderDevice::PrepareSurfaceViewCache(const FSceneNode* Frame, INT TargetFrame);
 
 	struct DrawPrepassVertex
 	{
@@ -2474,7 +2507,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		void MapBuffers();
 		void UnmapBuffers();
 
-		// No batching — single fullscreen draw
+		// No batching ï¿½ single fullscreen draw
 		void Flush(bool Rotate);
 
 		void ActivateShader();

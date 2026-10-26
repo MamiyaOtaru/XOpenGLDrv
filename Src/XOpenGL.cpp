@@ -1957,38 +1957,50 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		// Gather actors
 		LightList.Empty();
 		DynamicLevelLights.Empty();
+
+		const bool bRefreshStaticData = (Level != StaticLightLevel || !bStaticLightDataReady);
+		if (bRefreshStaticData)
+		{
+			CachedStaticLights.Empty();
+			for (INT i = 0; i < Level->Actors.Num(); ++i)
+			{
+				AActor* Actor = Level->Actors(i);
+				if (!Actor || Actor->bDeleteMe)
+					continue;
+				if (Actor->LightType == LE_None || Actor->LightRadius == 0 || Actor->LightBrightness == 0)
+					continue;
+				if (Actor->bDynamicLight || (Actor->bMovable && !Actor->bStatic))
+					continue;
+				CachedStaticLights.AddItem(Actor);
+			}
+			StaticLightLevel = Level;
+			bStaticLightDataReady = TRUE;
+		}
+
 		for (INT i = 0; i < Level->Actors.Num(); ++i)
 		{
 			AActor* Actor = Level->Actors(i);
-
-			// Filter out invalid actors
 			if (!Actor || Actor->bDeleteMe)
 				continue;
-
-			// Filter out irrelevant lights
 			if (Actor->LightType == LE_None || Actor->LightRadius == 0 || Actor->LightBrightness == 0)
 				continue;
-
-			// Filter out non-static lights if we're not using HW Lighting or per pixel lighting
 			if (!Actor->bStatic && Actor->bMovable && !HWLighting && !BumpMaps)
 				continue;
-
-#if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
-			LightList.AddItem(Actor);
-			if (Actor->LightType != LT_None &&
-				Actor->LightBrightness != 0 && 
-				Actor->LightRadius != 0 &&
-				(Actor->bDynamicLight ||
-				(Actor->bMovable && !Actor->bStatic)) &&
-				(Actor->Location - Frame->Coords.Origin).SizeSquared() < 1000000)
-				DynamicLevelLights.AddItem(Actor);
-#else
-			if (Actor->NormalLightRadius) //for normal mapping only add lights with normallightradius set. Needs performance tests if not.
-				LightList.AddItem(Actor);
-#endif
+			if (!(Actor->bDynamicLight || (Actor->bMovable && !Actor->bStatic)))
+				continue;
+			if ((Actor->Location - Frame->Coords.Origin).SizeSquared() >= 1000000)
+				continue;
+			DynamicLevelLights.AddItem(Actor);
 		}
 
-		CurrentLightToIndex.Empty(); // done per frame.  the static part could be done per level, but this is easier and not really a problem.  The static lights are in the same order each time
+		LightList = CachedStaticLights;
+		for (INT i = 0; i < DynamicLevelLights.Num(); ++i)
+			LightList.AddItem(DynamicLevelLights(i));
+
+		CurrentLightToIndex.Empty();
+		for (INT i = 0; i < LightList.Num() && i < MAX_LIGHTS; ++i)
+			CurrentLightToIndex.Set(LightList(i), i);
+
 		NumLights = LightList.Num();
 		if (NumLights > MAX_LIGHTS)
 			NumLights = MAX_LIGHTS;
@@ -2004,9 +2016,12 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 
 		FLOAT Time = Frame->Viewport->Actor->Level->TimeSeconds;
 		auto LightData = LightInfoBuffer.GetElementPtr(0);
+		const INT StaticLightCount = CachedStaticLights.Num();
 		for (INT i = 0; i < NumLights; i++)
 		{
 			auto Actor = LightList(i);
+			if (i < StaticLightCount && !bRefreshStaticData)
+				continue; // static lights stay stable; only upload once per level
 			FakeSpotlightPair* SpotData = GetSpotlightData(Actor);
 			bool bIsSpot = (SpotData != nullptr);
 
@@ -2018,9 +2033,9 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 				// --- POSITION OVERRIDE ---
 				// Ground light actor represents the spotlight, but its rays emanate from the ceiling fixture!
 				LightData->LightPos[i] = glm::vec4(SpotData->TopLight->Location.X, 
-												   SpotData->TopLight->Location.Y, 
-												   SpotData->TopLight->Location.Z, 
-												   1.f);
+														 SpotData->TopLight->Location.Y, 
+														 SpotData->TopLight->Location.Z, 
+														 1.f);
 			}
 			else
 			{
@@ -2137,10 +2152,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 					// trying to replicate pulsing and sometimes moving behavior here is a fools errand
 					// instead of modulating brightness, will just set rgb to 1 or something and attenuate slightly more aggressively
 					// then blend in the vanilla lightmap.  I mean we already do this, but setting this light to white will mean the vanilla lightmap contributes fully
-					// so the final output is straight from the vanilla output.  By that I mean the final output of this light.  Where it blends with other lights,
-					// THOSE lights will represent a blend of vanilla lightmap and real time per pixel lights.
-                    bUseEngineLight = true;
-					//FlickerScale = 0.9f; // slightly dim for safety as we have different attenuation than vanilla.  don't want to spread too much white light
+					FlickerScale = 1.0f;
 					break;
 				}
 
@@ -2166,7 +2178,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			{
 				// If we're using the engine light, we want to ignore the hue and saturation and just use the brightness as a white light, since the vanilla lightmap will provide the color information.  This is important for LT_TexturePaletteLoop and LT_TexturePaletteOnce, which can have animated brightness but don't have any way to specify color changes.
 				RGBColor = FPlane(AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, 1.0f);
-            }
+			}
 			else
 			{
 				RGBColor = FGetHSV(Actor->LightHue, Actor->LightSaturation, AnimatedBrightness);
@@ -2210,13 +2222,11 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 				// Safe baseline fallbacks for regular lights
 				LightData->LightData6[i] = glm::vec4(0.0f, 0.0f, 0.0f, -1.0f);
 			}
-
-			CurrentLightToIndex.Set(LightList(i), i);
-		}
+		} // end loop through lights
 
 		LightInfoBuffer.Bind();
 		LightInfoBuffer.BufferData(true);
-	}
+	} // end if level and bumpmaps/perpixel lighting
 
 	if (CoronaScaling)
 	{
@@ -2331,6 +2341,9 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			CoronaLights.AddItem(C);
 		}
 	} // end if CoronaScaling
+
+	if (AmbientOcclusion || (PhongShading && BumpMaps))
+		PrepareSurfaceViewCache(Frame, LocalFrameCounter - 1);
 
 	// Depth prepass into gbufferFbo (for SSAO / indirect illumination)
 	if ((AmbientOcclusion) && !DepthPrepassDone && LastLevel && !LastLevel->IsEntry)
@@ -2673,7 +2686,7 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 	ULevel* level = Viewport->Actor->XLevel;
 	GFrameLevel.store(level, std::memory_order_release);
 
-	// Always update LastLevel first — it always means “current level”
+	// Always update LastLevel first ï¿½ it always means ï¿½current levelï¿½
 	bool levelChanged = (level != LastLevel);
 	LastLevel = level;
 
@@ -3391,6 +3404,7 @@ void UXOpenGLRenderDevice::Exit()
 	guard(UXOpenGLRenderDevice::Exit);
 	debugf(TEXT("XOpenGL: Exit"));
 
+	StopViewCacheWorkers();
 	MakeCurrent();
 
 	if (!GIsEditor && !GIsRequestingExit)
@@ -3512,6 +3526,8 @@ void UXOpenGLRenderDevice::ShutdownAfterError()
 {
 	guard(UXOpenGLRenderDevice::ShutdownAfterError);
 	debugf(NAME_Exit, TEXT("XOpenGL: ShutdownAfterError"));
+
+	StopViewCacheWorkers();
 
 #if XOPENGL_REALLY_WANT_NONCRITICAL_CLEANUP
 	Flush(0);

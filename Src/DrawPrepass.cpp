@@ -9,8 +9,200 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <system_error>
 #include "XOpenGLDrv.h"
 #include "XOpenGL.h"
+
+static bool bMultithreadSurfaceViewCache = true;
+
+void UXOpenGLRenderDevice::EnsureViewCacheWorkers()
+{
+    if (bViewCacheWorkersInitialized)
+        return;
+
+    bViewCacheWorkersInitialized = true;
+    bViewCacheWorkersStopping = false;
+    ViewCacheReadyWorkers = 0;
+
+    const unsigned int HardwareThreads = std::thread::hardware_concurrency();
+    const INT WorkerCount = Min<INT>(4, HardwareThreads > 0 ? static_cast<INT>(HardwareThreads) : 1);
+    ViewCacheWorkers.reserve(WorkerCount);
+    try
+    {
+        for (INT WorkerIndex = 0; WorkerIndex < WorkerCount; ++WorkerIndex)
+            ViewCacheWorkers.emplace_back(&UXOpenGLRenderDevice::ViewCacheWorker, this, WorkerIndex);
+    }
+    catch (const std::system_error& Error)
+    {
+        debugf(TEXT("Surface view-cache worker creation failed (%d); using %d persistent workers"),
+            Error.code().value(), static_cast<INT>(ViewCacheWorkers.size()));
+    }
+
+    std::unique_lock<std::mutex> Lock(ViewCacheMutex);
+    ViewCacheWorkComplete.wait(Lock, [this]()
+    {
+        return ViewCacheReadyWorkers == static_cast<INT>(ViewCacheWorkers.size());
+    });
+}
+
+void UXOpenGLRenderDevice::StopViewCacheWorkers()
+{
+    if (!bViewCacheWorkersInitialized)
+        return;
+
+    {
+        std::lock_guard<std::mutex> Lock(ViewCacheMutex);
+        bViewCacheWorkersStopping = true;
+    }
+    ViewCacheWorkAvailable.notify_all();
+    for (std::thread& Worker : ViewCacheWorkers)
+        if (Worker.joinable())
+            Worker.join();
+    ViewCacheWorkers.clear();
+    bViewCacheWorkersInitialized = false;
+    bViewCacheWorkersStopping = false;
+    ViewCacheSurfaces = nullptr;
+    ViewCacheFrame = nullptr;
+}
+
+void UXOpenGLRenderDevice::TransformSurfaceViewCache(const FSceneNode* Frame, FSurfInfo& SI)
+{
+    for (INT vi = 0; vi < SI.Verts.Num(); ++vi)
+    {
+        const FVector Vert = SI.Verts(vi).TransformPointBy(Frame->Coords);
+        const FVector Normal = SI.VertexNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+        const FVector Tangent = SI.Tangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+        const FVector Bitangent = SI.Bitangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+        SI.ViewSpaceVerts(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
+        SI.ViewSpaceNormals(vi) = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
+        SI.ViewSpaceTangents(vi) = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
+        SI.ViewSpaceBitangents(vi) = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
+    }
+    SI.ViewSpaceCacheStamp = ViewSpaceCacheGeneration;
+}
+
+void UXOpenGLRenderDevice::ViewCacheWorker(INT WorkerIndex)
+{
+    UINT ObservedGeneration;
+    {
+        std::lock_guard<std::mutex> Lock(ViewCacheMutex);
+        ObservedGeneration = ViewCacheWorkGeneration;
+        ++ViewCacheReadyWorkers;
+    }
+    ViewCacheWorkComplete.notify_one();
+    for (;;)
+    {
+        std::unique_lock<std::mutex> Lock(ViewCacheMutex);
+        ViewCacheWorkAvailable.wait(Lock, [this, &ObservedGeneration]()
+        {
+            return bViewCacheWorkersStopping || ViewCacheWorkGeneration != ObservedGeneration;
+        });
+
+        if (bViewCacheWorkersStopping)
+            return;
+
+        ObservedGeneration = ViewCacheWorkGeneration;
+        const INT ActiveWorkers = ViewCacheActiveWorkers;
+        const INT BatchSize = ViewCacheBatchSize;
+        const INT NumSurfaces = ViewCacheNumSurfaces;
+        FSurfInfo** Surfaces = ViewCacheSurfaces;
+        const FSceneNode* Frame = ViewCacheFrame;
+        Lock.unlock();
+
+        if (WorkerIndex < ActiveWorkers)
+        {
+            const INT Begin = WorkerIndex * BatchSize;
+            const INT End = Min<INT>(Begin + BatchSize, NumSurfaces);
+            for (INT si = Begin; si < End; ++si)
+                TransformSurfaceViewCache(Frame, *Surfaces[si]);
+        }
+
+        Lock.lock();
+        ++ViewCacheCompletedWorkers;
+        if (ViewCacheCompletedWorkers == static_cast<INT>(ViewCacheWorkers.size()))
+            ViewCacheWorkComplete.notify_one();
+    }
+}
+
+void UXOpenGLRenderDevice::PrepareSurfaceViewCache(const FSceneNode* Frame, INT TargetFrame)
+{
+    guard(UXOpenGLRenderDevice::PrepareSurfaceViewCache);
+
+    ++ViewSpaceCacheGeneration;
+    std::vector<FSurfInfo*> Surfaces;
+    for (TMap<INT, FSurfInfo>::TIterator It(SurfaceInfoMap); It; ++It)
+    {
+        FSurfInfo& SI = It.Value();
+        if (SI.LastDrawnFrame != TargetFrame || SI.IsMover)
+            continue;
+
+        const INT NumPts = SI.Verts.Num();
+        if (SI.ViewSpaceVerts.Num() != NumPts)
+        {
+            SI.ViewSpaceVerts.Empty();
+            SI.ViewSpaceVerts.AddZeroed(NumPts);
+        }
+        if (SI.ViewSpaceNormals.Num() != NumPts)
+        {
+            SI.ViewSpaceNormals.Empty();
+            SI.ViewSpaceNormals.AddZeroed(NumPts);
+        }
+        if (SI.ViewSpaceTangents.Num() != NumPts)
+        {
+            SI.ViewSpaceTangents.Empty();
+            SI.ViewSpaceTangents.AddZeroed(NumPts);
+        }
+        if (SI.ViewSpaceBitangents.Num() != NumPts)
+        {
+            SI.ViewSpaceBitangents.Empty();
+            SI.ViewSpaceBitangents.AddZeroed(NumPts);
+        }
+        Surfaces.push_back(&SI);
+    }
+
+    if (Surfaces.empty())
+        return;
+
+    const INT NumSurfaces = static_cast<INT>(Surfaces.size());
+    if (!bMultithreadSurfaceViewCache || NumSurfaces < 8)
+    {
+        for (INT si = 0; si < NumSurfaces; ++si)
+            TransformSurfaceViewCache(Frame, *Surfaces[si]);
+        return;
+    }
+
+    EnsureViewCacheWorkers();
+    if (ViewCacheWorkers.empty())
+    {
+        for (INT si = 0; si < NumSurfaces; ++si)
+            TransformSurfaceViewCache(Frame, *Surfaces[si]);
+        return;
+    }
+
+    const INT ActiveWorkers = Min<INT>(NumSurfaces, ViewCacheWorkers.size());
+    {
+        std::lock_guard<std::mutex> Lock(ViewCacheMutex);
+        ViewCacheActiveWorkers = ActiveWorkers;
+        ViewCacheBatchSize = (NumSurfaces + ActiveWorkers - 1) / ActiveWorkers;
+        ViewCacheNumSurfaces = NumSurfaces;
+        ViewCacheSurfaces = Surfaces.data();
+        ViewCacheFrame = Frame;
+        ViewCacheCompletedWorkers = 0;
+        ++ViewCacheWorkGeneration;
+    }
+    ViewCacheWorkAvailable.notify_all();
+    {
+        std::unique_lock<std::mutex> Lock(ViewCacheMutex);
+        ViewCacheWorkComplete.wait(Lock, [this]()
+        {
+            return ViewCacheCompletedWorkers == static_cast<INT>(ViewCacheWorkers.size());
+        });
+        ViewCacheSurfaces = nullptr;
+        ViewCacheFrame = nullptr;
+    }
+
+    unguard;
+}
 
 glm::vec3 ToVec3(const FPlane& P)
 {
@@ -86,13 +278,52 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
     }
     else
     {
-        for (INT vi = 0; vi < NumPts; ++vi)
+        if (SI.ViewSpaceCacheStamp == ViewSpaceCacheGeneration &&
+            SI.ViewSpaceVerts.Num() == NumPts && SI.ViewSpaceNormals.Num() == NumPts)
         {
-            FVector Vert   = SI.Verts(vi).TransformPointBy(Frame->Coords);
-            FVector Normal = SI.VertexNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+            for (INT vi = 0; vi < NumPts; ++vi)
+            {
+                PolyVertices(vi) = SI.ViewSpaceVerts(vi);
+                PolyVertexNormals(vi) = glm::vec3(SI.ViewSpaceNormals(vi));
+            }
+        }
+        else
+        {
+            if (SI.ViewSpaceVerts.Num() != NumPts)
+            {
+                SI.ViewSpaceVerts.Empty();
+                SI.ViewSpaceVerts.AddZeroed(NumPts);
+            }
+            if (SI.ViewSpaceNormals.Num() != NumPts)
+            {
+                SI.ViewSpaceNormals.Empty();
+                SI.ViewSpaceNormals.AddZeroed(NumPts);
+            }
+            if (SI.ViewSpaceTangents.Num() != NumPts)
+            {
+                SI.ViewSpaceTangents.Empty();
+                SI.ViewSpaceTangents.AddZeroed(NumPts);
+            }
+            if (SI.ViewSpaceBitangents.Num() != NumPts)
+            {
+                SI.ViewSpaceBitangents.Empty();
+                SI.ViewSpaceBitangents.AddZeroed(NumPts);
+            }
+            for (INT vi = 0; vi < NumPts; ++vi)
+            {
+                const FVector Vert = SI.Verts(vi).TransformPointBy(Frame->Coords);
+                const FVector Normal = SI.VertexNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+                const FVector Tangent = SI.Tangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
+                const FVector Bitangent = SI.Bitangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
 
-            PolyVertices(vi)      = glm::vec3(Vert.X, Vert.Y, Vert.Z);
-            PolyVertexNormals(vi) = glm::vec3(Normal.X, Normal.Y, Normal.Z);
+                SI.ViewSpaceVerts(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
+                SI.ViewSpaceNormals(vi) = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
+                SI.ViewSpaceTangents(vi) = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
+                SI.ViewSpaceBitangents(vi) = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
+                PolyVertices(vi) = SI.ViewSpaceVerts(vi);
+                PolyVertexNormals(vi) = glm::vec3(SI.ViewSpaceNormals(vi));
+            }
+            SI.ViewSpaceCacheStamp = ViewSpaceCacheGeneration;
         }
     }
 
