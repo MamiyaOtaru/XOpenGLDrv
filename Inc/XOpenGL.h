@@ -2017,6 +2017,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 	INT UXOpenGLRenderDevice::LocalFrameCounter = 0;
 	INT ViewSpaceCacheGeneration = 0;
 	std::vector<std::thread> ViewCacheWorkers;
+	std::vector<FSurfInfo*> ViewCacheSurfaceList;
 	std::mutex ViewCacheMutex;
 	std::condition_variable ViewCacheWorkAvailable;
 	std::condition_variable ViewCacheWorkComplete;

@@ -129,7 +129,8 @@ void UXOpenGLRenderDevice::PrepareSurfaceViewCache(const FSceneNode* Frame, INT 
     guard(UXOpenGLRenderDevice::PrepareSurfaceViewCache);
 
     ++ViewSpaceCacheGeneration;
-    std::vector<FSurfInfo*> Surfaces;
+    std::vector<FSurfInfo*>& Surfaces = ViewCacheSurfaceList;
+    Surfaces.clear();
     for (TMap<INT, FSurfInfo>::TIterator It(SurfaceInfoMap); It; ++It)
     {
         FSurfInfo& SI = It.Value();
@@ -234,16 +235,16 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
 
 	INT NumPts = SI.Verts.Num();
 
-    TArray<glm::vec3> PolyVertices;
-    PolyVertices.AddZeroed(NumPts);
-    TArray<glm::vec3> PolyVertexNormals;
-    PolyVertexNormals.AddZeroed(NumPts);
+    TArray<glm::vec3> MoverPolyVertices;
+    TArray<glm::vec3> MoverPolyVertexNormals;
 
     TArray<glm::uint>& TriIdx = SI.TriIdx;
 
     // Build per-vertex data for this node polygon
     if (SI.IsMover)
     {
+        MoverPolyVertices.AddZeroed(NumPts);
+        MoverPolyVertexNormals.AddZeroed(NumPts);
         AMover* Mov = Cast<AMover>(SI.Owner);
         if (!Mov) return;
 
@@ -273,21 +274,14 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
         for (INT vi = 0; vi < NumPts; ++vi)
         {
             FVector Vert   = CachedMesh->Verts(vi).TransformPointBy(Frame->Coords);
-            PolyVertices(vi)      = glm::vec3(Vert.X, Vert.Y, Vert.Z);
+            MoverPolyVertices(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
         }
     }
     else
     {
-        if (SI.ViewSpaceCacheStamp == ViewSpaceCacheGeneration &&
-            SI.ViewSpaceVerts.Num() == NumPts && SI.ViewSpaceNormals.Num() == NumPts)
-        {
-            for (INT vi = 0; vi < NumPts; ++vi)
-            {
-                PolyVertices(vi) = SI.ViewSpaceVerts(vi);
-                PolyVertexNormals(vi) = glm::vec3(SI.ViewSpaceNormals(vi));
-            }
-        }
-        else
+        if (SI.ViewSpaceCacheStamp != ViewSpaceCacheGeneration ||
+            SI.ViewSpaceVerts.Num() != NumPts || SI.ViewSpaceNormals.Num() != NumPts ||
+            SI.ViewSpaceTangents.Num() != NumPts || SI.ViewSpaceBitangents.Num() != NumPts)
         {
             if (SI.ViewSpaceVerts.Num() != NumPts)
             {
@@ -309,21 +303,7 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
                 SI.ViewSpaceBitangents.Empty();
                 SI.ViewSpaceBitangents.AddZeroed(NumPts);
             }
-            for (INT vi = 0; vi < NumPts; ++vi)
-            {
-                const FVector Vert = SI.Verts(vi).TransformPointBy(Frame->Coords);
-                const FVector Normal = SI.VertexNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
-                const FVector Tangent = SI.Tangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
-                const FVector Bitangent = SI.Bitangents(vi).TransformVectorBy(Frame->Coords).SafeNormal();
-
-                SI.ViewSpaceVerts(vi) = glm::vec3(Vert.X, Vert.Y, Vert.Z);
-                SI.ViewSpaceNormals(vi) = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
-                SI.ViewSpaceTangents(vi) = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
-                SI.ViewSpaceBitangents(vi) = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
-                PolyVertices(vi) = SI.ViewSpaceVerts(vi);
-                PolyVertexNormals(vi) = glm::vec3(SI.ViewSpaceNormals(vi));
-            }
-            SI.ViewSpaceCacheStamp = ViewSpaceCacheGeneration;
+            TransformSurfaceViewCache(Frame, SI);
         }
     }
 
@@ -368,25 +348,25 @@ void UXOpenGLRenderDevice::DrawPrepassSurface(
 
             if (SI.IsMover)
             {
-                glm::vec3 A = PolyVertices(ia);
-                glm::vec3 B = PolyVertices(ib);
-                glm::vec3 C = PolyVertices(ic);
+                glm::vec3 A = MoverPolyVertices(ia);
+                glm::vec3 B = MoverPolyVertices(ib);
+                glm::vec3 C = MoverPolyVertices(ic);
                 glm::vec3 N = glm::normalize(glm::cross(C - A, B - A));
                 glm::vec3 viewDir = glm::normalize(-A);  // A is view-space position
                 if (glm::dot(N, viewDir) < 0.0f) N = -N; // ensure normals always face us.  Possibly overkill
-                PolyVertexNormals(ia) = N;
-                PolyVertexNormals(ib) = N;
-                PolyVertexNormals(ic) = N;
+                MoverPolyVertexNormals(ia) = N;
+                MoverPolyVertexNormals(ib) = N;
+                MoverPolyVertexNormals(ic) = N;
             }
 
-			Out->Coords     = PolyVertices(ia);
-            Out->Normal     = PolyVertexNormals(ia);
+            Out->Coords     = SI.IsMover ? MoverPolyVertices(ia) : SI.ViewSpaceVerts(ia);
+            Out->Normal     = SI.IsMover ? MoverPolyVertexNormals(ia) : glm::vec3(SI.ViewSpaceNormals(ia));
             Out++;
-			Out->Coords     = PolyVertices(ib);
-            Out->Normal     = PolyVertexNormals(ib);
+            Out->Coords     = SI.IsMover ? MoverPolyVertices(ib) : SI.ViewSpaceVerts(ib);
+            Out->Normal     = SI.IsMover ? MoverPolyVertexNormals(ib) : glm::vec3(SI.ViewSpaceNormals(ib));
             Out++;
-			Out->Coords     = PolyVertices(ic);
-            Out->Normal     = PolyVertexNormals(ic);
+            Out->Coords     = SI.IsMover ? MoverPolyVertices(ic) : SI.ViewSpaceVerts(ic);
+            Out->Normal     = SI.IsMover ? MoverPolyVertexNormals(ic) : glm::vec3(SI.ViewSpaceNormals(ic));
             Out++;
         }
 
