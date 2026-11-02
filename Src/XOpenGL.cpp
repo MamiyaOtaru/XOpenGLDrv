@@ -2357,9 +2357,11 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		for (INT iSurf = 0; iSurf < NumSurfs; ++iSurf)
 		{
 			FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
+			bool close = (pSI && (pSI->Centroid - Frame->Coords.Origin).Size() - pSI->FacetRadius < 1500.f);
+
 			// exclude two sided. They don't *use* SSAO so they shouldn't generate it.
 			// any surfaces that do not will need to be excluded both here and in DrawComplex
-			if (pSI && pSI->LastDrawnFrame == TargetFrame && !(pSI->PolyFlags & PF_TwoSided))
+			if (close && pSI && pSI->LastDrawnFrame == TargetFrame && !(pSI->PolyFlags & PF_TwoSided))
 				UXOpenGLRenderDevice::DrawPrepassSurface(Frame, *pSI);
 		}
 
