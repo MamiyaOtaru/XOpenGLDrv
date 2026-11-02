@@ -174,6 +174,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				// already drawn this frame, skip
 				return;
 			}
+			if (SI)
+				SI->LastDrawnFrame = LocalFrameCounter;
 		}
 	}
 
@@ -508,7 +510,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	if (close && PhongShading && BumpMaps && SI && !SI->IsMover) // phong shading only works with "bumpmaps" aka per pixel lighting
 	{
-		SI->LastDrawnFrame = LocalFrameCounter;
 		// Per-surface precomputed normals (if available) and world-space verts for matching
 		TArray<FVector>& SurfWorldVerts   = SI->Verts;
 		TArray<FVector>& SurfNormals      = SI->VertexNormals;
