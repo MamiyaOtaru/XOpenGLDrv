@@ -2353,10 +2353,10 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		// Only draw BSP surfaces that were visible last frame
 		INT TargetFrame = LocalFrameCounter - 1;
 
-		INT NumSurfs = LastLevel->Model->Surfs.Num();
-		for (INT iSurf = 0; iSurf < NumSurfs; ++iSurf)
+		for (TMap<INT, FSurfInfo>::TIterator It(SurfaceInfoMap); It; ++It)
 		{
-			FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
+			FSurfInfo& SI = It.Value();
+            FSurfInfo* pSI = &SI;
 			bool close = (pSI && (pSI->Centroid - Frame->Coords.Origin).Size() - pSI->FacetRadius < 1500.f);
 
 			// exclude two sided. They don't *use* SSAO so they shouldn't generate it.
