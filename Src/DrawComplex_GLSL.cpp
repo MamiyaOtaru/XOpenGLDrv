@@ -907,6 +907,20 @@ return;
     }
 #endif
 #if OPT_BumpMaps
+    float camDist = length(vCoords.xyz); 
+    
+    // User adjustable options or constants
+#if OPT_MacroTextures
+    float fadeStart = 500.0; 
+    float fadeEnd   = 1500.0;
+#else
+    float fadeStart = 100000.0; 
+    float fadeEnd   = 100000.0;
+#endif
+    
+    // 1.0 = Full Per-Pixel Math, 0.0 = Crisp Performance Fallback
+    float perPixelWeight = 1.0 - clamp((camDist - fadeStart) / (fadeEnd - fadeStart), 0.0, 1.0);
+    if (perPixelWeight > 0) {
     vec3 totalStaticLight = vec3(0.0);
     vec3 totalSubtractedLight = vec3(0.0);
     vec3 totalDynamicLight = vec3(0.0);
@@ -918,9 +932,10 @@ return;
     uint numDynamicLights = meta.z;
     numSurfaceLights = clamp(numStaticLights + numDynamicLights, uint(0), uint(MAX_SURFACE_LIGHTS));
 
-    // max lights goes from numlights to 5 from 1500 to 2500 units away.  This is a hack to reduce the number of specular lights on distant surfaces, which are less important.
-    float fragDist = distance(vCoords, vec3(0.0));
-    uint maxDetailLights = clamp(uint(mix(float(numSurfaceLights), 5.0, (fragDist - 1500.0) / 1000.0)), 5, numSurfaceLights);
+    // max lights goes from numlights to 5 from 1500 to 2500 units away.  
+    // This is a hack to reduce the number of specular lights on distant surfaces, which are less important.
+    // uncertain if this is worth more than a couple fps
+    uint maxDetailLights = clamp(uint(mix(float(numSurfaceLights), 5.0, (camDist - fadeStart) / (fadeEnd - fadeStart))), 5, numSurfaceLights);
 
     for (uint li = 0u; li < numSurfaceLights; li++)
     {
@@ -1044,6 +1059,8 @@ return;
       else {
         totalDynamicLight += rawColor * diff * attenuation;
       }
+      
+      // specular, for a more limited number of lights (unless close to the camera, then allow all)
       if (li < maxDetailLights)
       {
         float lum = dot(rawColor, vec3(0.299, 0.587, 0.114));
@@ -1079,12 +1096,14 @@ return;
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
     if (numSurfaceLights > 0) {
-      float hdLightmapIntensity = 2; // vanilla boosts 2 X LightMapIntensity.  We do a little less or it ends up too bright^H^H^H^H^H
+      float hdLightmapIntensity = 2.0; // vanilla boosts 2 X LightMapIntensity.  We do a little less or it ends up too bright^H^H^H^H^H 
+      float specintensity = 1.5;
+
       totalStaticLight *= (LightMapIntensity * hdLightmapIntensity);
       totalSubtractedLight *= (LightMapIntensity * hdLightmapIntensity);
       totalDynamicLight *= (LightMapIntensity * hdLightmapIntensity);      
-      totalSpec *= (LightMapIntensity * 1.5f); // give specular less of a boost
-      totalSubtractedSpec *= (LightMapIntensity * 1.5f);
+      totalSpec *= (LightMapIntensity * specintensity); // give specular less of a boost
+      totalSubtractedSpec *= (LightMapIntensity * specintensity);
 
 #if OPT_HDLightMap
       // preserve color from both HD and vanilla and use the darker shadow term
@@ -1092,10 +1111,12 @@ return;
       float VanShadow = max(LightColor.r, max(LightColor.g, LightColor.b));
       vec3 HDHue     = (HDShadow  > 0) ? (Occlusion.rgb / HDShadow)  : vec3(1.0);
       vec3 VanHue    = (VanShadow > 0) ? (LightColor.rgb / VanShadow) : vec3(1.0);
+
       // Final hue = HD hue * vanilla hue
       vec3 finalHue = HDHue * VanHue;
+
       // Choose shadow term
-      float finalShadow = (VanShadow < HDShadow) ? VanShadow : HDShadow;
+      float finalShadow = (VanShadow/LightMapIntensity < HDShadow/hdLightmapIntensity) ? VanShadow/LightMapIntensity*hdLightmapIntensity : HDShadow;
       // Final
       vec3 blendedLM = finalHue * finalShadow;
 #else
@@ -1127,11 +1148,15 @@ return;
       totalStaticLight *= blendedLM;
       totalStaticLight -= totalSubtractedLight;
       totalStaticLight = clamp(totalStaticLight, vec3(0.0), totalStaticLight);
-      totalStaticLight = applyReinhard(totalStaticLight, threshold);
-      vec3 totalLight = totalStaticLight + totalDynamicLight;
+      //totalStaticLight = applyReinhard(totalStaticLight, threshold);
 
-      LightColor.rgb = totalLight;
-      
+      vec3 totalLight = applyReinhard(totalStaticLight + totalDynamicLight, threshold);
+      //vec3 totalLight = totalStaticLight + totalDynamicLight;
+
+      //LightColor.rgb = totalLight;
+      LightColor.rgb = mix(LightColor.rgb, totalLight, perPixelWeight);   
+      totalSpec = mix(vec3(0.0), totalSpec, perPixelWeight);  
+
       // lighting debug
       /*if (true) {
         FragColor = vec4(clamp(totalLight, 0.0, 1.0), 1.0);
@@ -1139,6 +1164,7 @@ return;
         return;
       }*/
     } // end if there are lights
+    } // end if close enough to do per-pixel lighting
   }
 #endif
     )";
