@@ -910,6 +910,7 @@ return;
     vec3 totalStaticLight = vec3(0.0);
     vec3 totalSubtractedLight = vec3(0.0);
     vec3 totalDynamicLight = vec3(0.0);
+    vec3 totalProjectileLight = vec3(0.0);
     //int contributingLights = 0;
 
     uvec4 meta = FacetMetaArr[vFacetID].LightMeta;
@@ -1041,40 +1042,40 @@ return;
         totalStaticLight += rawColor * diff * attenuation;
         totalSubtractedLight += (1.0 - shadowFactor) * rawColor * diff * attenuation;
       }
+      else if (LightData6[i].x > 0.0 && LightData6[i].w == -1.0) {
+        totalProjectileLight += rawColor * diff * attenuation;
+      }
       else {
         totalDynamicLight += rawColor * diff * attenuation;
       }
-      if (li < maxDetailLights)
-      {
-        float lum = dot(rawColor, vec3(0.299, 0.587, 0.114));
+      float lum = dot(rawColor, vec3(0.299, 0.587, 0.114));
     
-        // LightData5[i].z has been repurposed for the herolight bindless texture handle (lower half).  if this is to run in Unreal will need to refactor all of that
-        //float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0.  (unless I pass Actor->LightBrightness like Unreal path does.  Why not?)
-        //float brightnessFactor = max(lum, brightness); // so in UT this == lum, but in Unreal it allows the light's brightness to boost the diffuse and specular even if the color is dark
-        float brightnessFactor = lum;
+      // LightData5[i].z has been repurposed for the herolight bindless texture handle (lower half).  if this is to run in Unreal will need to refactor all of that
+      //float brightness = LightData5[i].z / 255.0; // this could be something in Unreal.  in UT it is 0.  (unless I pass Actor->LightBrightness like Unreal path does.  Why not?)
+      //float brightnessFactor = max(lum, brightness); // so in UT this == lum, but in Unreal it allows the light's brightness to boost the diffuse and specular even if the color is dark
+      float brightnessFactor = lum;
 
-        // --- SPECULAR
-        float shininess    = mix(4.0, 64.0, 1.0 - rough);
-        float specStrength = mix(0.1, 1.0, 1.0 - rough);
+      // --- SPECULAR
+      float shininess    = mix(4.0, 64.0, 1.0 - rough);
+      float specStrength = mix(0.1, 1.0, 1.0 - rough);
 
-        vec3 H = normalize(L + V);
+      vec3 H = normalize(L + V);
 
-        float specDot;
-        if ((DrawFlags & DF_BumpMap) == DF_BumpMap)
-          specDot = abs(dot(N, H));
-        else
-          specDot = max(dot(N, H), 0.0);
+      float specDot;
+      if ((DrawFlags & DF_BumpMap) == DF_BumpMap)
+        specDot = abs(dot(N, H));
+      else
+        specDot = max(dot(N, H), 0.0);
 
-        float spec = pow(specDot, shininess)
+      float spec = pow(specDot, shininess)
                    * specStrength
                    * brightnessFactor
                    * attenuation;
 
-        vec3 specular = spec * rawColor;   // colored specular, matches UT99 lights
-        totalSpec += specular;
-        totalSubtractedSpec += specular * (1.0 - shadowFactor);
-        //contributingLights++;
-      } // end if a detail light (ie we are close OR one of the main lights, so we did specular)
+      vec3 specular = spec * rawColor;   // colored specular, matches UT99 lights
+      totalSpec += specular;
+      totalSubtractedSpec += specular * (1.0 - shadowFactor);
+      //contributingLights++;
     } // end loop through surface lights
     // needs to be numSurfaceLights here not contributingLights.  Trying to weed out facets with no lights (that shouldn't be part of the per-pixel lighting path)
     // not *fragments* where there might legitimately be no contributing lights due to attenuation
@@ -1083,6 +1084,7 @@ return;
       totalStaticLight *= (LightMapIntensity * hdLightmapIntensity);
       totalSubtractedLight *= (LightMapIntensity * hdLightmapIntensity);
       totalDynamicLight *= (LightMapIntensity * hdLightmapIntensity);      
+      totalProjectileLight *= (LightMapIntensity * hdLightmapIntensity);
       totalSpec *= (LightMapIntensity * 1.5f); // give specular less of a boost
       totalSubtractedSpec *= (LightMapIntensity * 1.5f);
 
@@ -1127,8 +1129,10 @@ return;
       totalStaticLight *= blendedLM;
       totalStaticLight -= totalSubtractedLight;
       totalStaticLight = clamp(totalStaticLight, vec3(0.0), totalStaticLight);
-      totalStaticLight = applyReinhard(totalStaticLight, threshold);
-      vec3 totalLight = totalStaticLight + totalDynamicLight;
+      //totalStaticLight = applyReinhard(totalStaticLight, threshold);
+      //vec3 totalLight = totalStaticLight + totalDynamicLight;
+      vec3 totalLight = applyReinhard(totalStaticLight + totalDynamicLight, threshold);
+      totalLight += totalProjectileLight;
 
       LightColor.rgb = totalLight;
       

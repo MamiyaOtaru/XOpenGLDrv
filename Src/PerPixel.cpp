@@ -717,9 +717,6 @@ void UXOpenGLRenderDevice::ComputeDynamicLightsForFacet(
     if (Verts.Num() < 3)
         return;
 
-    if ((C - Frame->Coords.Origin).SizeSquared() > 1000000)
-        return;
-
     // Iterate dynamic lights
     for (INT i = 0; i < DynamicLevelLights.Num(); ++i)
     {
@@ -824,8 +821,6 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
 
     AActor* DummyLight = nullptr; // keep one light to ensure each surface has at least one, so the shader doesn't draw a surface with none as fullbright6
 
-    FLOAT centroidDistanceSq = (CentroidWorld - Frame->Coords.Origin).SizeSquared();
-
     // Iterate lights
     for (INT i = 0; i < Level->Actors.Num(); ++i)
     {
@@ -837,9 +832,6 @@ void UXOpenGLRenderDevice::ComputeStaticAndDynamicLightsForFacet(
         bool isStatic = IsStaticLight(A);
 
         if (!isDynamic && !isStatic)
-            continue;
-
-        if (isDynamic && centroidDistanceSq > 1000000)
             continue;
 
         if (!DummyLight && isStatic)

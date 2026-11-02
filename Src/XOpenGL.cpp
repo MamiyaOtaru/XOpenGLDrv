@@ -1975,12 +1975,14 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
 			LightList.AddItem(Actor);
+			UBOOL bIsProjectile = Actor->IsA(AProjectile::StaticClass());
 			if (Actor->LightType != LT_None &&
 				Actor->LightBrightness != 0 && 
 				Actor->LightRadius != 0 &&
 				(Actor->bDynamicLight ||
 				(Actor->bMovable && !Actor->bStatic)) &&
-				(Actor->Location - Frame->Coords.Origin).SizeSquared() < 1000000)
+				(!bIsProjectile ||
+				(Actor->Location - Frame->Coords.Origin).SizeSquared() < 1000000))
 				DynamicLevelLights.AddItem(Actor);
 #else
 			if (Actor->NormalLightRadius) //for normal mapping only add lights with normallightradius set. Needs performance tests if not.
@@ -2007,6 +2009,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		for (INT i = 0; i < NumLights; i++)
 		{
 			auto Actor = LightList(i);
+
 			FakeSpotlightPair* SpotData = GetSpotlightData(Actor);
 			bool bIsSpot = (SpotData != nullptr);
 
@@ -2155,14 +2158,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 
 			// Final RGB always comes from HSV
 			FPlane RGBColor;
-			if (false && IsHeroLight(Actor, HeroLights))
-			{
-				// Hero lights get the magentaist
-				// Full intensity magenta, scaled by AnimatedBrightness
-				float s = AnimatedBrightness / 255.0f;
-				RGBColor = FPlane(s, 0.0f, s, 1.0f);   // (R,G,B) = (s,0,s)
-			}
-			else if (bUseEngineLight)
+			if (bUseEngineLight)
 			{
 				// If we're using the engine light, we want to ignore the hue and saturation and just use the brightness as a white light, since the vanilla lightmap will provide the color information.  This is important for LT_TexturePaletteLoop and LT_TexturePaletteOnce, which can have animated brightness but don't have any way to specify color changes.
 				RGBColor = FPlane(AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, AnimatedBrightness / 255.0f, 1.0f);
@@ -2193,7 +2189,8 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			LightData->LightData4[i] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
 			LightData->LightData5[i] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
 #endif
-			// --- POPULATE THE NEW SPOTLIGHT PROPERTY CHANNELS ---
+			// --- POPULATE THE NEW SPOTLIGHT PROPERTY CHANNELS, OR MARK AS PROJECTILS ---
+			UBOOL bIsProjectile = Actor->IsA(AProjectile::StaticClass());
 			if (bIsSpot)
 			{
 				LightData->LightData6[i] = glm::vec4(
@@ -2202,9 +2199,14 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 					SpotData->SpotDirection.Z,
 					SpotData->SpotCosOuter
 				);
-				// Overwrite the LightCone tracking dimension within LightData1 so your shader has inner cone values
+				// Overwrite the LightCone tracking dimension within LightData1 so the shader has inner cone values
 				LightData->LightData1[i].w = SpotData->SpotCosInner;
 			}
+			else if (bIsProjectile)
+			{
+				// Mark projectiles with a positive X value, but still a negative W value so the shader knows it is still not a cone light
+                LightData->LightData6[i] = glm::vec4(1.0f, 0.0f, 0.0f, -1.0f);
+            }
 			else
 			{
 				// Safe baseline fallbacks for regular lights
