@@ -160,14 +160,19 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	INT facetSurfId = INDEX_NONE;
 	FSurfInfo* SI = nullptr;
+	bool close = false;
 	if (IsSolidBSP)
 	{
 		facetSurfId = GetFacetSurfId(Frame, Facet);
 		if (facetSurfId != INDEX_NONE)
 		{
 			SI = SurfaceInfoMap.Find(facetSurfId);
+			if (AmbientOcclusion || (PhongShading && BumpMaps))
+				close = !SI->bFar; // cached in prepass
+			else
+                close = (SI->Centroid - Frame->Coords.Origin).Size() - SI->FacetRadius < 1500;
 			// check if already rendered this surface
-			if (PhongShading && BumpMaps && SI && !SI->IsMover && SI->LastDrawnFrame == LocalFrameCounter)
+			if (close && PhongShading && BumpMaps && SI && !SI->IsMover && SI->LastDrawnFrame == LocalFrameCounter)
 			{
 				// already drawn this frame, skip
 				return;
@@ -185,8 +190,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	GLuint count = 0;
 	int staticCount = 0;
 	int dynamicCount = 0;
-
-	bool close = (SI && (SI->Centroid - Frame->Coords.Origin).Size() - SI->FacetRadius < 1500.f);
 
 	if (close && BumpMaps && IsSolidBSP) { // do per pixel lighting
 
@@ -291,7 +294,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	// Write static lightmap params (if present).
 	INT facetIDForVerts = 0;
-	if (close && OleSetClipboard && (BumpMaps ||
+	if (OleSetClipboard && (BumpMaps ||
 		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap))
 	{
 		// absolute index into FacetMeta SSBO
@@ -549,17 +552,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				PolyVertexBitangents.Empty();
 				PolyVertexBitangents.AddZeroed(NumPts);
 			}
-		}
-		PolyVertexLightmapUVs.Empty();
-		PolyVertexLightmapUVs.AddZeroed(NumPts);
-
-		TArray<glm::uint>& TriIdx = SI->TriIdx;
-
-		// Build per-vertex data for this node polygon
-		BOOL lmReady = (GOcclusionState == EOcclusionState::Ready && PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num());
-		if (!bHasCurrentViewCache)
-		{
-			for (INT vi = 0; vi < NumPts; ++vi)
+			// Build per-vertex data for this node polygon
+			/*for (INT vi = 0; vi < NumPts; ++vi)
 			{
 				FVector Vert      = SurfWorldVerts(vi).TransformPointBy(Frame->Coords);
 				FVector Normal    = SurfNormals(vi).TransformVectorBy(Frame->Coords).SafeNormal();
@@ -570,9 +564,15 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				PolyVertexNormals(vi)     = glm::vec4(Normal.X, Normal.Y, Normal.Z, 0.0f);
 				PolyVertexTangents(vi)    = glm::vec4(Tangent.X, Tangent.Y, Tangent.Z, 0.0f);
 				PolyVertexBitangents(vi)  = glm::vec4(Bitangent.X, Bitangent.Y, Bitangent.Z, 0.0f);
-			}
-			SI->ViewSpaceCacheStamp = ViewSpaceCacheGeneration;
+			}*/
+			TransformSurfaceViewCache(Frame, *SI);
 		}
+		PolyVertexLightmapUVs.Empty();
+		PolyVertexLightmapUVs.AddZeroed(NumPts);
+
+		TArray<glm::uint>& TriIdx = SI->TriIdx;
+
+		BOOL lmReady = (GOcclusionState == EOcclusionState::Ready && PolyVertexLightmapUVs.Num() == SurfLightmapUVs.Num());
 		for (INT vi = 0; vi < NumPts; ++vi)
 			if (lmReady)
 				PolyVertexLightmapUVs(vi) = glm::vec2(SurfLightmapUVs(vi).X, SurfLightmapUVs(vi).Y);
@@ -663,7 +663,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			Shader->VertBuffer.Advance(emittedVerts);
 		} // end loop through Nodes
 	} // end if SI (with normal data)
-	else if (SI && ((HDLightMap && GOcclusionState == EOcclusionState::Ready) || (BumpMaps)))
+	else if (close && SI && ((HDLightMap && GOcclusionState == EOcclusionState::Ready) || (BumpMaps)))
 	{
 		const SurfaceBasis& Basis = SI->LightmapBasis;
 		FVector Origin;

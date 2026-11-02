@@ -2366,13 +2366,17 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		// Only draw BSP surfaces that were visible last frame
 		INT TargetFrame = LocalFrameCounter - 1;
 
-		INT NumSurfs = LastLevel->Model->Surfs.Num();
-		for (INT iSurf = 0; iSurf < NumSurfs; ++iSurf)
+		//INT NumSurfs = LastLevel->Model->Surfs.Num();
+		//for (INT iSurf = 0; iSurf < NumSurfs; ++iSurf)
+		//{
+		//FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
+		for (TMap<INT, FSurfInfo>::TIterator It(SurfaceInfoMap); It; ++It)
 		{
-			FSurfInfo* pSI = SurfaceInfoMap.Find(iSurf);
+			FSurfInfo& SI = It.Value();
+            FSurfInfo* pSI = &SI;
 			// exclude two sided. They don't *use* SSAO so they shouldn't generate it.
 			// any surfaces that do not will need to be excluded both here and in DrawComplex
-			if (pSI && pSI->LastDrawnFrame == TargetFrame && !(pSI->PolyFlags & PF_TwoSided))
+			if (pSI && !pSI->bFar && pSI->LastDrawnFrame == TargetFrame && !(pSI->PolyFlags & PF_TwoSided))
 				UXOpenGLRenderDevice::DrawPrepassSurface(Frame, *pSI);
 		}
 

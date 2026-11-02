@@ -1852,6 +1852,8 @@ class UXOpenGLRenderDevice : public URenderDevice
 		FVector Centroid;
 		FLOAT FacetRadius;
 
+		UBOOL bFar;
+
 		UBOOL bLargeSurface;
 		UBOOL bThinSurface;
 		UBOOL bSmallSurface;

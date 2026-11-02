@@ -134,7 +134,15 @@ void UXOpenGLRenderDevice::PrepareSurfaceViewCache(const FSceneNode* Frame, INT 
     for (TMap<INT, FSurfInfo>::TIterator It(SurfaceInfoMap); It; ++It)
     {
         FSurfInfo& SI = It.Value();
+
+        SI.bFar = false;
+
         if (SI.LastDrawnFrame != TargetFrame || SI.IsMover)
+            continue;
+
+        bool close = (SI.Centroid - Frame->Coords.Origin).Size() - SI.FacetRadius < 1500;
+        SI.bFar = !close;
+        if (!close)
             continue;
 
         const INT NumPts = SI.Verts.Num();
