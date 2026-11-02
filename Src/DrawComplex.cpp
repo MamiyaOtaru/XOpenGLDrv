@@ -172,8 +172,6 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 				// already drawn this frame, skip
 				return;
 			}
-			if (SI)
-				SI->LastDrawnFrame = LocalFrameCounter;
 		}
 	}
 
@@ -188,7 +186,9 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	int staticCount = 0;
 	int dynamicCount = 0;
 
-	if (BumpMaps && IsSolidBSP) { // do per pixel lighting
+	bool close = (SI && (SI->Centroid - Frame->Coords.Origin).Size() - SI->FacetRadius < 1500.f);
+
+	if (close && BumpMaps && IsSolidBSP) { // do per pixel lighting
 
 		TArray<AActor*> staticList;
 		TArray<AActor*> dynamicList;
@@ -258,6 +258,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 			if (facetIndices.Num() >= LevelLightCap)
 				break;
 		}
+		SI->LastDrawnFrame = LocalFrameCounter;
 	} // end if bumpmapping (gather lights)
 
 	const bool CanBuffer = !Shader->DrawBuffer.IsFull()
@@ -290,8 +291,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	// Write static lightmap params (if present).
 	INT facetIDForVerts = 0;
-	if (BumpMaps ||
-		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap)
+	if (close && OleSetClipboard && (BumpMaps ||
+		HDLightMap && GOcclusionState == UXOpenGLRenderDevice::EOcclusionState::Ready && SI && SI->HasHDLightmap))
 	{
 		// absolute index into FacetMeta SSBO
 		facetIDForVerts = UploadLights(Frame, SI, Shader, BumpMaps, HDLightMap, facetIndices, staticCount, dynamicCount, GOcclusionState);
@@ -328,7 +329,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	{
 		Shader->BumpMapInfo = Surface.BumpMap;
 #else
-	if (BumpMaps && Surface.Texture && Surface.Texture->Texture && Surface.Texture->Texture->BumpMap)
+	if (close && BumpMaps && Surface.Texture && Surface.Texture->Texture && Surface.Texture->Texture->BumpMap)
 	{
 # if ENGINE_VERSION==1100
 		Surface.Texture->Texture->BumpMap->Lock(Shader->BumpMapInfo, Viewport->CurrentTime, 0, this);
@@ -349,8 +350,8 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 
 	QWORD parentID = Surface.Texture->CacheID;
 	//bool hasDetail = (DetailTextures && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Detail) != nullptr);
-	bool hasBump = (BumpMaps && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Bump) != nullptr);
-	bool hasHeight = (ParallaxVersion != Parallax_Disabled && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height) != nullptr);
+	bool hasBump = (close && BumpMaps && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Bump) != nullptr);
+	bool hasHeight = (close && ParallaxVersion != Parallax_Disabled && IsSolidBSP && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_Height) != nullptr);
 	bool hasORM = (BumpMaps && ExternalTexture::GetExtra(parentID, ExternalTexture::Extra_ORM) != nullptr);
 
 	// ------------------------------------------------------------
@@ -444,7 +445,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	// Any surfaces that do not contribute to SSAO in the prepass should not USE it.
 	// So any that are excluded from the prepass in UXOpenGLRenderDevice::SetSceneNode
 	// should be excluded here as well.
-	if (BumpMaps && AmbientOcclusion && IsSolidBSP && !(NextPolyFlags & PF_TwoSided)) // only works in per pixel
+	if (close && BumpMaps && AmbientOcclusion && IsSolidBSP && !(NextPolyFlags & PF_TwoSided)) // only works in per pixel
 	{
 		if (UsingBindlessTextures)
 		{
@@ -459,7 +460,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawFlags |= ShaderDrawFlags::DF_AmbientOcclusion;
 	}
 
-	if (SI && SI->HasHDLightmap && GOcclusionState == EOcclusionState::Ready)
+	if (close && SI && SI->HasHDLightmap && GOcclusionState == EOcclusionState::Ready)
 	{
 		if (UsingBindlessTextures)
 		{
@@ -480,7 +481,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 		DrawCallParams->Roughness = GetRoughnessFromTextureName(Surface);
 		DrawCallParams->Metalness = GetMetalnessFromTextureName(Surface);
 	}
-	if (PhongShading && BumpMaps && (SI && !SI->IsMover)) { // phong only works in per pixel lighting mode
+	if (close && PhongShading && BumpMaps && (SI && !SI->IsMover)) { // phong only works in per pixel lighting mode
 		DrawFlags |= ShaderDrawFlags::DF_PhongShading;
 	}
 	bool safeToReadDepth = !(Surface.PolyFlags & PF_Occlude);
@@ -506,7 +507,7 @@ void UXOpenGLRenderDevice::DrawComplexSurface(FSceneNode* Frame, FSurfaceInfo& S
 	TArray<glm::vec2> PolyVertexLightmapUVs;
 	int NumPts = 0;
 
-	if (PhongShading && BumpMaps && SI && !SI->IsMover) // phong shading only works with "bumpmaps" aka per pixel lighting
+	if (close && PhongShading && BumpMaps && SI && !SI->IsMover) // phong shading only works with "bumpmaps" aka per pixel lighting
 	{
 		// Per-surface precomputed normals (if available) and world-space verts for matching
 		TArray<FVector>& SurfWorldVerts   = SI->Verts;
