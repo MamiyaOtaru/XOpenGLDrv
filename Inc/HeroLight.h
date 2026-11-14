@@ -76,7 +76,6 @@ public:
     BYTE CurrentFaceMask = 0;
 
     static INT newCubemapsThisFrame;
-    static INT newFbosThisFrame;
 
     UBOOL HasValidShadowMap() const { return (ColorCubemapID != 0); }
 

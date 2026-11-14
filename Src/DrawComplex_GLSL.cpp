@@ -519,7 +519,7 @@ float GetSoftActorShadow(samplerCube shadowMap, vec3 sampleDir)
     for (int i = 0; i < 9; ++i)
     {
         vec3 offsetWS = (tangent * poissonDisk[i].x + bitangent * poissonDisk[i].y) * SHADOW_FILTER_RADIUS;
-        shadowSample += texture(shadowMap, N_Dir + offsetWS).a;
+        shadowSample += texture(shadowMap, N_Dir + offsetWS).g;
     }
 
     // Return the averaged shadow factor (0.0 = fully occluded, 1.0 = fully unshadowed)

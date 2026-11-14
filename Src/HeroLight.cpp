@@ -522,9 +522,8 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
         if (bspNeedsDrawn)
         {
             glDepthMask(GL_TRUE); // Open depth writes wide for the baseline pass
-        
             // Re-render baseline pass: clear everything (color + depth) completely fresh
-            GLfloat ClearValues[] = { 1.0f, 0.0f, 0.0f, 0.0f };
+            GLfloat ClearValues[] = { 0.0f, 0.0f, 0.0f, 0.0f };
             glClearBufferfv(GL_COLOR, 0, ClearValues);
             glClear(GL_DEPTH_BUFFER_BIT); // Wipes only this face's independent canvas layer
 
@@ -546,12 +545,12 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
         }
         else {
             // BSP already cached: only clear .a channel (mesh data) while preserving .r (BSP depth)
-            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);  // Alpha only
+            glColorMask(GL_FALSE, GL_TRUE, GL_FALSE, GL_FALSE);  // Green only
             glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
             glClear(GL_COLOR_BUFFER_BIT);
             glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);  // Restore color channels
         }
-
+        glColorMask(GL_FALSE, GL_TRUE, GL_FALSE, GL_FALSE); 
         INT ActiveFaceVertexCount = 0;
         GL->BeginShadowMapFace(FaceIndex, ViewMatrix, ProjMatrix, Eye, Radius);
         // B: Static / Triangle Meshes (Pre-filtered Array)
@@ -574,7 +573,6 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
                 GL->DrawShadowMapMesh(Frame, State.Actor, ActiveFaceVertexCount);
             }
         }
-
         GL->EndShadowMapFace(ActiveFaceVertexCount); // triangle program flush
     }
 
@@ -606,6 +604,7 @@ void UXOpenGLHeroLight::RenderFaceGeometry(ULevel* Level, FSceneNode* Frame, INT
 
         GL->EndShadowMapSplatsFace(ActiveSplatVertexCount); // splat program flush
     }
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);  // Restore color channels
 
     unguard;
 }
@@ -617,9 +616,7 @@ TMap<INT, INT> CurrentFrameLookup;
 static FName NAME_SmallSpark(TEXT("SmallSpark"));
 
 INT UXOpenGLHeroLight::newCubemapsThisFrame = 0;
-INT UXOpenGLHeroLight::newFbosThisFrame     = 0;
 INT MAX_TEX_PER_FRAME = 1;
-INT MAX_FBO_PER_FRAME = 4;
 
 // ------------------------------------------------------------
 // The Master Evaluation & Render Dispatcher
@@ -931,7 +928,7 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 		glBindTexture(GL_TEXTURE_CUBE_MAP, ColorCubemapID);
 		for (int face = 0; face < 6; face++)
 		{
-			glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA32F, size, size, 0, GL_RGBA, GL_FLOAT, nullptr);
+			glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RG16F, size, size, 0, GL_RG, GL_FLOAT, nullptr);
 		}
 		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);

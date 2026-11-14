@@ -2233,7 +2233,7 @@ class UXOpenGLRenderDevice : public URenderDevice
 		glm::mat4 ProjMatrix;       // 64 bytes
 		glm::vec4 LightWorldPos;    // 16 bytes
 		glm::float32 LightRadius;   // 4 bytes
-		glm::uint32 IsDynamicActor; // 4 bytes
+		glm::uint32 IsDynamicActor; // 4 bytes TODO is this even used?
 		glm::vec2 Padding;          // 8 bytes (Forces struct size divisible by 16)
 	};
 	static const ShaderProgram::DrawCallParameterInfo DrawShadowMapParametersInfo[];

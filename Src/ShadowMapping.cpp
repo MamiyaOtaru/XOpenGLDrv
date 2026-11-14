@@ -1559,7 +1559,6 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     PerFrameStaticMeshCache.Empty();
 
     UXOpenGLHeroLight::newCubemapsThisFrame = 0;
-    UXOpenGLHeroLight::newFbosThisFrame = 0;
 
     INT TotalLights = HeroLights.Num();
     if (TotalLights <= 0) return;
@@ -1590,9 +1589,6 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glDepthMask(GL_FALSE);
-    glEnable(GL_BLEND);
-    glBlendEquationSeparate(GL_MIN, GL_MAX);
-    glBlendFunc(GL_ONE, GL_ONE);
     glDisable(GL_CULL_FACE);
 
     // --- BIND THE GLOBAL SHADOWMAP FBO ---

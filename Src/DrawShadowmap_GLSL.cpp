@@ -65,20 +65,15 @@ void main() {
     // 1. Calculate absolute vector distance to light source center extracting .xyz component
     float distanceToLight = length(v_WorldPos - DrawDrawShadowMapParams[id].u_LightWorldPos.xyz);
     
-    // Normalize into a clean 0.0 - 1.0 range based on your UT99 light radius constant
     if (v_IsDynamic < 0.5) {
+        // write bsp depth to red channel
+        // Normalize into a clean 0.0 - 1.0 range based on your UT99 light radius constant
         out_ShadowData.r = clamp(distanceToLight / DrawDrawShadowMapParams[id].u_LightRadius, 0.0, 1.0);
     }
     else {
-        out_ShadowData.r = 1.0;
+        // BSP is occluded. If a mesh passed the depth test, write it into green
+        out_ShadowData.g = 1.0; // classify as mesh
     }
-
-    // =========================================================================
-    // VERTEX STREAM CLASSIFICATION PROJECTION:
-    // If the vertex-passed flag is greater than 0.5, write a sharp 1.0 (Red) 
-    // to isolate character silhouettes inside the classification mask attachment.
-    // =========================================================================
-    out_ShadowData.a = v_IsDynamic;//(v_IsDynamic > 0.5) ? 1.0 : 0.0;
 }
     )";
 }

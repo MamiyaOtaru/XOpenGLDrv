@@ -146,17 +146,6 @@ void UXOpenGLRenderDevice::DrawShadowMapSurface(
 
     SetProgram(ShadowMap_Prog);
 
-    // Evaluate vertex capacity space bounds only
-    const bool CanBuffer = !Shader->DrawBuffer.IsFull()
-                        && Shader->VertBuffer.CanBuffer(SI.Verts.Num());
-    
-    // Mid-surface overflows flush data safely without thashing or rotating ring slots!
-    if (!CanBuffer)
-    {
-        HandleShadowMapOverflow(FaceVertexCounter);
-        FaceVertexCounter = 0;
-    }
-
     INT NumPts = SI.Verts.Num();
     TArray<glm::vec3> PolyVertices;
     PolyVertices.AddZeroed(NumPts);
@@ -194,6 +183,17 @@ void UXOpenGLRenderDevice::DrawShadowMapSurface(
     else
     {
         memcpy(PolyVertices.GetData(), (float*)SI.Verts.GetData(), NumPts * sizeof(glm::vec3));
+    }
+
+    // Evaluate vertex capacity space bounds only
+    const bool CanBuffer = !Shader->DrawBuffer.IsFull()
+                        && Shader->VertBuffer.CanBuffer(SI.Verts.Num());
+    
+    // Mid-surface overflows flush data safely without thashing or rotating ring slots!
+    if (!CanBuffer)
+    {
+        HandleShadowMapOverflow(FaceVertexCounter);
+        FaceVertexCounter = 0;
     }
 
     // Grab the current active DrawID. Because the face loop manages starting the call, 

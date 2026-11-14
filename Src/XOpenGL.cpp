@@ -2439,7 +2439,7 @@ void UXOpenGLRenderDevice::DrawShadowmapDebugOverlay()
             
             "   if (!valid) { out_Color = vec4(0.1, 0.1, 0.1, 1.0); return; }\n"
             "   float val = 0.0;\n"
-            "   if (u_Mode == 1) val = texture(u_DepthCubemap, normalize(dir)).a;\n"
+            "   if (u_Mode == 1) val = texture(u_DepthCubemap, normalize(dir)).g;\n"
             "   else             val = texture(u_DepthCubemap, normalize(dir)).r;\n"
             "   if (u_Mode == 1) out_Color = vec4(val, 0.0, 0.0, 1.0);\n"
             "   else             out_Color = vec4(vec3(val), 1.0);\n"
@@ -2475,10 +2475,10 @@ void UXOpenGLRenderDevice::DrawShadowmapDebugOverlay()
     // =========================================================================
     // TOGGLE MODE HERE:
     // DebugMode = 0 -> Inspect Linear Depth (.r channel)
-    // DebugMode = 1 -> Inspect Actor Classification Mask (.a channel)
+    // DebugMode = 1 -> Inspect Actor Classification Mask (.g channel)
 	// DebugMode = 2 -> Inspect depth attachment
     // =========================================================================
-    int DebugMode = 1; 
+    int DebugMode = 0; 
 
 	if (DebugMode < 2)
 	{
