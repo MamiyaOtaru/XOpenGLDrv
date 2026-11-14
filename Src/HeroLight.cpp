@@ -5,6 +5,11 @@ extern "C"
 	#include "glad.h"
 }
 
+// Shadowmap size telemetry tracking
+static INT64 TotalShadowmapPixelsUsed = 0;
+static INT64 TotalShadowmapPixelsBaseline = 0;
+static INT TotalLightsProcessed = 0;
+
 UXOpenGLHeroLight::UXOpenGLHeroLight(ALight* InLight, ULevel* Level, const TMap<INT, TArray<AActor*>>& StaticLightsMap, UXOpenGLRenderDevice* GL)
     : LightActor(InLight), LastRadius(0.f), LastLocation(0.f,0.f,0.f), 
       LastFrameFaceMask(0)
@@ -916,12 +921,34 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
 	if (ChangedFaceMask == 0)
 		return;
 
-	// Allocate the raw texture coordinates ONCE per light if they don't exist, 
-	// but do NOT construct any FBO containers yet!
+	// Allocate the raw texture coordinates ONCE per light if they don't exist
 	if (ColorCubemapID == 0 && newCubemapsThisFrame < MAX_TEX_PER_FRAME)
 	{
-        newCubemapsThisFrame++;
-        INT size = shadowmapSize;
+		newCubemapsThisFrame++;
+		FLOAT lightRadius = this->LightActor->WorldLightRadius();
+		INT lrPo2 = (INT)std::pow(2, std::floor(std::log2(lightRadius)));
+        // cap at 512 to ensure it is NEVER more than before.  On average it is less, but can be more on large maps with large lights (eg. face)
+		this->shadowmapSize = Max(32, Min(512, lrPo2)); 
+		// this->shadowmapSize = 512;
+		INT size = shadowmapSize;
+
+        /*
+		// Track shadowmap size for telemetry
+		INT PixelsPerFace = size * size;
+		INT TotalPixelsForLight = PixelsPerFace * 6; // 6 faces on a cubemap
+		INT BaselinePixels = 512 * 512 * 6;
+		TotalShadowmapPixelsUsed += TotalPixelsForLight;
+		TotalShadowmapPixelsBaseline += BaselinePixels;
+    	TotalLightsProcessed++;
+
+		// Log telemetry spot check
+		INT SavedPixels = BaselinePixels - TotalPixelsForLight;
+		debugf(TEXT("XOpenGL Shadowmap: Light %d - Size %dx%d (%d pixels/face), Saved %d pixels vs 512x512. Total: %lld used vs %lld baseline (%lld pixels saved, %.1f%% reduction)"),
+			TotalLightsProcessed, size, size, PixelsPerFace, SavedPixels,
+			TotalShadowmapPixelsUsed, TotalShadowmapPixelsBaseline,
+			TotalShadowmapPixelsBaseline - TotalShadowmapPixelsUsed,
+			100.0f * (TotalShadowmapPixelsBaseline - TotalShadowmapPixelsUsed) / (FLOAT)TotalShadowmapPixelsBaseline);
+        */
 
 		// Allocate the single shared Color Cubemap Texture
 		glGenTextures(1, &ColorCubemapID);
@@ -957,6 +984,11 @@ void UXOpenGLHeroLight::UpdateShadowMap(FSceneNode* Frame, UXOpenGLRenderDevice*
         // made too many, return;
         return;
     }
+
+    // at this point we know there is a dirty face, and we made or have a texture for it.  now we can change the viewport, based on this hero light's shadowmap size
+    // our state manager prevents this from being a churn when they all call it
+        // Dynamically align the drawing window dimensions to match the FBO size
+    glViewport(0, 0, shadowmapSize, shadowmapSize);
 
 	GLenum DrawBuffers[] = { GL_COLOR_ATTACHMENT0 };
 

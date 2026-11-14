@@ -1316,6 +1316,18 @@ void UXOpenGLRenderDevice::NewLevelPP()
             if (A && A->IsA(ALight::StaticClass())
                 && !IsDynamicLight(A))
             {
+             	// Filter out invalid actors
+			    if (!A || A->bDeleteMe)
+				    continue;
+
+			    // Filter out irrelevant lights
+			    if (A->LightType == LE_None || A->LightRadius == 0 || A->LightBrightness == 0)
+				    continue;
+
+			    // Filter out non-static lights if we're not using HW Lighting or per pixel lighting
+			    if (!A->bStatic && A->bMovable && !BumpMaps)
+				    continue;
+
                 StaticLevelLights.AddItem(A);
             }
         }

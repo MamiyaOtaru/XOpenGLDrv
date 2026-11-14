@@ -1594,9 +1594,6 @@ void UXOpenGLRenderDevice::DrawShadowMaps(FSceneNode* Frame)
     // --- BIND THE GLOBAL SHADOWMAP FBO ---
     glBindFramebuffer(GL_FRAMEBUFFER, ShadowMapFbo->fboID);
 
-    // Dynamically align the drawing window dimensions to match the FBO size
-    glViewport(0, 0, 512/*shadowmapSize*/, 512/*shadowmapSize */ );
-
     // ========================================================
     // PHASE 1: THE UNCONDITIONAL HIGH-PRIORITY PASS
     // ========================================================

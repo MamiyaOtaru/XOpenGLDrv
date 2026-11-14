@@ -99,6 +99,10 @@ namespace
 
 IMPLEMENT_CLASS(UXOpenGLRenderDevice);
 
+// Static light caching - tracks whether static lights have been calculated and uploaded for the current level
+static INT CachedNumStaticLights = -1;
+static UBOOL bStaticLightsCached = FALSE;
+
 #if !UNREAL_OLDUNREAL && !UNREAL_TOURNAMENT_OLDUNREAL
 # ifdef _WIN32
 #  pragma comment(lib,"Winmm")
@@ -1954,9 +1958,11 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 		//skip gather
 	}
 	else {
-		// Gather actors
+		// Gather actors - separate static and dynamic lights
+
 		LightList.Empty();
 		DynamicLevelLights.Empty();
+
 		for (INT i = 0; i < Level->Actors.Num(); ++i)
 		{
 			AActor* Actor = Level->Actors(i);
@@ -1974,7 +1980,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 				continue;
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
-			LightList.AddItem(Actor);
+			// Separate static and dynamic for optimization
 			UBOOL bIsProjectile = Actor->IsA(AProjectile::StaticClass());
 			if (Actor->LightType != LT_None &&
 				Actor->LightBrightness != 0 && 
@@ -1983,12 +1989,20 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 				(Actor->bMovable && !Actor->bStatic)) &&
 				(!bIsProjectile ||
 				(Actor->Location - Frame->Coords.Origin).SizeSquared() < 1000000))
+			{
 				DynamicLevelLights.AddItem(Actor);
+			}
+
+			LightList.AddItem(Actor);
 #else
 			if (Actor->NormalLightRadius) //for normal mapping only add lights with normallightradius set. Needs performance tests if not.
 				LightList.AddItem(Actor);
 #endif
 		}
+
+		// Store counts for optimization
+        INT NumStaticLights = StaticLevelLights.Num();
+		INT NumDynamicLights = DynamicLevelLights.Num();
 
 		CurrentLightToIndex.Empty(); // done per frame.  the static part could be done per level, but this is easier and not really a problem.  The static lights are in the same order each time
 		NumLights = LightList.Num();
@@ -2006,50 +2020,133 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 
 		FLOAT Time = Frame->Viewport->Actor->Level->TimeSeconds;
 		auto LightData = LightInfoBuffer.GetElementPtr(0);
-		for (INT i = 0; i < NumLights; i++)
-		{
-			auto Actor = LightList(i);
 
-			FakeSpotlightPair* SpotData = GetSpotlightData(Actor);
-			bool bIsSpot = (SpotData != nullptr);
+		// Optimization: Only recalculate and upload static lights if they haven't been cached yet
+		// Static lights go at the beginning of the buffer with constant indices frame-to-frame
+		UBOOL bNeedStaticRecalc = !bStaticLightsCached || (NumStaticLights != CachedNumStaticLights);
+
+		if (bNeedStaticRecalc)
+		{
+			// Process static lights (at beginning of buffer) - only once per level
+			debugf(TEXT("XOpenGL: Calculating and uploading %d static lights (one-time per level)"), NumStaticLights);
+			for (INT i = 0; i < NumStaticLights && i < MAX_LIGHTS; i++)
+			{
+				auto Actor = StaticLevelLights(i);
+
+				// won't be anything the first time around but just here for consistency
+				GLuint64 MaskHandle = 0;
+				FLOAT packedFaceMask = 0.0f;
+				if (ShadowMaps)
+				{
+					UXOpenGLHeroLight** FoundHeroPtr = ActiveHeroMap.Find(Actor);
+					if (FoundHeroPtr != nullptr && (*FoundHeroPtr)->HasActiveShadowMap() && UseBindlessTextures)
+					{
+						MaskHandle = (*FoundHeroPtr)->GetBindlessMaskHandle();
+						packedFaceMask = (GLfloat)((*FoundHeroPtr)->CurrentFaceMask);
+					}
+				}
+
+				GLuint LowerBits = (GLuint)(MaskHandle & 0xFFFFFFFF);
+				GLuint UpperBits = (GLuint)((MaskHandle >> 32) & 0xFFFFFFFF);
+
+				FakeSpotlightPair* SpotData = GetSpotlightData(Actor);
+				bool bIsSpot = (SpotData != nullptr);
+				FLOAT FinalRadius = bIsSpot ? SpotData->ReachRadius : Actor->WorldLightRadius();
+
+				LightData->LightPos[i] = bIsSpot 
+					? glm::vec4(SpotData->TopLight->Location.X, SpotData->TopLight->Location.Y, SpotData->TopLight->Location.Z, 1.f)
+					: glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
+
+				FLOAT FlickerScale = 1.0f;
+				FLOAT BaseBrightness = bIsSpot ? (FLOAT)SpotData->Brightness : (FLOAT)Actor->LightBrightness;
+				BYTE AnimatedBrightness = (BYTE)Clamp(appRound(BaseBrightness * FlickerScale), 0, 255);
+
+				FPlane RGBColor = FGetHSV(Actor->LightHue, Actor->LightSaturation, AnimatedBrightness);
+
+#if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
+				LightData->LightData1[i] = glm::vec4(RGBColor.X, RGBColor.Y, RGBColor.Z, Actor->LightCone);
+#else
+				LightData->LightData1[i] = glm::vec4(RGBColor.R, RGBColor.G, RGBColor.B, Actor->LightCone);
+#endif
+				LightData->LightData2[i] = glm::vec4(Actor->LightEffect, Actor->LightPeriod, Actor->LightPhase, Actor->LightRadius);
+				LightData->LightData3[i] = glm::vec4(Actor->LightType, Actor->VolumeBrightness, Actor->VolumeFog, Actor->VolumeRadius);
+
+#if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
+				LightData->LightData4[i] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f));
+				LightData->LightData5[i] = glm::vec4(
+					Actor->LightRadius * 10, 
+					packedFaceMask, 
+					*reinterpret_cast<float*>(&LowerBits),
+					*reinterpret_cast<float*>(&UpperBits)
+				);
+#else
+				LightData->LightData4[i] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
+				LightData->LightData5[i] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
+#endif
+				if (bIsSpot)
+				{
+					LightData->LightData6[i] = glm::vec4(SpotData->SpotDirection.X, SpotData->SpotDirection.Y, SpotData->SpotDirection.Z, SpotData->SpotCosOuter);
+					LightData->LightData1[i].w = SpotData->SpotCosInner;
+				}
+				else
+				{
+					LightData->LightData6[i] = glm::vec4(0.0f, 0.0f, 0.0f, -1.0f);
+				}
+
+				CurrentLightToIndex.Set(StaticLevelLights(i), i);
+			} // end for static lights
+			bStaticLightsCached = TRUE;
+			CachedNumStaticLights = NumStaticLights;
+		} // end if need to calculate and upload static lights
+
+		// On subsequent frames, skip static lights entirely and just maintain the index mapping
+		if (bStaticLightsCached && NumStaticLights == CachedNumStaticLights)
+		{
+			// Static light data stays in buffer at positions 0..NumStaticLights-1 (unchanged)
+			// We only need to rebuild CurrentLightToIndex mapping for shader lookups
+			// and update shadowmaps (hero lights can go active or inactive
+			for (INT i = 0; i < NumStaticLights; i++)
+			{
+				CurrentLightToIndex.Set(StaticLevelLights(i), i);
+#if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
+				auto Actor = StaticLevelLights(i);
+
+				GLuint64 MaskHandle = 0;
+				FLOAT packedFaceMask = 0.0f;
+				if (ShadowMaps)
+				{
+					UXOpenGLHeroLight** FoundHeroPtr = ActiveHeroMap.Find(Actor);
+					if (FoundHeroPtr != nullptr && (*FoundHeroPtr)->HasActiveShadowMap() && UseBindlessTextures)
+					{
+						MaskHandle = (*FoundHeroPtr)->GetBindlessMaskHandle();
+						packedFaceMask = (GLfloat)((*FoundHeroPtr)->CurrentFaceMask);
+					}
+				}
+
+				GLuint LowerBits = (GLuint)(MaskHandle & 0xFFFFFFFF);
+				GLuint UpperBits = (GLuint)((MaskHandle >> 32) & 0xFFFFFFFF);
+
+				LightData->LightData5[i] = glm::vec4(
+					Actor->LightRadius * 10, 
+					packedFaceMask, 
+					*reinterpret_cast<float*>(&LowerBits),
+					*reinterpret_cast<float*>(&UpperBits)
+				);
+#endif
+			}
+		}
+
+		// Process dynamic lights (after static lights in buffer) - recalculated every frame
+		// These are the only lights that change, so only these need per-frame updates
+		for (INT i = 0; i < NumDynamicLights; i++)
+		{
+			INT BufferIndex = NumStaticLights + i;
+			auto Actor = DynamicLevelLights(i);
 
 			// Use custom calculated radius for spotlights, fallback to original engine radius otherwise
-			FLOAT FinalRadius = bIsSpot ? SpotData->ReachRadius : Actor->WorldLightRadius();
+			FLOAT FinalRadius = Actor->WorldLightRadius();
 
-			if (bIsSpot)
-			{
-				// --- POSITION OVERRIDE ---
-				// Ground light actor represents the spotlight, but its rays emanate from the ceiling fixture!
-				LightData->LightPos[i] = glm::vec4(SpotData->TopLight->Location.X, 
-												   SpotData->TopLight->Location.Y, 
-												   SpotData->TopLight->Location.Z, 
-												   1.f);
-			}
-			else
-			{
-				// Standard path
-				LightData->LightPos[i] = glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
-			}
-
-			GLuint64 MaskHandle = 0; // Default: 0 means no bindless shadow map
-			FLOAT packedFaceMask = 0.0f;
-			if (ShadowMaps)
-			{
-				// Instant O(1) pointer lookup inside the active map
-				UXOpenGLHeroLight** FoundHeroPtr = ActiveHeroMap.Find(Actor);
-
-				if (FoundHeroPtr != nullptr && 
-					(*FoundHeroPtr)->HasActiveShadowMap() && 
-					UseBindlessTextures)
-				{
-					MaskHandle = (*FoundHeroPtr)->GetBindlessMaskHandle();
-					packedFaceMask = (GLfloat)((*FoundHeroPtr)->CurrentFaceMask);
-				}
-			}
-
-			// Split the 64-bit handle cleanly into two 32-bit bit containers
-			GLuint LowerBits = (GLuint)(MaskHandle & 0xFFFFFFFF);
-			GLuint UpperBits = (GLuint)((MaskHandle >> 32) & 0xFFFFFFFF);
+			LightData->LightPos[BufferIndex] = glm::vec4(Actor->Location.X, Actor->Location.Y, Actor->Location.Z, 1.f);
 
 			FLOAT FlickerScale = 1.0f;
 
@@ -2153,7 +2250,7 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			}
 
 			// Re-calculate AnimatedBrightness based on custom base intensity (of spotlight if applicable)
-			FLOAT BaseBrightness = bIsSpot ? (FLOAT)SpotData->Brightness : (FLOAT)Actor->LightBrightness;
+			FLOAT BaseBrightness = (FLOAT)Actor->LightBrightness;
 			BYTE AnimatedBrightness = (BYTE)Clamp(appRound(BaseBrightness * FlickerScale), 0, 255);
 
 			// Final RGB always comes from HSV
@@ -2169,56 +2266,39 @@ void UXOpenGLRenderDevice::SetSceneNode(FSceneNode* Frame)
 			}
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
-			LightData->LightData1[i] = glm::vec4(RGBColor.X, RGBColor.Y, RGBColor.Z, Actor->LightCone);
+			LightData->LightData1[BufferIndex] = glm::vec4(RGBColor.X, RGBColor.Y, RGBColor.Z, Actor->LightCone);
 #else
-			LightData->LightData1[i] = glm::vec4(RGBColor.R, RGBColor.G, RGBColor.B, Actor->LightCone);
+			LightData->LightData1[BufferIndex] = glm::vec4(RGBColor.R, RGBColor.G, RGBColor.B, Actor->LightCone);
 #endif
-			LightData->LightData2[i] = glm::vec4(Actor->LightEffect, Actor->LightPeriod, Actor->LightPhase, Actor->LightRadius);
-			LightData->LightData3[i] = glm::vec4(Actor->LightType, Actor->VolumeBrightness, Actor->VolumeFog, Actor->VolumeRadius);
+			LightData->LightData2[BufferIndex] = glm::vec4(Actor->LightEffect, Actor->LightPeriod, Actor->LightPhase, Actor->LightRadius);
+			LightData->LightData3[BufferIndex] = glm::vec4(Actor->LightType, Actor->VolumeBrightness, Actor->VolumeFog, Actor->VolumeRadius);
 
 #if ENGINE_VERSION>=430 && ENGINE_VERSION<1100
-			LightData->LightData4[i] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f));
-			// --- SAFE TO STUFF: UT-only path utilizes the dead Z and W components perfectly! ---
-			LightData->LightData5[i] = glm::vec4(
-				Actor->LightRadius * 10, 
-				packedFaceMask, 
-				*reinterpret_cast<float*>(&LowerBits), // Type pun bitcast into Z
-				*reinterpret_cast<float*>(&UpperBits)  // Type pun bitcast into W
-			);
+			LightData->LightData4[BufferIndex] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->Region.ZoneNumber : 0.f));
+			LightData->LightData5[BufferIndex] = glm::vec4(Actor->LightRadius * 10, 0, 0, 0); // no shadowmap data for dynamic lights
 #else
-			LightData->LightData4[i] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
-			LightData->LightData5[i] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
+			LightData->LightData4[BufferIndex] = glm::vec4(FinalRadius, NumLights, (GLfloat)Actor->Region.ZoneNumber, (GLfloat)(Frame->Viewport->Actor ? Frame->Viewport->Actor->CameraRegion.ZoneNumber : 0.f));
+			LightData->LightData5[BufferIndex] = glm::vec4(Actor->NormalLightRadius, (GLfloat)Actor->bZoneNormalLight, Actor->LightBrightness, 0.0);
 #endif
-			// --- POPULATE THE NEW SPOTLIGHT PROPERTY CHANNELS, OR MARK AS PROJECTILS ---
+			// --- POPULATE THE NEW SPOTLIGHT PROPERTY CHANNELS (nolt in dynamic lights), OR MARK AS PROJECTILS ---
 			UBOOL bIsProjectile = Actor->IsA(AProjectile::StaticClass());
-			if (bIsSpot)
-			{
-				LightData->LightData6[i] = glm::vec4(
-					SpotData->SpotDirection.X,
-					SpotData->SpotDirection.Y,
-					SpotData->SpotDirection.Z,
-					SpotData->SpotCosOuter
-				);
-				// Overwrite the LightCone tracking dimension within LightData1 so the shader has inner cone values
-				LightData->LightData1[i].w = SpotData->SpotCosInner;
-			}
-			else if (bIsProjectile)
+			if (bIsProjectile)
 			{
 				// Mark projectiles with a positive X value, but still a negative W value so the shader knows it is still not a cone light
-                LightData->LightData6[i] = glm::vec4(1.0f, 0.0f, 0.0f, -1.0f);
-            }
+				LightData->LightData6[BufferIndex] = glm::vec4(1.0f, 0.0f, 0.0f, -1.0f);
+			}
 			else
 			{
 				// Safe baseline fallbacks for regular lights
-				LightData->LightData6[i] = glm::vec4(0.0f, 0.0f, 0.0f, -1.0f);
+				LightData->LightData6[BufferIndex] = glm::vec4(0.0f, 0.0f, 0.0f, -1.0f);
 			}
 
-			CurrentLightToIndex.Set(LightList(i), i);
+			CurrentLightToIndex.Set(DynamicLevelLights(i), BufferIndex);
 		}
 
 		LightInfoBuffer.Bind();
 		LightInfoBuffer.BufferData(true);
-	}
+	} // end if in a level (so there would be lights)
 
 	if (CoronaScaling)
 	{
@@ -2682,6 +2762,10 @@ void UXOpenGLRenderDevice::Lock(FPlane InFlashScale, FPlane InFlashFog, FPlane S
 	// Only run the transition handler for real levels
 	if (levelChanged && LastLevel && !LastLevel->IsEntry)
 	{
+		// Reset static light cache for new level
+		bStaticLightsCached = FALSE;
+		CachedNumStaticLights = -1;
+
 		/*DebugDepthProgram = glCreateProgram();
 
 		if (!ShaderLoader::LoadExternalShaders(
